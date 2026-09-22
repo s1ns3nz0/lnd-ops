@@ -1,6 +1,6 @@
 # lnd-ops
 
-Reproducible Lightning node operator portfolio project. The [implementation roadmap](docs/implementation-roadmap.md) defines the MVP and repeat-deployment contract. The [operator plan](docs/operator-plan.md) records the target architecture, while the [observability plan](docs/observability-plan.md) records dashboards, alerts, and runbook priorities. Installation runbooks will be added with the Helm charts.
+Reproducible Lightning node operator portfolio project for Mac arm64 Lima K3s and Windows WSL 2 K3s. Both run the same Helm stack with separate testnet wallets and optional regtest profiles. The [implementation roadmap](docs/implementation-roadmap.md) defines the MVP, multi-platform images, and repeat-deployment contract. The [operator plan](docs/operator-plan.md) records the target architecture, while the [observability plan](docs/observability-plan.md) records dashboards, alerts, and runbook priorities. Installation runbooks will be added with the Helm charts.
 
 ## Repository harness
 

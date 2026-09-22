@@ -8,7 +8,7 @@ This document records the agreed monitoring scope. Metric names and queries must
 - lndmon: chain sync, channel state, liquidity, peers, and wallet data. Its documented metrics include `lnd_synced_to_chain`, `lnd_synced_to_graph`, channel inbound/outbound bandwidth, active/inactive channels, pending HTLCs, and peer count.
 - Kubernetes: kube-state-metrics for object state; kubelet and node exporter for workload, volume, and host resource usage. Verify the selected K3s and local-path storage combination exposes volume capacity metrics.
 - A separate wallet-state check: distinguish a locked wallet from a stalled sync or failed lndmon scrape. Choose its implementation only after testing LND's actual startup behavior.
-- WSL host backup job: copy SCB to the Windows folder. Backup freshness monitoring is deferred.
+- Host-specific backup jobs: copy each SCB outside its K3s data volume, to the Windows folder or a macOS host folder. Backup freshness monitoring is deferred.
 - Logs and events: kagent reads current Pod logs and Kubernetes events. Add long-term log storage only after a runbook needs history that these sources cannot provide.
 
 Sources: [LND configuration](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf), [lndmon metrics](https://github.com/lightninglabs/lndmon/blob/master/metrics.md), [Kubernetes node metrics](https://kubernetes.io/docs/reference/instrumentation/node-metrics/), [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics).
@@ -23,7 +23,7 @@ Create one Grafana operations overview and three detail views in the first dashb
 | Channels and peers | Active/inactive/pending channels, peer count, pending HTLCs, channel capacity |
 | Liquidity | Per-channel and aggregate inbound/outbound available balance; ability to send and receive the configured target amount |
 | Payments | Aggregate send/receive success and failure counts, latency, and fees; verify the actual collector before defining queries |
-| Kubernetes | Node Ready and pressure conditions, Pod readiness/restarts, CPU/memory, LND volume and WSL host free space, Prometheus health |
+| Kubernetes | Node Ready and pressure conditions, Pod readiness/restarts, CPU/memory, LND volume and Linux guest disk free space, Prometheus health |
 | Security | Falco event and alert status after sensor compatibility is verified |
 
 Use aggregate payment metrics. Do not add invoice contents, payment hashes, macaroons, or peer identifiers to custom payment metric labels or LLM diagnostic input. Review the labels emitted by upstream exporters before granting access to their raw metrics.
@@ -37,13 +37,13 @@ Keep Prometheus data for 14 days initially. Monitor Prometheus storage usage and
 1. **Wallet locked:** tell the operator to unlock it manually. Suppress dependent sync and channel alerts during this state and allow a short startup grace period.
 2. **Chain sync stalled:** use lndmon sync state and block age, then inspect Neutrino connectivity, Pod events, and logs. This is the first end-to-end alert and kagent runbook scenario.
 3. **Channel inactive:** correlate channel state, peer count, connectivity, and logs. This is the second end-to-end scenario.
-4. **LND volume or WSL host disk low:** distinguish PVC and host pressure before suggesting cleanup. This is the first Kubernetes runbook scenario.
+4. **LND volume or Linux guest disk low:** distinguish PVC and guest disk pressure before suggesting cleanup. This is the first Kubernetes runbook scenario.
 5. **Payment handling:** show failure counts over time, but alert only on consecutive failures or inability to handle the configured send/receive target. Define the consecutive-failure count after observing testnet traffic. Gate the receive-target alert until inbound liquidity has been established and the operator enables it.
 6. **Monitoring unavailable:** alert on LND/lndmon scrape failure and on observability Pod failure while Prometheus remains healthy. A stopped Prometheus or PC cannot deliver its own Alertmanager alert in this architecture.
 
 Each alert should carry the affected workload, severity, observed evidence, and runbook reference. kagent first gathers read-only metrics, Kubernetes events, and logs, then proposes the documented action. Low-risk automated actions require their own tested policy. LND restarts, wallet unlocks, and channel, payment, or fund operations require human approval.
 
-Because Prometheus, Alertmanager, and kagent run on the same PC, they cannot alert while that PC or WSL is stopped. External availability monitoring is outside this reproducible demonstration scope.
+Each K3s installation runs its own Prometheus, Alertmanager, and kagent. It cannot alert while its Mac Lima VM, Windows WSL 2 environment, or host is stopped. External availability monitoring is outside this reproducible demonstration scope.
 
 ## Later payment extension
 
