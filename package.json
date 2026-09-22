@@ -1,0 +1,13 @@
+{
+  "name": "codex-harness-template",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reusable, lightweight Codex harness",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "harness:init": "node scripts/harness-init.mjs",
+    "harness:check": "node scripts/harness-check.mjs",
+    "harness:verify": "node scripts/harness-check.mjs --run-adapters",
+    "test": "node --test tests/**/*.test.mjs"
+  }
+}
