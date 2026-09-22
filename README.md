@@ -1,6 +1,6 @@
 # lnd-ops
 
-Reproducible Lightning node operator portfolio project. The [operator plan](docs/operator-plan.md) records the agreed deployment and demonstration scope. Implementation runbooks will be added with the Helm charts.
+Reproducible Lightning node operator portfolio project. The [operator plan](docs/operator-plan.md) records the agreed deployment and demonstration scope; the [observability plan](docs/observability-plan.md) records dashboards, alerts, and runbook priorities. Implementation runbooks will be added with the Helm charts.
 
 ## Repository harness
 
