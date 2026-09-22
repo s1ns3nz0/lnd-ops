@@ -4,7 +4,7 @@
 
 Build a reproducible Lightning Labs platform engineering portfolio project. Develop and validate on macOS; demonstrate on a Windows 11 Home PC with 64 GB RAM and 1 TB storage.
 
-## Agreed MVP
+## Agreed target architecture
 
 - Run a single-node K3s cluster inside Ubuntu on WSL 2.
 - Deploy LND on Bitcoin testnet3 with a Neutrino chain backend. Use a persistent volume for LND data. Unlock the wallet manually after startup.
@@ -15,13 +15,15 @@ Build a reproducible Lightning Labs platform engineering portfolio project. Deve
 - Automatically copy LND's Static Channel Backup (SCB) to `C:\lnd-ops-backups` on the same Windows PC. Keep the wallet seed offline. Document manual transfer of the SCB to the development Mac. The local copy alone does not cover loss of the PC.
 - Clone this GitHub repository inside WSL 2 and run documented Helm deployment commands there.
 
-## Demonstration acceptance criteria
+## End-to-end portfolio demonstration criteria
 
 1. Install the testnet LND stack from Helm on WSL 2 K3s.
 2. Open a channel, make a payment, and observe state changes in Grafana.
-3. Stop and restart LND, see an alert, unlock the wallet manually, and verify the SCB copy and backup-age signal.
+3. Stop and restart LND, see an alert, unlock the wallet manually, and verify the SCB copy. Backup-age alerting is a later observability extension.
 
 This records product decisions, not installation instructions. Version pins, chart sources, commands, alert thresholds, and evidence collection belong in the implementation runbooks.
+
+The [implementation roadmap](implementation-roadmap.md) defines the smaller core MVP and the order of later portfolio features.
 
 ## Security design
 
