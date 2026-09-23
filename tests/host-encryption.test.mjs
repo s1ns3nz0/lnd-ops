@@ -73,6 +73,21 @@ test('uses the Windows protection check from WSL', () => {
   assert.match(result.stdout, /pre-funding gate passed/);
 });
 
+test('discovers the WSL distribution name when an SSH session omits it', () => {
+  const bin = mkdtempSync(join(tmpdir(), 'lnd-ops-bitlocker-'));
+  const osrelease = join(bin, 'osrelease');
+  writeFileSync(osrelease, '6.6.0-microsoft-standard-WSL2\n');
+  executable(join(bin, 'uname'), '#!/bin/sh\necho Linux\n');
+  executable(join(bin, 'wslpath'), '#!/bin/sh\nif [ "$2" = / ]; then printf "\\\\wsl.localhost\\Ubuntu-24.04\\\\\n"; else echo C:\\\\repo\\\\ops\\\\windows-encryption-status.ps1; fi\n');
+  executable(join(bin, 'powershell.exe'), '#!/bin/sh\nprintf "%s\\n" "$@"\n');
+  const result = runWith(bin, undefined, {
+    LND_OPS_OSRELEASE_FILE: osrelease,
+    WSL_DISTRO_NAME: '',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /-DistroName\nUbuntu-24\.04/);
+});
+
 test('Windows check discovers the WSL 2 backing volume instead of assuming C:', () => {
   const source = readFileSync(join(repo, 'ops/windows-host-state.ps1'), 'utf8');
   assert.match(source, /DistributionName -eq \$DistroName/);

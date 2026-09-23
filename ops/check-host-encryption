@@ -44,12 +44,17 @@ case "$(uname -s)" in
         exit 1
       }
     done
-    [[ -n "${WSL_DISTRO_NAME:-}" ]] || {
-      echo 'FAIL: WSL_DISTRO_NAME is unavailable' >&2
+    distro_name=${WSL_DISTRO_NAME:-}
+    if [[ -z "$distro_name" ]]; then
+      windows_root=$(wslpath -w / | tr -d '\r')
+      distro_name=$(python3 -c 'import sys; p=[x for x in sys.argv[1].split("\\") if x]; print(p[1] if len(p) >= 2 and p[0] in ("wsl.localhost", "wsl$") else "")' "$windows_root")
+    fi
+    [[ "$distro_name" =~ ^[A-Za-z0-9._-]+$ ]] || {
+      echo 'FAIL: cannot determine the current WSL distribution name' >&2
       exit 1
     }
     windows_script=$(wslpath -w "$repo_dir/ops/windows-encryption-status.ps1")
-    powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" -DistroName "$WSL_DISTRO_NAME"
+    powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" -DistroName "$distro_name"
     ;;
   *)
     echo "FAIL: unsupported host: $(uname -s)" >&2
