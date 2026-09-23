@@ -330,4 +330,4 @@ The demo passes only when it can be repeated from the documented repository revi
 | 9 | Phase 8 | Both-host reproducibility and CI |
 | 10 | Phase 9 | Rehearsed public portfolio demo |
 
-The immediate next implementation slice is Phase 0: create `ops/acceptance regtest`, make it consume the existing verification evidence without secrets, and use it as the stable gate before testnet funding.
+The immediate next implementation slice is Phase 1: finish the Windows testnet runbook and verification tools, then pass the external peer, public channel, payment, encrypted backup, monitoring, and state-preserving redeployment gates. The working sequence is maintained in [demo-execution-plan.md](demo-execution-plan.md).
