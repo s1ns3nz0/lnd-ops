@@ -119,6 +119,47 @@ class RedeployEvidenceTests(unittest.TestCase):
         self.assertEqual(result, 1)
         evidence_mock.assert_not_called()
 
+    def test_regtest_preserves_both_nodes_and_uses_monitoring_deploy(self):
+        before = {
+            "profile": "regtest",
+            "nodes": {
+                "lnd-0": {"node_key": "02a", "channel_points": ["tx:0"], "lnd_pvc_uid": "pvc-0", "scb_source_sha256": "a" * 64, "scb_host_sha256": "a" * 64},
+                "lnd-1": {"node_key": "02b", "channel_points": ["tx:0"], "lnd_pvc_uid": "pvc-1", "scb_source_sha256": "b" * 64, "scb_host_sha256": "b" * 64},
+            },
+            "prometheus_pvc_uid": "prom-pvc",
+            "cluster_uid": "cluster-uid",
+            "helm_revisions": {"lnd-ops": 2, "lnd-ops-monitoring": 3},
+            "prometheus_sample": [1700000000.0, "1"],
+            "prometheus_series": {"__name__": "up", "job": "node-exporter"},
+        }
+        after = json.loads(json.dumps(before))
+        after["helm_revisions"] = {"lnd-ops": 3, "lnd-ops-monitoring": 4}
+        hosts = {"lnd-0": pathlib.Path("/host/0"), "lnd-1": pathlib.Path("/host/1")}
+        with tempfile.TemporaryDirectory() as directory, unittest.mock.patch.dict(
+            redeploy.os.environ, {"XDG_STATE_HOME": directory}
+        ), unittest.mock.patch.object(
+            redeploy, "regtest_host_scb_paths", return_value=hosts
+        ), unittest.mock.patch.object(
+            redeploy, "regtest_snapshot", side_effect=[before, after]
+        ) as snapshot_mock, unittest.mock.patch.object(
+            redeploy.subprocess, "run"
+        ) as run_mock, unittest.mock.patch.object(
+            redeploy, "write_evidence"
+        ) as evidence_mock:
+            result = redeploy.main(["regtest", "--evidence", "regtest.json"])
+
+        self.assertEqual(result, 0)
+        snapshot_mock.assert_any_call(hosts)
+        snapshot_mock.assert_any_call(hosts, 1700000000.0, before["prometheus_series"])
+        self.assertEqual(
+            [call.args[0] for call in run_mock.call_args_list],
+            [
+                [str(redeploy.repo / "ops/deploy"), "regtest", "--monitoring"],
+                [str(redeploy.repo / "ops/deploy-monitoring")],
+            ],
+        )
+        evidence_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

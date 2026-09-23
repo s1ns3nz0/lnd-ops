@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove that a testnet redeploy preserves funded LND and monitoring state."""
+"""Prove that a funded LND redeploy preserves wallet and monitoring state."""
 import hashlib
 import json
 import os
@@ -108,6 +108,87 @@ def host_scb_path():
     raise RuntimeError("Supported hosts: macOS and WSL 2")
 
 
+def regtest_host_scb_paths():
+    if sys.platform == "darwin":
+        root = pathlib.Path.home() / "lnd-ops-backups/regtest"
+    else:
+        osrelease = pathlib.Path("/proc/sys/kernel/osrelease")
+        if not osrelease.is_file() or "microsoft" not in osrelease.read_text().lower():
+            raise RuntimeError("Supported hosts: macOS and WSL 2")
+        root = pathlib.Path(run(str(repo / "ops/windows-drive")).strip()) / "lnd-ops-backups/regtest"
+    return {f"lnd-{index}": root / f"lnd-{index}/channel.backup" for index in range(2)}
+
+
+def regtest_lncli(pod, command):
+    try:
+        return json.loads(kubectl(
+            "-n", "lnd-regtest", "exec", pod, "--", "lncli",
+            "--lnddir=/data/.lnd", "--network=regtest", command,
+        ))
+    except (RuntimeError, json.JSONDecodeError) as exc:
+        raise ManualGate(f"Create and unlock the {pod} regtest wallet before redeploy proof") from exc
+
+
+def regtest_snapshot(scb_hosts, history_time=None, history_series=None):
+    cluster_namespace = json.loads(kubectl("get", "namespace", "kube-system", "-o", "json"))
+    prom_pvc = json.loads(kubectl(
+        "-n", "lnd-monitoring", "get", "pvc",
+        "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0",
+        "-o", "json",
+    ))
+    nodes = {}
+    all_channel_points = set()
+    for index in range(2):
+        name = f"lnd-{index}"
+        pod = f"{name}-0"
+        info = regtest_lncli(pod, "getinfo")
+        channels = regtest_lncli(pod, "listchannels").get("channels", [])
+        if not info.get("identity_pubkey") or not channels:
+            raise ManualGate(f"{pod} identity and at least one open channel are required")
+        channel_points = sorted(channel["channel_point"] for channel in channels)
+        if not all(int(channel.get("capacity", 0)) > 0 for channel in channels):
+            raise ManualGate(f"Every {pod} channel must have positive capacity")
+        host = scb_hosts[name]
+        if not host.is_file() or host.stat().st_size == 0:
+            raise ManualGate(f"Copy the {pod} SCB to the host with ops/backup-scb")
+        host_hash = hashlib.sha256(host.read_bytes()).hexdigest()
+        source = "/data/.lnd/data/chain/bitcoin/regtest/channel.backup"
+        try:
+            source_hash = kubectl("-n", "lnd-regtest", "exec", pod, "--", "sha256sum", source).split()[0]
+        except (RuntimeError, IndexError) as exc:
+            raise ManualGate(f"{pod} SCB is absent; open a channel and run ops/backup-scb") from exc
+        if source_hash != host_hash:
+            raise ManualGate(f"{pod} SCB source and host copy differ; run ops/backup-scb")
+        pvc = json.loads(kubectl("-n", "lnd-regtest", "get", "pvc", f"data-{name}-0", "-o", "json"))
+        nodes[name] = {
+            "node_key": info["identity_pubkey"],
+            "channel_points": channel_points,
+            "lnd_pvc_uid": pvc["metadata"]["uid"],
+            "scb_source_sha256": source_hash,
+            "scb_host_sha256": host_hash,
+        }
+        all_channel_points.update(channel_points)
+    if len(all_channel_points) != 1:
+        raise ManualGate("Both regtest nodes must report the same single channel")
+    samples = prometheus_query('up{job="node-exporter"}', history_time)
+    if history_series is not None:
+        samples = [sample for sample in samples if sample["metric"] == history_series]
+    if not samples or samples[0]["value"][1] != "1":
+        raise ManualGate("Healthy Prometheus node-exporter history is required before redeploy proof")
+    return {
+        "profile": "regtest",
+        "nodes": nodes,
+        "prometheus_pvc_uid": prom_pvc["metadata"]["uid"],
+        "cluster_uid": cluster_namespace["metadata"]["uid"],
+        "helm_revisions": {
+            "lnd-ops": int(json.loads(run("helm", "-n", "lnd-regtest", "history", "lnd-ops", "-o", "json"))[-1]["revision"]),
+            "lnd-ops-monitoring": int(json.loads(run("helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"]),
+        },
+        "prometheus_sample": samples[0]["value"],
+        "prometheus_series": samples[0]["metric"],
+    }
+
+
 def default_evidence_path(now=None):
     now = now or datetime.now(timezone.utc)
     state_home = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state"))
@@ -121,6 +202,16 @@ def evidence_root():
 
 def evidence_snapshot(data):
     series = json.dumps(data["prometheus_series"], sort_keys=True, separators=(",", ":")).encode()
+    if data.get("profile") == "regtest":
+        return {
+            "profile": "regtest",
+            "nodes": data["nodes"],
+            "prometheus_pvc_uid": data["prometheus_pvc_uid"],
+            "cluster_uid_sha256": hashlib.sha256(data["cluster_uid"].encode()).hexdigest(),
+            "helm_revisions": data["helm_revisions"],
+            "prometheus_series_sha256": hashlib.sha256(series).hexdigest(),
+            "prometheus_sample": data["prometheus_sample"],
+        }
     return {
         "node_key": data["node_key"],
         "channel_points": data["channel_points"],
@@ -137,26 +228,33 @@ def evidence_snapshot(data):
 
 def write_evidence(path, before, after, started_at, finished_at=None):
     finished_at = finished_at or datetime.now(timezone.utc)
+    profile = before.get("profile", "testnet")
+    resources = {
+        "namespace": f"lnd-{profile}",
+        "lnd_statefulsets": ["lnd-0", "lnd-1"] if profile == "regtest" else ["lnd-0"],
+        "lnd_pvcs": ["data-lnd-0-0", "data-lnd-1-0"] if profile == "regtest" else ["data-lnd-0-0"],
+        "monitoring_namespace": "lnd-monitoring",
+        "prometheus_release": "lnd-ops-monitoring",
+    }
+    preserved = (
+        ["nodes", "prometheus_pvc_uid", "cluster_uid_sha256", "prometheus_series_sha256", "prometheus_sample"]
+        if profile == "regtest" else
+        [
+            "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid",
+            "scb_source_sha256", "scb_host_sha256", "cluster_uid_sha256",
+            "prometheus_series_sha256", "prometheus_sample",
+        ]
+    )
     payload = {
         "schema": "lnd-ops/redeploy-evidence/v1",
         "result": "pass",
         "started_at": started_at.isoformat().replace("+00:00", "Z"),
         "finished_at": finished_at.isoformat().replace("+00:00", "Z"),
         "host": {"system": platform.system(), "machine": platform.machine()},
-        "profile": "testnet",
-        "resources": {
-            "namespace": namespace,
-            "lnd_statefulset": "lnd-0",
-            "lnd_pvc": "data-lnd-0-0",
-            "monitoring_namespace": "lnd-monitoring",
-            "prometheus_release": "lnd-ops-monitoring",
-        },
-        "commands": ["ops/deploy testnet", "ops/deploy-monitoring"],
-        "preserved": [
-            "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid",
-            "scb_source_sha256", "scb_host_sha256", "cluster_uid_sha256",
-            "prometheus_series_sha256", "prometheus_sample",
-        ],
+        "profile": profile,
+        "resources": resources,
+        "commands": [f"ops/deploy {profile}" + (" --monitoring" if profile == "regtest" else ""), "ops/deploy-monitoring"],
+        "preserved": preserved,
         "before": evidence_snapshot(before),
         "after": evidence_snapshot(after),
     }
@@ -198,8 +296,55 @@ def parse_args(arguments):
     raise ValueError("Usage: ops/redeploy-check [--evidence FILE]")
 
 
+def main_regtest(arguments):
+    try:
+        started_at = datetime.now(timezone.utc)
+        evidence_path = parse_args(arguments)
+        if not arguments:
+            evidence_path = evidence_path.with_name(evidence_path.name.replace("testnet-", "regtest-", 1))
+        if evidence_path.exists():
+            raise RuntimeError(f"Evidence path already exists: {evidence_path}")
+        hosts = regtest_host_scb_paths()
+        before = regtest_snapshot(hosts)
+        print("Preflight passed: both regtest nodes, channel, SCBs and Prometheus history present")
+        subprocess.run([str(repo / "ops/deploy"), "regtest", "--monitoring"], check=True)
+        subprocess.run([str(repo / "ops/deploy-monitoring")], check=True)
+        fixed_time = float(before["prometheus_sample"][0])
+        for attempt in range(30):
+            try:
+                after = regtest_snapshot(hosts, fixed_time, before["prometheus_series"])
+                break
+            except ManualGate:
+                if attempt == 29:
+                    raise
+                time.sleep(2)
+        for field in ("nodes", "prometheus_pvc_uid", "cluster_uid"):
+            if before[field] != after[field]:
+                raise RuntimeError(f"Redeploy changed {field}")
+        if before["prometheus_series"] != after["prometheus_series"] or before["prometheus_sample"] != after["prometheus_sample"]:
+            raise RuntimeError("Prometheus historical sample changed or disappeared")
+        for release in before["helm_revisions"]:
+            if after["helm_revisions"][release] <= before["helm_revisions"][release]:
+                raise RuntimeError(f"Redeploy did not advance Helm revision for {release}")
+        write_evidence(evidence_path, before, after, started_at)
+        print("OK redeploy preserved both node keys, channel, LND PVCs, SCBs and Prometheus history")
+        print(f"Evidence: {evidence_path}")
+        return 0
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(arguments):
     try:
+        if arguments and arguments[0] == "regtest":
+            return main_regtest(arguments[1:])
         started_at = datetime.now(timezone.utc)
         evidence_path = parse_args(arguments)
         if evidence_path.exists():
