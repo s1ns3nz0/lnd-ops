@@ -40,7 +40,12 @@ class RegtestAcceptanceTests(unittest.TestCase):
 
     @classmethod
     def current(cls):
-        return {"nodes": cls.nodes(), "prometheus_pvc_uid": "prom-pvc", "cluster_uid_sha256": "c" * 64}
+        return {
+            "nodes": cls.nodes(),
+            "prometheus_pvc_uid": "prom-pvc",
+            "cluster_uid_sha256": "c" * 64,
+            "helm_revisions": {"lnd-ops": 4, "lnd-ops-monitoring": 3},
+        }
 
     @classmethod
     def redeploy(cls):
@@ -72,6 +77,7 @@ class RegtestAcceptanceTests(unittest.TestCase):
         root.mkdir(parents=True, exist_ok=True)
         path = root / name
         path.write_text(json.dumps(content if content is not None else self.redeploy()))
+        path.chmod(0o600)
         return path
 
     def test_complete_pass_writes_private_versioned_evidence(self):
@@ -91,6 +97,7 @@ class RegtestAcceptanceTests(unittest.TestCase):
             self.assertEqual(payload["result"], "pass")
             self.assertEqual(payload["schema"], "lnd-ops/regtest-acceptance/v1")
             self.assertEqual(set(payload["checks"].values()), {"pass"})
+            self.assertRegex(payload["redeploy_evidence_sha256"], r"^[0-9a-f]{64}$")
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
 

@@ -146,10 +146,20 @@ def live_state(now):
     prom = kubectl_json("-n", "lnd-monitoring", "get", "pvc", PROM_PVC, "-o", "json")
     cluster = kubectl_json("get", "namespace", "kube-system", "-o", "json")
     cluster_uid = cluster["metadata"]["uid"]
+    try:
+        lnd_history = json.loads(command(["helm", "-n", NAMESPACE, "history", "lnd-ops", "-o", "json"]))
+        monitoring_history = json.loads(command(["helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"]))
+        helm_revisions = {
+            "lnd-ops": int(lnd_history[-1]["revision"]),
+            "lnd-ops-monitoring": int(monitoring_history[-1]["revision"]),
+        }
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        raise InvariantFailure("current Helm history is malformed") from exc
     return {
         "nodes": nodes,
         "prometheus_pvc_uid": prom["metadata"]["uid"],
         "cluster_uid_sha256": hashlib.sha256(cluster_uid.encode()).hexdigest(),
+        "helm_revisions": helm_revisions,
     }
 
 
@@ -159,9 +169,13 @@ def latest_redeploy_evidence(now):
         raise ManualGate("run ops/redeploy-check regtest to create redeploy evidence")
     path = candidates[0]
     try:
-        data = json.loads(path.read_text())
+        raw = path.read_bytes()
+        data = json.loads(raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise InvariantFailure(f"latest redeploy evidence is unreadable or malformed: {path.name}") from exc
+    mode = path.stat().st_mode & 0o777
+    if mode != 0o600 or path.stat().st_uid != os.getuid():
+        raise InvariantFailure(f"latest redeploy evidence must be owned by the operator with mode 0600: {path.name}")
     if data.get("schema") != "lnd-ops/redeploy-evidence/v1" or data.get("result") != "pass" or data.get("profile") != "regtest":
         raise InvariantFailure(f"latest redeploy evidence has an invalid contract: {path.name}")
     try:
@@ -186,7 +200,7 @@ def latest_redeploy_evidence(now):
                 raise InvariantFailure(f"latest redeploy evidence changed {field}")
     except (KeyError, TypeError, ValueError) as exc:
         raise InvariantFailure(f"latest redeploy evidence snapshots are malformed: {path.name}") from exc
-    return path, data
+    return path, data, hashlib.sha256(raw).hexdigest()
 
 
 def verify_prometheus_history(after):
@@ -215,6 +229,8 @@ def verify_current_matches_redeploy(current, evidence):
         raise InvariantFailure("current Prometheus PVC differs from redeploy evidence")
     if current["cluster_uid_sha256"] != after["cluster_uid_sha256"]:
         raise InvariantFailure("current cluster identity differs from redeploy evidence")
+    if current["helm_revisions"] != after["helm_revisions"]:
+        raise InvariantFailure("current Helm revisions differ from redeploy evidence")
     for node in NODES:
         live = current["nodes"][node]
         recorded = after["nodes"][node]
@@ -264,7 +280,7 @@ def acceptance(now=None):
     command([str(REPO / "ops/verify-monitoring"), "--profile", "regtest"])
     backup_format = verify_backups()
     current = live_state(now)
-    redeploy_path, redeploy = latest_redeploy_evidence(now)
+    redeploy_path, redeploy, redeploy_digest = latest_redeploy_evidence(now)
     verify_current_matches_redeploy(current, redeploy)
     payload = {
         "schema": "lnd-ops/regtest-acceptance/v1",
@@ -283,6 +299,7 @@ def acceptance(now=None):
         },
         "backup_format": backup_format,
         "redeploy_evidence": redeploy_path.name,
+        "redeploy_evidence_sha256": redeploy_digest,
         "current": current,
     }
     path = write_result(payload, now)
