@@ -6,8 +6,10 @@ import json
 import os
 import pathlib
 import platform
+import re
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 
 
@@ -18,6 +20,7 @@ KUBECONFIG = pathlib.Path(os.environ.get("KUBECONFIG", STATE / "kubeconfig"))
 NAMESPACE = "lnd-regtest"
 NODES = ("lnd-0", "lnd-1")
 RECENT_SECONDS = 3600
+REDEPLOY_MAX_AGE_SECONDS = 86400
 SCB_SOURCE = "/data/.lnd/data/chain/bitcoin/regtest/channel.backup"
 PROM_PVC = "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0"
 
@@ -79,33 +82,47 @@ def invoice_epoch(invoice):
     return parse_epoch(invoice.get("settle_date"))
 
 
+def hash_value(value):
+    value = str(value or "").lower()
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else ""
+
+
 def live_state(now):
     nodes = {}
+    activity = {}
     common_channels = None
     for node in NODES:
         info = lncli(node, "getinfo")
         channels = lncli(node, "listchannels").get("channels", [])
-        active = sorted(
-            channel["channel_point"] for channel in channels
-            if channel.get("active") and int(channel.get("capacity", 0)) > 0
-        )
+        try:
+            active = sorted(
+                channel["channel_point"] for channel in channels
+                if channel.get("active") and int(channel.get("capacity", 0)) > 0
+            )
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise InvariantFailure(f"{node} channel data is malformed") from exc
         if not info.get("identity_pubkey") or not active:
             raise ManualGate(f"{node} must be unlocked with at least one active positive-capacity channel")
         payments = lncli(node, "listpayments", "--include_incomplete").get("payments", [])
         invoices = lncli(node, "listinvoices").get("invoices", [])
-        recent_outgoing = [
-            item for item in payments
-            if item.get("status") == "SUCCEEDED" and 0 <= now - payment_epoch(item) <= RECENT_SECONDS
-        ]
-        recent_incoming = [
-            item for item in invoices
-            if item.get("state") == "SETTLED" and 0 <= now - invoice_epoch(item) <= RECENT_SECONDS
-        ]
+        try:
+            recent_outgoing = [
+                item for item in payments
+                if item.get("status") == "SUCCEEDED" and 0 <= now - payment_epoch(item) <= RECENT_SECONDS
+                and hash_value(item.get("payment_hash"))
+            ]
+            recent_incoming = [
+                item for item in invoices
+                if item.get("state") == "SETTLED" and 0 <= now - invoice_epoch(item) <= RECENT_SECONDS
+                and hash_value(item.get("r_hash"))
+            ]
+        except (TypeError, AttributeError) as exc:
+            raise InvariantFailure(f"{node} payment or invoice data is malformed") from exc
         if not recent_outgoing or not recent_incoming:
             raise ManualGate(f"{node} needs successful outgoing and settled incoming payments from the last hour")
         pvc = kubectl_json("-n", NAMESPACE, "get", "pvc", f"data-{node}-0", "-o", "json")
         source_hash = kubectl("-n", NAMESPACE, "exec", f"{node}-0", "-c", "lnd", "--", "sha256sum", SCB_SOURCE).split()[0]
-        if len(source_hash) != 64:
+        if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
             raise InvariantFailure(f"{node} SCB source hash is invalid")
         nodes[node] = {
             "node_key": info["identity_pubkey"],
@@ -115,14 +132,28 @@ def live_state(now):
             "recent_outgoing_count": len(recent_outgoing),
             "recent_incoming_count": len(recent_incoming),
         }
+        activity[node] = {
+            "outgoing": {hash_value(item.get("payment_hash")) for item in recent_outgoing},
+            "incoming": {hash_value(item.get("r_hash")) for item in recent_incoming},
+        }
         common_channels = set(active) if common_channels is None else common_channels.intersection(active)
     if not common_channels:
         raise InvariantFailure("the two regtest nodes do not report a common active channel")
+    if not activity["lnd-0"]["outgoing"].intersection(activity["lnd-1"]["incoming"]):
+        raise ManualGate("lnd-0 needs a recent successful payment settled by lnd-1")
+    if not activity["lnd-1"]["outgoing"].intersection(activity["lnd-0"]["incoming"]):
+        raise ManualGate("lnd-1 needs a recent successful payment settled by lnd-0")
     prom = kubectl_json("-n", "lnd-monitoring", "get", "pvc", PROM_PVC, "-o", "json")
-    return {"nodes": nodes, "prometheus_pvc_uid": prom["metadata"]["uid"]}
+    cluster = kubectl_json("get", "namespace", "kube-system", "-o", "json")
+    cluster_uid = cluster["metadata"]["uid"]
+    return {
+        "nodes": nodes,
+        "prometheus_pvc_uid": prom["metadata"]["uid"],
+        "cluster_uid_sha256": hashlib.sha256(cluster_uid.encode()).hexdigest(),
+    }
 
 
-def latest_redeploy_evidence():
+def latest_redeploy_evidence(now):
     candidates = sorted(EVIDENCE.glob("regtest-redeploy-*.json"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
     if not candidates:
         raise ManualGate("run ops/redeploy-check regtest to create redeploy evidence")
@@ -133,6 +164,13 @@ def latest_redeploy_evidence():
         raise InvariantFailure(f"latest redeploy evidence is unreadable or malformed: {path.name}") from exc
     if data.get("schema") != "lnd-ops/redeploy-evidence/v1" or data.get("result") != "pass" or data.get("profile") != "regtest":
         raise InvariantFailure(f"latest redeploy evidence has an invalid contract: {path.name}")
+    try:
+        finished = datetime.fromisoformat(data["finished_at"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantFailure(f"latest redeploy evidence has an invalid completion time: {path.name}") from exc
+    age = now - finished
+    if age < 0 or age > REDEPLOY_MAX_AGE_SECONDS:
+        raise ManualGate("run ops/redeploy-check regtest; the latest passing redeploy evidence is older than 24 hours")
     before = data.get("before")
     after = data.get("after")
     if not isinstance(before, dict) or not isinstance(after, dict) or not before or not after:
@@ -151,20 +189,49 @@ def latest_redeploy_evidence():
     return path, data
 
 
+def verify_prometheus_history(after):
+    try:
+        sample_time, sample_value = after["prometheus_sample"]
+        expected_series_hash = after["prometheus_series_sha256"]
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_series_hash):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantFailure("redeploy Prometheus evidence is malformed") from exc
+    query = urllib.parse.urlencode({"query": 'up{job="node-exporter"}', "time": str(sample_time)})
+    path = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + query
+    response = kubectl_json("get", "--raw", path)
+    if response.get("status") != "success":
+        raise InvariantFailure("Prometheus historical query failed")
+    for item in response.get("data", {}).get("result", []):
+        series = json.dumps(item.get("metric", {}), sort_keys=True, separators=(",", ":")).encode()
+        if hashlib.sha256(series).hexdigest() == expected_series_hash and item.get("value") == [sample_time, sample_value]:
+            return
+    raise InvariantFailure("the exact Prometheus historical series, timestamp, and value were not preserved")
+
+
 def verify_current_matches_redeploy(current, evidence):
     after = evidence["after"]
     if current["prometheus_pvc_uid"] != after["prometheus_pvc_uid"]:
         raise InvariantFailure("current Prometheus PVC differs from redeploy evidence")
+    if current["cluster_uid_sha256"] != after["cluster_uid_sha256"]:
+        raise InvariantFailure("current cluster identity differs from redeploy evidence")
     for node in NODES:
         live = current["nodes"][node]
         recorded = after["nodes"][node]
         for field in ("node_key", "channel_points", "lnd_pvc_uid", "scb_source_sha256"):
             if live[field] != recorded[field]:
                 raise InvariantFailure(f"current {node} {field} differs from redeploy evidence")
+        for field in ("scb_source_sha256", "scb_plaintext_sha256", "scb_host_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(recorded.get(field, ""))):
+                raise InvariantFailure(f"redeploy evidence has an invalid {node} {field}")
+    verify_prometheus_history(after)
 
 
 def verify_backups():
-    encrypted = all((pathlib.Path.home() / f"lnd-ops-backups-encrypted/regtest/{node}/channel.backup.gpg").is_file() for node in NODES)
+    encrypted_paths = [(pathlib.Path.home() / f"lnd-ops-backups-encrypted/regtest/{node}/channel.backup.gpg").is_file() for node in NODES]
+    if any(encrypted_paths) and not all(encrypted_paths):
+        raise ManualGate("complete both encrypted SCB backups or remove the incomplete encrypted set")
+    encrypted = all(encrypted_paths)
     script = REPO / "ops" / ("backup-status-encrypted" if encrypted else "backup-status")
     for node in NODES:
         command([str(script), "regtest", node])
@@ -197,7 +264,7 @@ def acceptance(now=None):
     command([str(REPO / "ops/verify-monitoring"), "--profile", "regtest"])
     backup_format = verify_backups()
     current = live_state(now)
-    redeploy_path, redeploy = latest_redeploy_evidence()
+    redeploy_path, redeploy = latest_redeploy_evidence(now)
     verify_current_matches_redeploy(current, redeploy)
     payload = {
         "schema": "lnd-ops/regtest-acceptance/v1",
@@ -236,7 +303,7 @@ def main(arguments):
     except ManualGate as exc:
         print(f"ACTION: {exc}", file=sys.stderr)
         return 10
-    except (InvariantFailure, OSError, KeyError, IndexError) as exc:
+    except (InvariantFailure, OSError, KeyError, IndexError, TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 

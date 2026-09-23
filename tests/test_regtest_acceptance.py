@@ -40,14 +40,15 @@ class RegtestAcceptanceTests(unittest.TestCase):
 
     @classmethod
     def current(cls):
-        return {"nodes": cls.nodes(), "prometheus_pvc_uid": "prom-pvc"}
+        return {"nodes": cls.nodes(), "prometheus_pvc_uid": "prom-pvc", "cluster_uid_sha256": "c" * 64}
 
     @classmethod
     def redeploy(cls):
-        nodes = {
-            name: {key: value for key, value in node.items() if not key.startswith("recent_")}
-            for name, node in cls.nodes().items()
-        }
+        nodes = {}
+        for name, node in cls.nodes().items():
+            nodes[name] = {key: value for key, value in node.items() if not key.startswith("recent_")}
+            nodes[name]["scb_plaintext_sha256"] = node["scb_source_sha256"]
+            nodes[name]["scb_host_sha256"] = ("d" if name == "lnd-0" else "e") * 64
         preserved = {
             "profile": "regtest",
             "nodes": nodes,
@@ -62,6 +63,7 @@ class RegtestAcceptanceTests(unittest.TestCase):
             "schema": "lnd-ops/redeploy-evidence/v1",
             "result": "pass",
             "profile": "regtest",
+            "finished_at": "2023-11-14T22:14:00Z",
             "before": before,
             "after": after,
         }
@@ -82,6 +84,8 @@ class RegtestAcceptanceTests(unittest.TestCase):
                 acceptance, "verify_backups", return_value="gpg-symmetric-v1"
             ), unittest.mock.patch.object(
                 acceptance, "live_state", return_value=self.current()
+            ), unittest.mock.patch.object(
+                acceptance, "verify_prometheus_history"
             ):
                 path, payload = acceptance.acceptance(now=1700000100.0)
             self.assertEqual(payload["result"], "pass")
@@ -106,9 +110,9 @@ class RegtestAcceptanceTests(unittest.TestCase):
             if operation == "listchannels":
                 return {"channels": [{"channel_point": "tx:0", "active": True, "capacity": "1000"}]}
             if operation == "listpayments":
-                return {"payments": [{"status": "SUCCEEDED", "creation_date": str(int(now - 7200))}]}
+                return {"payments": [{"status": "SUCCEEDED", "creation_date": str(int(now - 7200)), "payment_hash": "a" * 64}]}
             if operation == "listinvoices":
-                return {"invoices": [{"state": "SETTLED", "settle_date": str(int(now - 10))}]}
+                return {"invoices": [{"state": "SETTLED", "settle_date": str(int(now - 10)), "r_hash": "a" * 64}]}
             raise AssertionError(operation)
 
         with unittest.mock.patch.object(acceptance, "lncli", side_effect=fake_lncli):
@@ -130,7 +134,43 @@ class RegtestAcceptanceTests(unittest.TestCase):
             (evidence / "regtest-redeploy-new.json").write_text("{not-json")
             with unittest.mock.patch.object(acceptance, "EVIDENCE", evidence):
                 with self.assertRaisesRegex(acceptance.InvariantFailure, "malformed"):
-                    acceptance.latest_redeploy_evidence()
+                    acceptance.latest_redeploy_evidence(1700000100.0)
+
+    def test_old_redeploy_evidence_is_a_manual_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = pathlib.Path(directory)
+            self.write_redeploy(evidence)
+            with unittest.mock.patch.object(acceptance, "EVIDENCE", evidence):
+                with self.assertRaisesRegex(acceptance.ManualGate, "older than 24 hours"):
+                    acceptance.latest_redeploy_evidence(1700100000.0)
+
+    def test_unrelated_recent_payments_do_not_count_as_bidirectional(self):
+        now = 1700000100.0
+
+        def fake_lncli(node, operation, *args):
+            suffix = "a" if node == "lnd-0" else "b"
+            if operation == "getinfo":
+                return {"identity_pubkey": f"02{node}"}
+            if operation == "listchannels":
+                return {"channels": [{"channel_point": "tx:0", "active": True, "capacity": "1000"}]}
+            if operation == "listpayments":
+                return {"payments": [{"status": "SUCCEEDED", "creation_date": str(int(now - 10)), "payment_hash": suffix * 64}]}
+            if operation == "listinvoices":
+                return {"invoices": [{"state": "SETTLED", "settle_date": str(int(now - 10)), "r_hash": suffix * 64}]}
+            raise AssertionError(operation)
+
+        def fake_kubectl_json(*args):
+            if "pvc" in args:
+                return {"metadata": {"uid": "pvc"}}
+            return {"metadata": {"uid": "cluster"}}
+
+        with unittest.mock.patch.object(acceptance, "lncli", side_effect=fake_lncli), unittest.mock.patch.object(
+            acceptance, "kubectl_json", side_effect=fake_kubectl_json
+        ), unittest.mock.patch.object(
+            acceptance, "kubectl", return_value=("a" * 64) + "  channel.backup\n"
+        ):
+            with self.assertRaisesRegex(acceptance.ManualGate, "settled by"):
+                acceptance.live_state(now)
 
 
 if __name__ == "__main__":
