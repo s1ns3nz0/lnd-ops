@@ -109,7 +109,7 @@ ops/windows-enable-log-access \
   --linux-user miata
 ```
 
-The Ubuntu script installs OpenSSH Server, disables SSH password and root login, installs the supplied public key, uses Windows `netsh.exe` to map TCP 2222 to WSL TCP 22, and permits that Windows port only from the supplied Mac IPv4 address on private networks. The WSL NAT address can change after `wsl --shutdown`; rerun the script to refresh the mapping when that happens.
+The Ubuntu script installs OpenSSH Server, disables SSH password and root login, installs the supplied public key, enables the Windows IP Helper service, uses Windows `netsh.exe` to map TCP 2222 to WSL TCP 22, and permits that Windows port only from the supplied Mac IPv4 address across Windows network profiles. The WSL NAT address can change after `wsl --shutdown`; rerun the script to refresh the mapping when that happens.
 
 The Mac can then read the project directly:
 

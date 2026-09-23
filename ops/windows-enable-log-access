@@ -55,6 +55,7 @@ find_windows_tool() {
 }
 net_exe=$(find_windows_tool net.exe)
 netsh_exe=$(find_windows_tool netsh.exe)
+sc_exe=$(find_windows_tool sc.exe)
 if ! "$net_exe" session >/dev/null 2>&1; then
   echo 'FAIL: close Ubuntu, then open Ubuntu with Run as administrator and rerun this command' >&2
   exit 1
@@ -115,12 +116,14 @@ except (ValueError, AssertionError):
     raise SystemExit('FAIL: cannot determine the default-route WSL IPv4 address')
 PY
 
+"$sc_exe" config iphlpsvc start= auto >/dev/null
+"$sc_exe" start iphlpsvc >/dev/null 2>&1 || true
 "$netsh_exe" interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" >/dev/null 2>&1 || true
 "$netsh_exe" interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" connectaddress="$wsl_ip" connectport=22 >/dev/null
 rule_name='lnd-ops WSL SSH from operator Mac'
 "$netsh_exe" advfirewall firewall delete rule name="$rule_name" >/dev/null 2>&1 || true
 "$netsh_exe" advfirewall firewall add rule name="$rule_name" dir=in action=allow enable=yes \
-  profile=private protocol=TCP localport="$listen_port" remoteip="$allowed_client_ip" >/dev/null
+  profile=any protocol=TCP localport="$listen_port" remoteip="$allowed_client_ip" >/dev/null
 
 "$netsh_exe" interface portproxy show v4tov4 | tr -d '\r'
 echo "OK: WSL SSH is available through Windows TCP $listen_port for client $allowed_client_ip"
