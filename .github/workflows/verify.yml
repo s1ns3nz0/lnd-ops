@@ -18,7 +18,8 @@ jobs:
             'ops/windows-host-state.ps1',
             'ops/windows-encryption-status.ps1',
             'ops/windows-backup-acl.ps1',
-            'ops/windows-enable-wsl.ps1'
+            'ops/windows-enable-wsl.ps1',
+            'ops/windows-enable-log-access.ps1'
           )
           foreach ($script in $scripts) {
             $tokens = $null

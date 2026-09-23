@@ -45,3 +45,15 @@ test('WSL K3s permits in-cluster API access and requires the Windows firewall ga
   assert.match(hostState, /lnd-ops-block-k3s-api/);
   assert.match(hostState, /LocalPort -notcontains '6443'/);
 });
+
+test('remote WSL log access is key-only and scoped to the operator Mac', async () => {
+  const source = await readFile(path.join(repo, 'ops/windows-enable-log-access.ps1'), 'utf8');
+  assert.match(source, /PasswordAuthentication no/);
+  assert.match(source, /PermitRootLogin no/);
+  assert.match(source, /-RemoteAddress \$AllowedClientIPv4/);
+  assert.match(source, /connectport=22/);
+  assert.match(source, /ssh-keygen -l/);
+  assert.match(source, /sshd -T -C/);
+  assert.match(source, /ip -4 route get 1\.1\.1\.1/);
+  assert.doesNotMatch(source, /PRIVATE KEY/);
+});

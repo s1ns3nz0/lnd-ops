@@ -96,3 +96,25 @@ Copy [the evidence template](evidence/windows-template.md) to `docs/evidence/win
 - the final success lines and hashes printed by the scripts, with usernames and host paths redacted.
 
 Never include seeds, passwords, macaroons, recovery keys, raw SCBs, kubeconfig contents, or the smoke log. Infrastructure acceptance is complete at the final `windows-smoke` success line. The Windows functional MVP exit check is complete only after encryption, wallets, the regtest channel/payments, both SCB copies, and wallet-preserving redeployment also pass on the real PC.
+
+## Optional: Mac read-only operator access to WSL logs
+
+To let the operator Mac read WSL logs without enabling SMB, create a dedicated Ed25519 key on the Mac and copy only its `.pub` line. From elevated Windows PowerShell in the Windows checkout:
+
+```powershell
+git pull
+$PublicKey = 'ssh-ed25519 AAAA... lnd-ops-mac-access'
+.\ops\windows-enable-log-access.ps1 `
+  -PublicKey $PublicKey `
+  -AllowedClientIPv4 172.30.1.14 `
+  -LinuxUser miata
+```
+
+The script installs OpenSSH Server inside Ubuntu, disables SSH password and root login, installs the supplied public key, maps Windows TCP 2222 to WSL TCP 22, and permits that Windows port only from the supplied Mac IPv4 address on private networks. The WSL NAT address can change after `wsl --shutdown`; rerun the script to refresh the mapping when that happens.
+
+The Mac can then read the project directly:
+
+```sh
+ssh -i ~/.ssh/lnd_ops_wsl -p 2222 miata@172.30.1.70 \
+  'cd /home/miata/src/lnd-ops && tail -n 100 windows-smoke.log'
+```
