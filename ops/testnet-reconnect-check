@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Disrupt one active testnet channel peer and verify automatic reconnection."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+BASE = [
+    "kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--",
+    "lncli", "--lnddir=/data/.lnd", "--network=testnet",
+]
+TIMEOUT_SECONDS = 120
+
+
+class Gate(Exception):
+    pass
+
+
+class Failure(Exception):
+    pass
+
+
+def call(*arguments, json_output=True):
+    result = subprocess.run(BASE + list(arguments), text=True, capture_output=True, timeout=120)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise Failure(detail[-1] if detail else f"lncli {arguments[0]} failed")
+    if not json_output:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise Failure(f"malformed lncli JSON for {arguments[0]}") from exc
+
+
+def connected_peers():
+    return {item.get("pub_key"): item for item in call("listpeers").get("peers", []) if item.get("pub_key")}
+
+
+def main(arguments):
+    if arguments != ["--confirm-peer-disruption"]:
+        print("Usage: ops/testnet-reconnect-check --confirm-peer-disruption", file=sys.stderr)
+        return 2
+    disrupted = None
+    address = None
+    try:
+        peers = connected_peers()
+        channels = call("listchannels").get("channels", [])
+        active_peers = sorted({
+            item.get("remote_pubkey") for item in channels
+            if item.get("active") and int(item.get("capacity", 0)) > 0 and item.get("remote_pubkey") in peers
+        })
+        if not active_peers:
+            raise Gate("an active channel with a connected testnet peer is required")
+        disrupted = active_peers[0]
+        address = peers[disrupted].get("address", "")
+        if not address:
+            raise Failure("selected peer has no reconnect address")
+        call("disconnectpeer", disrupted, json_output=False)
+        deadline = time.monotonic() + TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if disrupted in connected_peers():
+                print(f"OK testnet channel peer reconnected automatically within {TIMEOUT_SECONDS} seconds")
+                return 0
+            time.sleep(2)
+        raise Failure(f"testnet channel peer did not reconnect within {TIMEOUT_SECONDS} seconds")
+    except Gate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (Failure, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+        if disrupted and address:
+            try:
+                call("connect", f"{disrupted}@{address}", json_output=False)
+                print("RESTORED: explicit peer reconnect succeeded after automatic reconnect check failed", file=sys.stderr)
+            except (Failure, subprocess.TimeoutExpired):
+                print("ACTION: explicit peer restore also failed; reconnect the channel peer manually", file=sys.stderr)
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

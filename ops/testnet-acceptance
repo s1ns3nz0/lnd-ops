@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Read-only Phase 1 acceptance coordinator for the persistent testnet node."""
+
+import hashlib
+import json
+import os
+import pathlib
+import platform
+import re
+import subprocess
+import sys
+import urllib.parse
+from datetime import datetime, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+NAMESPACE = "lnd-testnet"
+POD = "lnd-0-0"
+RECENT_SECONDS = 3600
+REDEPLOY_MAX_AGE_SECONDS = 86400
+SCB_SOURCE = "/data/.lnd/data/chain/bitcoin/testnet/channel.backup"
+PROM_PVC = "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0"
+
+
+class ManualGate(Exception):
+    pass
+
+
+class InvariantFailure(Exception):
+    pass
+
+
+def command(args, timeout=120):
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise InvariantFailure(f"timed out: {pathlib.Path(args[0]).name}") from exc
+    if result.returncode == 10:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise ManualGate(detail[-1] if detail else f"manual gate: {pathlib.Path(args[0]).name}")
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise InvariantFailure(detail[-1] if detail else f"failed: {pathlib.Path(args[0]).name}")
+    return result.stdout
+
+
+def kubectl(*args):
+    return command(["kubectl", *args])
+
+
+def as_json(raw, subject):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InvariantFailure(f"malformed JSON: {subject}") from exc
+
+
+def kubectl_json(*args):
+    return as_json(kubectl(*args), args[-1])
+
+
+def lncli(operation, *args):
+    return kubectl_json(
+        "-n", NAMESPACE, "exec", POD, "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", "--network=testnet", operation, *args,
+    )
+
+
+def epoch(value, divisor=1):
+    try:
+        return int(value) / divisor
+    except (TypeError, ValueError):
+        return 0
+
+
+def live_state(now):
+    info = lncli("getinfo")
+    if not info.get("identity_pubkey"):
+        raise InvariantFailure("testnet node identity missing")
+    if not info.get("synced_to_chain"):
+        raise ManualGate("wait for the testnet node to synchronize to chain")
+    peers = lncli("listpeers").get("peers", [])
+    peer_keys = sorted({item.get("pub_key", "") for item in peers if re.fullmatch(r"[0-9a-fA-F]{66}", item.get("pub_key", ""))})
+    channels = lncli("listchannels").get("channels", [])
+    try:
+        public_active = [
+            item for item in channels
+            if item.get("active") and not item.get("private") and int(item.get("capacity", 0)) > 0
+        ]
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise InvariantFailure("testnet channel data is malformed") from exc
+    if not peer_keys:
+        raise ManualGate("connect to a reviewed external testnet peer")
+    if not public_active:
+        raise ManualGate("open and confirm an active public testnet channel")
+    channel_peers = {item.get("remote_pubkey", "") for item in public_active}
+    if not channel_peers.intersection(peer_keys):
+        raise ManualGate("the public channel peer must be connected")
+    payments = lncli("listpayments", "--include_incomplete").get("payments", [])
+    invoices = lncli("listinvoices").get("invoices", [])
+    try:
+        recent_outgoing = [
+            item for item in payments
+            if item.get("status") == "SUCCEEDED"
+            and 0 <= now - epoch(item.get("creation_time_ns") or item.get("creation_date"), 1_000_000_000 if item.get("creation_time_ns") else 1) <= RECENT_SECONDS
+        ]
+        recent_incoming = [
+            item for item in invoices
+            if item.get("state") == "SETTLED" and 0 <= now - epoch(item.get("settle_date")) <= RECENT_SECONDS
+        ]
+    except (TypeError, AttributeError) as exc:
+        raise InvariantFailure("testnet payment data is malformed") from exc
+    if not recent_outgoing or not recent_incoming:
+        raise ManualGate("make successful outgoing and incoming testnet payments within the last hour")
+    pvc = kubectl_json("-n", NAMESPACE, "get", "pvc", "data-lnd-0-0", "-o", "json")
+    prom = kubectl_json("-n", "lnd-monitoring", "get", "pvc", PROM_PVC, "-o", "json")
+    cluster = kubectl_json("get", "namespace", "kube-system", "-o", "json")
+    source_hash = kubectl("-n", NAMESPACE, "exec", POD, "-c", "lnd", "--", "sha256sum", SCB_SOURCE).split()[0]
+    if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+        raise InvariantFailure("testnet SCB source hash is invalid")
+    try:
+        lnd_history = as_json(command(["helm", "-n", NAMESPACE, "history", "lnd-ops", "-o", "json"]), "LND Helm history")
+        monitoring_history = as_json(command(["helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"]), "monitoring Helm history")
+        revisions = {"lnd-ops": int(lnd_history[-1]["revision"]), "lnd-ops-monitoring": int(monitoring_history[-1]["revision"])}
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise InvariantFailure("current Helm history is malformed") from exc
+    return {
+        "node_key": info["identity_pubkey"],
+        "external_peer_pubkeys": peer_keys,
+        "channel_points": sorted(item["channel_point"] for item in public_active),
+        "lnd_pvc_uid": pvc["metadata"]["uid"],
+        "prometheus_pvc_uid": prom["metadata"]["uid"],
+        "scb_source_sha256": source_hash,
+        "cluster_uid_sha256": hashlib.sha256(cluster["metadata"]["uid"].encode()).hexdigest(),
+        "helm_revisions": revisions,
+        "recent_outgoing_count": len(recent_outgoing),
+        "recent_incoming_count": len(recent_incoming),
+    }
+
+
+def latest_redeploy(now):
+    candidates = sorted(EVIDENCE.glob("testnet-redeploy-*.json"), key=lambda item: (item.stat().st_mtime_ns, item.name), reverse=True)
+    if not candidates:
+        raise ManualGate("run ops/redeploy-check to create testnet redeploy evidence")
+    path = candidates[0]
+    try:
+        raw = path.read_bytes()
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InvariantFailure(f"latest testnet redeploy evidence is unreadable or malformed: {path.name}") from exc
+    if path.stat().st_mode & 0o777 != 0o600 or path.stat().st_uid != os.getuid():
+        raise InvariantFailure(f"latest testnet redeploy evidence must be operator-owned mode 0600: {path.name}")
+    if data.get("schema") != "lnd-ops/redeploy-evidence/v1" or data.get("result") != "pass" or data.get("profile") != "testnet":
+        raise InvariantFailure(f"latest testnet redeploy evidence contract is invalid: {path.name}")
+    try:
+        finished = datetime.fromisoformat(data["finished_at"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantFailure("latest testnet redeploy completion time is invalid") from exc
+    if not 0 <= now - finished <= REDEPLOY_MAX_AGE_SECONDS:
+        raise ManualGate("run ops/redeploy-check; latest passing testnet evidence is older than 24 hours")
+    before, after = data.get("before"), data.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict) or not before or not after:
+        raise InvariantFailure("latest testnet redeploy snapshots are malformed")
+    preserved = (
+        "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid", "scb_source_sha256",
+        "scb_host_sha256", "scb_plaintext_sha256", "scb_format", "cluster_uid_sha256",
+        "prometheus_series_sha256", "prometheus_sample",
+    )
+    try:
+        for field in preserved:
+            if before[field] != after[field]:
+                raise InvariantFailure(f"latest testnet redeploy changed {field}")
+        for release in ("lnd-ops", "lnd-ops-monitoring"):
+            if int(after["helm_revisions"][release]) <= int(before["helm_revisions"][release]):
+                raise InvariantFailure(f"latest testnet redeploy did not advance {release}")
+        for field in ("scb_source_sha256", "scb_plaintext_sha256", "scb_host_sha256", "cluster_uid_sha256", "prometheus_series_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(after[field])):
+                raise InvariantFailure(f"latest testnet redeploy has invalid {field}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantFailure("latest testnet redeploy snapshots are malformed") from exc
+    return path, data, hashlib.sha256(raw).hexdigest()
+
+
+def verify_prometheus_history(after):
+    try:
+        sample_time, sample_value = after["prometheus_sample"]
+        series_hash = after["prometheus_series_sha256"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantFailure("testnet Prometheus evidence is malformed") from exc
+    query = urllib.parse.urlencode({"query": 'up{job="node-exporter"}', "time": str(sample_time)})
+    path = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + query
+    result = kubectl_json("get", "--raw", path)
+    for item in result.get("data", {}).get("result", []):
+        series = json.dumps(item.get("metric", {}), sort_keys=True, separators=(",", ":")).encode()
+        if hashlib.sha256(series).hexdigest() == series_hash and item.get("value") == [sample_time, sample_value]:
+            return
+    raise InvariantFailure("exact testnet Prometheus historical sample was not preserved")
+
+
+def verify_matches(current, evidence):
+    after = evidence["after"]
+    for field in ("node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid", "scb_source_sha256", "cluster_uid_sha256", "helm_revisions"):
+        if current[field] != after[field]:
+            raise InvariantFailure(f"current testnet {field} differs from redeploy evidence")
+    if after.get("scb_format") not in ("gpg-symmetric-v1", "plain-on-encrypted-volume-v1"):
+        raise InvariantFailure("testnet redeploy SCB format is invalid")
+    if after["scb_plaintext_sha256"] != current["scb_source_sha256"]:
+        raise InvariantFailure("testnet encrypted SCB plaintext hash differs from live source")
+    verify_prometheus_history(after)
+
+
+def write_result(payload, now):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    timestamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = EVIDENCE / f"testnet-acceptance-{timestamp}.json"
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def acceptance(now=None):
+    now = now if now is not None else datetime.now(timezone.utc).timestamp()
+    command([str(REPO / "ops/verify"), "testnet"])
+    command([str(REPO / "ops/verify-monitoring"), "--profile", "testnet"])
+    command([str(REPO / "ops/backup-status-encrypted"), "testnet", "lnd-0"])
+    current = live_state(now)
+    redeploy_path, redeploy, redeploy_digest = latest_redeploy(now)
+    verify_matches(current, redeploy)
+    payload = {
+        "schema": "lnd-ops/testnet-acceptance/v1",
+        "result": "pass",
+        "checked_at": datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "host": {"system": platform.system(), "machine": platform.machine()},
+        "profile": "testnet",
+        "freshness_seconds": RECENT_SECONDS,
+        "checks": {
+            "chain_sync": "pass", "external_peer": "pass", "active_public_channel": "pass",
+            "recent_outgoing_payment": "pass", "recent_incoming_payment": "pass",
+            "encrypted_scb": "pass", "monitoring": "pass", "wallet_preserving_redeploy": "pass",
+        },
+        "redeploy_evidence": redeploy_path.name,
+        "redeploy_evidence_sha256": redeploy_digest,
+        "current": current,
+    }
+    return write_result(payload, now), payload
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/testnet-acceptance", file=sys.stderr)
+        return 2
+    os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+    try:
+        path, payload = acceptance()
+        current = payload["current"]
+        print(
+            "OK testnet acceptance: synchronized node, "
+            f"{len(current['external_peer_pubkeys'])} external peer(s), {len(current['channel_points'])} public channel(s), "
+            "recent send/receive payments, encrypted SCB, monitoring and redeploy continuity"
+        )
+        print(f"Evidence: {path}")
+        return 0
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (InvariantFailure, OSError, KeyError, IndexError, TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

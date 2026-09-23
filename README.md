@@ -34,7 +34,7 @@ Success ends with `OK: Windows WSL 2 infrastructure smoke test passed`. Fresh wa
 
 ## Current operator slice
 
-The regtest, testnet, and monitoring infrastructure slices are implemented on Mac arm64 and Windows WSL 2 amd64. The Mac regtest wallet, channel, bidirectional payment, SCB, and [seed-plus-SCB recovery exercise](docs/evidence/mac-regtest-recovery-2026-09-23.md) passed. The Windows regtest wallet, channel, bidirectional payment, encrypted SCBs, live monitoring, and wallet-preserving redeployment also [passed](docs/evidence/windows-regtest-mvp-2026-09-23.md). Testnet funding and external-network exit checks remain pending. The post-MVP path through the final public demonstration is defined in the [portfolio demo roadmap](docs/portfolio-demo-roadmap.md).
+The regtest, testnet, and monitoring infrastructure slices are implemented on Mac arm64 and Windows WSL 2 amd64. The Mac regtest wallet, channel, bidirectional payment, SCB, and [seed-plus-SCB recovery exercise](docs/evidence/mac-regtest-recovery-2026-09-23.md) passed. The Windows regtest wallet, channel, bidirectional payment, encrypted SCBs, live monitoring, and wallet-preserving redeployment also [passed](docs/evidence/windows-regtest-mvp-2026-09-23.md). Testnet funding and external-network exit checks remain pending; follow the [testnet Phase 1 runbook](docs/testnet-runbook.md). The post-MVP path through the final public demonstration is defined in the [portfolio demo roadmap](docs/portfolio-demo-roadmap.md).
 
 The [clean-start runbook](docs/clean-start-runbook.md) gives the guarded deletion, fresh deployment, repeat deployment, and evidence procedure for both target hosts. Its Windows path still requires a run on the actual PC.
 

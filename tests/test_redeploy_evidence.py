@@ -26,6 +26,8 @@ class RedeployEvidenceTests(unittest.TestCase):
             "prometheus_pvc_uid": "prom-pvc",
             "scb_source_sha256": "a" * 64,
             "scb_host_sha256": "a" * 64,
+            "scb_plaintext_sha256": "a" * 64,
+            "scb_format": "plain-on-encrypted-volume-v1",
             "cluster_uid": "cluster-uid",
             "helm_revisions": {
                 "lnd-ops": lnd_revision,

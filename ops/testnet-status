@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Read-only progress gate for the single persistent testnet LND node."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+BASE = ["kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--", "lncli", "--lnddir=/data/.lnd", "--network=testnet"]
+
+
+class Gate(Exception):
+    pass
+
+
+class Failure(Exception):
+    pass
+
+
+def lncli(*args):
+    result = subprocess.run(BASE + list(args), text=True, capture_output=True, timeout=120)
+    if result.returncode:
+        raise Gate("create or unlock the testnet wallet")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise Failure(f"malformed lncli JSON for {args[0]}") from exc
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/testnet-status", file=sys.stderr)
+        return 2
+    try:
+        info = lncli("getinfo")
+        if not info.get("identity_pubkey"):
+            raise Failure("testnet node identity missing")
+        if not info.get("synced_to_chain"):
+            raise Gate(f"wait for Neutrino chain sync; current block height {info.get('block_height', 0)}")
+        balance = lncli("walletbalance")
+        confirmed = int(balance.get("confirmed_balance", 0))
+        if confirmed <= 0:
+            raise Gate("fund a fresh testnet on-chain address and wait for confirmation")
+        peers = lncli("listpeers").get("peers", [])
+        if not peers:
+            raise Gate("connect to a reviewed external testnet Lightning peer")
+        channels = lncli("listchannels").get("channels", [])
+        public_active = [
+            channel for channel in channels
+            if channel.get("active") and not channel.get("private") and int(channel.get("capacity", 0)) > 0
+        ]
+        if not public_active:
+            raise Gate("open and confirm an active public testnet channel")
+        payments = lncli("listpayments", "--include_incomplete").get("payments", [])
+        succeeded = [payment for payment in payments if payment.get("status") == "SUCCEEDED"]
+        if not succeeded:
+            raise Gate("pay a reviewed testnet BOLT11 invoice")
+        invoices = lncli("listinvoices").get("invoices", [])
+        settled = [invoice for invoice in invoices if invoice.get("state") == "SETTLED"]
+        if not settled:
+            raise Gate("have an external testnet payer settle an invoice from this node")
+        print(
+            "OK testnet progress: synced node, confirmed wallet balance, "
+            f"{len(peers)} peer(s), {len(public_active)} active public channel(s), "
+            f"{len(succeeded)} successful outgoing payment(s), {len(settled)} settled incoming invoice(s)"
+        )
+        return 0
+    except Gate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (Failure, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

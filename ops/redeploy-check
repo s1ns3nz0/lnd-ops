@@ -67,13 +67,24 @@ def snapshot(scb_host, history_time=None, history_series=None):
     channel_points = sorted(channel["channel_point"] for channel in channels)
     if not scb_host.is_file() or scb_host.stat().st_size == 0:
         raise ManualGate("Copy the testnet SCB to the host with ops/backup-scb")
-    host_hash = hashlib.sha256(scb_host.read_bytes()).hexdigest()
     try:
         source_hash = kubectl("-n", namespace, "exec", pod, "--", "sha256sum", scb_source).split()[0]
     except (RuntimeError, IndexError) as exc:
         raise ManualGate("LND SCB is absent; open a channel and run ops/backup-scb") from exc
-    if source_hash != host_hash:
-        raise ManualGate("SCB source and host copy differ; run ops/backup-scb")
+    host_hash = hashlib.sha256(scb_host.read_bytes()).hexdigest()
+    if scb_host.suffix == ".gpg":
+        record = scb_host.parent / ".last-success"
+        try:
+            _, plain_hash, cipher_hash, backup_format = record.read_text().split()
+        except (OSError, ValueError) as exc:
+            raise ManualGate("Encrypted testnet SCB transfer record is absent or invalid") from exc
+        if backup_format != "gpg-symmetric-v1" or cipher_hash != host_hash or plain_hash != source_hash:
+            raise ManualGate("Encrypted testnet SCB or transfer record differs from the source")
+    else:
+        plain_hash = host_hash
+        backup_format = "plain-on-encrypted-volume-v1"
+        if source_hash != host_hash:
+            raise ManualGate("SCB source and host copy differ; run ops/backup-scb")
     testnet_revision = int(json.loads(run("helm", "-n", namespace, "history", "lnd-ops", "-o", "json"))[-1]["revision"])
     monitoring_revision = int(json.loads(run("helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"])
     samples = prometheus_query('up{job="node-exporter"}', history_time)
@@ -91,6 +102,8 @@ def snapshot(scb_host, history_time=None, history_series=None):
         "prometheus_pvc_uid": prom_pvc["metadata"]["uid"],
         "scb_source_sha256": source_hash,
         "scb_host_sha256": host_hash,
+        "scb_plaintext_sha256": plain_hash,
+        "scb_format": backup_format,
         "cluster_uid": cluster_namespace["metadata"]["uid"],
         "helm_revisions": {"lnd-ops": testnet_revision, "lnd-ops-monitoring": monitoring_revision},
         "prometheus_sample": sample["value"],
@@ -99,6 +112,9 @@ def snapshot(scb_host, history_time=None, history_series=None):
 
 
 def host_scb_path():
+    encrypted = pathlib.Path.home() / "lnd-ops-backups-encrypted/testnet/lnd-0/channel.backup.gpg"
+    if encrypted.is_file():
+        return encrypted
     if sys.platform == "darwin":
         return pathlib.Path.home() / "lnd-ops-backups/testnet/lnd-0/channel.backup"
     osrelease = pathlib.Path("/proc/sys/kernel/osrelease")
@@ -238,6 +254,8 @@ def evidence_snapshot(data):
         "prometheus_pvc_uid": data["prometheus_pvc_uid"],
         "scb_source_sha256": data["scb_source_sha256"],
         "scb_host_sha256": data["scb_host_sha256"],
+        "scb_plaintext_sha256": data["scb_plaintext_sha256"],
+        "scb_format": data["scb_format"],
         "cluster_uid_sha256": hashlib.sha256(data["cluster_uid"].encode()).hexdigest(),
         "helm_revisions": data["helm_revisions"],
         "prometheus_series_sha256": hashlib.sha256(series).hexdigest(),
@@ -260,7 +278,7 @@ def write_evidence(path, before, after, started_at, finished_at=None):
         if profile == "regtest" else
         [
             "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid",
-            "scb_source_sha256", "scb_host_sha256", "cluster_uid_sha256",
+            "scb_source_sha256", "scb_host_sha256", "scb_plaintext_sha256", "scb_format", "cluster_uid_sha256",
             "prometheus_series_sha256", "prometheus_sample",
         ]
     )
@@ -384,7 +402,7 @@ def main(arguments):
                 time.sleep(2)
         for field in (
             "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid",
-            "scb_source_sha256", "scb_host_sha256", "cluster_uid",
+            "scb_source_sha256", "scb_host_sha256", "scb_plaintext_sha256", "scb_format", "cluster_uid",
         ):
             if before[field] != after[field]:
                 raise RuntimeError(f"Redeploy changed {field}")

@@ -307,8 +307,10 @@ def acceptance(now=None):
 
 
 def main(arguments):
+    if arguments == ["testnet"]:
+        return subprocess.run([str(REPO / "ops/testnet-acceptance")]).returncode
     if arguments != ["regtest"]:
-        print("Usage: ops/acceptance regtest", file=sys.stderr)
+        print("Usage: ops/acceptance regtest|testnet", file=sys.stderr)
         return 2
     os.environ.setdefault("KUBECONFIG", str(KUBECONFIG))
     try:

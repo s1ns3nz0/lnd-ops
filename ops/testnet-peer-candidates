@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""List live public testnet graph candidates without selecting or connecting one."""
+
+import collections
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/testnet-peer-candidates", file=sys.stderr)
+        return 2
+    command = [
+        "kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", "--network=testnet", "describegraph", "--include_unannounced=false",
+    ]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, timeout=120)
+        if result.returncode:
+            print("ACTION: unlock and fully sync the testnet wallet before selecting a peer", file=sys.stderr)
+            return 10
+        graph = json.loads(result.stdout)
+        degree = collections.Counter()
+        for edge in graph.get("edges", []):
+            degree[edge.get("node1_pub", "")] += 1
+            degree[edge.get("node2_pub", "")] += 1
+        candidates = []
+        for node in graph.get("nodes", []):
+            pubkey = node.get("pub_key", "")
+            addresses = [entry.get("addr", "") for entry in node.get("addresses", [])]
+            clearnet = [address for address in addresses if address and ".onion:" not in address]
+            if len(pubkey) == 66 and clearnet:
+                candidates.append((degree[pubkey], node.get("alias", ""), pubkey, clearnet[0]))
+        candidates.sort(reverse=True)
+        if not candidates:
+            print("ACTION: wait for testnet graph sync; no announced clearnet peer candidate is available", file=sys.stderr)
+            return 10
+        print("CHANNELS ALIAS PUBKEY@ADDRESS")
+        for channels, alias, pubkey, address in candidates[:10]:
+            print(f"{channels} {alias or '-'} {pubkey}@{address}")
+        print("Review the operator and address independently before connecting or funding a channel.")
+        return 0
+    except (json.JSONDecodeError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        print(f"FAIL: cannot read testnet graph: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
