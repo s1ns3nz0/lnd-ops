@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+osrelease_file=${LND_OPS_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}
+
+[[ ( "${1:-}" == --check-only || "${1:-}" == --confirm-recovery-key-recorded ) && $# -eq 1 ]] || {
+  echo 'Usage: ops/check-host-encryption --check-only|--confirm-recovery-key-recorded' >&2
+  echo 'Record the host recovery key offline before using this confirmation.' >&2
+  exit 2
+}
+mode=$1
+
+case "$(uname -s)" in
+  Darwin)
+    command -v fdesetup >/dev/null 2>&1 || {
+      echo 'FAIL: fdesetup is unavailable' >&2
+      exit 1
+    }
+    status=$(fdesetup isactive 2>/dev/null || true)
+    [[ "$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')" == true ]] || {
+      echo 'FAIL: FileVault is not active on this Mac' >&2
+      exit 1
+    }
+    lima_home=${LIMA_HOME:-$HOME/.lima}
+    case "$lima_home/" in
+      "$HOME/"*) ;;
+      *)
+        echo "FAIL: Lima data directory must remain under the FileVault-protected home: $lima_home" >&2
+        exit 1
+        ;;
+    esac
+    echo 'OK: FileVault protects the Mac host volume'
+    echo "OK: Lima data directory is under the protected home: $lima_home"
+    ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' "$osrelease_file" 2>/dev/null || {
+      echo 'FAIL: Linux host is not WSL 2' >&2
+      exit 1
+    }
+    for tool in powershell.exe wslpath; do
+      command -v "$tool" >/dev/null 2>&1 || {
+        echo "FAIL: $tool is unavailable in WSL" >&2
+        exit 1
+      }
+    done
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] || {
+      echo 'FAIL: WSL_DISTRO_NAME is unavailable' >&2
+      exit 1
+    }
+    windows_script=$(wslpath -w "$repo_dir/ops/windows-encryption-status.ps1")
+    powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" -DistroName "$WSL_DISTRO_NAME"
+    ;;
+  *)
+    echo "FAIL: unsupported host: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$mode" == --check-only ]]; then
+  echo 'ACTION: record the host recovery key offline, then rerun with --confirm-recovery-key-recorded' >&2
+  exit 10
+fi
+echo 'OK: operator confirmed the host recovery key is recorded offline'
+echo 'Host encryption pre-funding gate passed'

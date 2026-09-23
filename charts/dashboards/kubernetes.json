@@ -1,0 +1,50 @@
+{
+  "uid": "lnd-ops-kubernetes",
+  "title": "LND Ops / Kubernetes",
+  "tags": ["lnd-ops", "kubernetes"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "K3s node Ready",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 7},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}
+    },
+    {
+      "id": 2,
+      "title": "LND Pods not Ready",
+      "type": "stat",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 7},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(kube_pod_status_ready{namespace=~\"lnd-regtest|lnd-testnet\",condition=\"false\"}) or vector(0)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}
+    },
+    {
+      "id": 3,
+      "title": "Guest filesystem available bytes",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 7, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "node_filesystem_avail_bytes{mountpoint=\"/\"}", "legendFormat": "{{instance}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "title": "Monitoring scrape targets up",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 7, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (job) (up{job=~\"node-exporter|kube-state-metrics\"})", "legendFormat": "{{job}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []}
+    }
+  ]
+}

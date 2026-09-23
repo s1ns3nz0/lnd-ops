@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lnd-ops
+description: Local LND operator MVP node slice
+type: application
+version: 0.2.0
+appVersion: 0.21.3-beta

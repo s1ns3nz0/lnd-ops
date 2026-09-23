@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_dir/ops/versions.env"
+case "$(uname -m)" in
+  arm64|aarch64) platform=linux/arm64 ;;
+  x86_64|amd64) platform=linux/amd64 ;;
+  *) echo 'Unsupported collector build architecture' >&2; exit 1 ;;
+esac
+case "$(uname -s)" in
+  Darwin)
+    host=mac
+    if ! command -v limactl >/dev/null 2>&1; then
+      bundled_lima=${XDG_DATA_HOME:-$HOME/.local/share}/lnd-ops/tools/lima-$LIMA_VERSION/bin
+      [[ -x "$bundled_lima/limactl" ]] || { echo 'Lima CLI missing; run ops/bootstrap' >&2; exit 1; }
+      export PATH="$bundled_lima:$PATH"
+    fi
+    ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2' >&2; exit 1; }
+    host=wsl
+    ;;
+  *) echo 'Supported hosts: macOS and WSL 2' >&2; exit 1 ;;
+esac
+command -v docker >/dev/null || { echo 'Docker required' >&2; exit 1; }
+docker buildx version >/dev/null
+if command -v shasum >/dev/null 2>&1; then
+  source_hash=$(cat "$repo_dir/collector/Dockerfile" "$repo_dir/collector/payment_metrics.py" | shasum -a 256 | awk '{print substr($1,1,16)}')
+else
+  source_hash=$(cat "$repo_dir/collector/Dockerfile" "$repo_dir/collector/payment_metrics.py" | sha256sum | awk '{print substr($1,1,16)}')
+fi
+image=localhost/lnd-ops-payment-collector:$source_hash
+base_digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["payment-collector-base"]["digest"])' "$repo_dir/ops/images.lock.json")
+base_tag=docker.io/library/python:lnd-ops-verified-${base_digest:7:16}-${platform#linux/}
+echo "Loading pinned Python base for $platform into Docker" >&2
+skopeo copy --override-os linux --override-arch "${platform#linux/}" \
+  "docker://docker.io/library/python@$base_digest" "docker-daemon:$base_tag" >&2
+echo "Building $image for $platform" >&2
+docker buildx build --pull=false --platform "$platform" --load \
+  --build-arg "BASE_IMAGE=$base_tag" --tag "$image" "$repo_dir/collector" >&2
+echo "Loading $image into project K3s" >&2
+if [[ "$host" == mac ]]; then
+  docker save "$image" | limactl shell lnd-ops-k3s -- sudo k3s ctr images import - >&2
+else
+  docker save "$image" | sudo k3s ctr images import - >&2
+fi
+printf '%s\n' "$image"

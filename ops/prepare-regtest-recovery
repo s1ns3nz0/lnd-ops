@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 && "$1" == --confirm-disposable ]] || {
+  echo 'Usage: ops/prepare-regtest-recovery --confirm-disposable' >&2
+  exit 2
+}
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+original_namespace=lnd-regtest
+recovery_namespace=lnd-regtest-recovery
+
+if kubectl get namespace "$recovery_namespace" >/dev/null 2>&1; then
+  echo 'Recovery namespace already exists; inspect the existing attempt' >&2
+  exit 1
+fi
+recovery_label=$(kubectl get namespace "$original_namespace" -o json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("metadata",{}).get("labels",{}).get("lnd-ops-recovery",""))')
+[[ "$recovery_label" != started ]] || { echo 'Recovery has already been started for this regtest identity' >&2; exit 1; }
+
+"$repo_dir/ops/backup-status" regtest lnd-0 >/dev/null || {
+  echo 'ACTION: open the regtest channel, then run ops/backup-scb regtest lnd-0 and ops/backup-status regtest lnd-0' >&2
+  exit 10
+}
+getinfo=$(kubectl -n "$original_namespace" exec lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest getinfo 2>/dev/null) || {
+  echo 'ACTION: unlock the original lnd-0 wallet' >&2
+  exit 10
+}
+peer_info=$(kubectl -n "$original_namespace" exec lnd-1-0 -- lncli --lnddir=/data/.lnd --network=regtest getinfo 2>/dev/null) || {
+  echo 'ACTION: unlock the lnd-1 peer wallet' >&2
+  exit 10
+}
+pubkey=$(printf '%s' "$getinfo" | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
+peer_key=$(printf '%s' "$peer_info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
+channel_details=$(kubectl -n "$original_namespace" exec lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest listchannels | \
+  python3 -c 'import json,sys; channels=json.load(sys.stdin).get("channels",[]); assert len(channels)==1; c=channels[0]; print(c["channel_point"],c["remote_pubkey"],c["local_balance"])') || {
+  echo 'ACTION: open a regtest channel before the recovery exercise' >&2
+  exit 10
+}
+read -r channel_point channel_peer local_balance <<< "$channel_details"
+[[ "$channel_peer" == "$peer_key" ]] || { echo 'The sole regtest channel does not connect to lnd-1' >&2; exit 1; }
+confirmed_before=$(kubectl -n "$original_namespace" exec lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest walletbalance | \
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["confirmed_balance"])')
+
+case "$(uname -s)" in
+  Darwin) backup_file=$HOME/lnd-ops-backups/regtest/lnd-0/channel.backup ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2' >&2; exit 1; }
+    windows_mount=$("$repo_dir/ops/windows-drive")
+    backup_file=$windows_mount/lnd-ops-backups/regtest/lnd-0/channel.backup
+    ;;
+  *) echo 'Supported hosts: macOS and WSL 2' >&2; exit 1 ;;
+esac
+[[ -s "$backup_file" ]] || { echo 'Verified host SCB disappeared' >&2; exit 1; }
+if command -v shasum >/dev/null 2>&1; then
+  host_hash=$(shasum -a 256 "$backup_file" | awk '{print $1}')
+else
+  host_hash=$(sha256sum "$backup_file" | awk '{print $1}')
+fi
+original_pvc_uid=$(kubectl -n "$original_namespace" get pvc data-lnd-0-0 -o jsonpath='{.metadata.uid}')
+
+echo 'Creating isolated recovery namespace and preventing ordinary regtest redeploy'
+kubectl create namespace "$recovery_namespace"
+kubectl label namespace "$recovery_namespace" lnd-ops-recovery=true pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
+kubectl annotate namespace "$recovery_namespace" \
+  lnd-ops.dev/original-pubkey="$pubkey" \
+  lnd-ops.dev/channel-point="$channel_point" \
+  lnd-ops.dev/confirmed-before="$confirmed_before" \
+  lnd-ops.dev/channel-local-before="$local_balance" \
+  lnd-ops.dev/scb-sha256="$host_hash" \
+  lnd-ops.dev/original-pvc-uid="$original_pvc_uid" \
+  --overwrite >/dev/null
+kubectl label namespace "$original_namespace" lnd-ops-recovery=started --overwrite >/dev/null
+echo 'Stopping original lnd-0 before creating the recovery node'
+kubectl -n "$original_namespace" scale statefulset/lnd-0 --replicas=0
+kubectl -n "$original_namespace" wait --for=delete pod/lnd-0-0 --timeout=3m
+kubectl apply -f "$repo_dir/charts/regtest-recovery-access.yaml" >/dev/null
+helm upgrade --install lnd-ops-recovery "$repo_dir/charts/lnd-ops" \
+  --namespace "$recovery_namespace" \
+  --values "$repo_dir/charts/lnd-ops/values-regtest-recovery.yaml" \
+  --wait --timeout 10m
+
+cat "$backup_file" | kubectl -n "$recovery_namespace" exec -i lnd-0-0 -- tee /data/recovery.backup >/dev/null
+kubectl -n "$recovery_namespace" exec lnd-0-0 -- chmod 600 /data/recovery.backup
+pod_hash=$(kubectl -n "$recovery_namespace" exec lnd-0-0 -- sha256sum /data/recovery.backup | awk '{print $1}')
+[[ "$host_hash" == "$pod_hash" ]] || { echo 'Recovery SCB copy checksum mismatch' >&2; exit 1; }
+
+printf 'Original lnd-0 stopped; recovery Pod ready; SCB sha256:%s; original pubkey=%s; channel=%s\n' "$host_hash" "$pubkey" "$channel_point"
+echo 'ACTION: interactively restore the original lnd-0 seed in the recovery Pod:'
+echo 'kubectl -n lnd-regtest-recovery exec -it lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest create --multi_file=/data/recovery.backup'
+echo 'Keep the original lnd-0 StatefulSet scaled to zero. Do not run ops/deploy regtest during recovery.'

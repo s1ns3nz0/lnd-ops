@@ -1,0 +1,117 @@
+{{- $root := . -}}
+{{- range $i := until (int .Values.lnd.nodes) }}
+{{- if $i }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: lnd-{{ $i }}
+spec:
+  selector:
+    app.kubernetes.io/name: lnd-{{ $i }}
+  ports:
+    - {name: rpc, port: 10009, targetPort: 10009}
+    - {name: p2p, port: 9735, targetPort: 9735}
+    {{- if $root.Values.monitoring.enabled }}
+    - {name: lnd-metrics, port: 8989, targetPort: 8989}
+    - {name: lndmon, port: 9092, targetPort: 9092}
+    {{- if $root.Values.monitoring.paymentCollectorImage }}
+    - {name: payment-metrics, port: 9093, targetPort: 9093}
+    {{- end }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lnd-{{ $i }}
+spec:
+  serviceName: lnd-{{ $i }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lnd-{{ $i }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lnd-{{ $i }}
+    spec:
+      serviceAccountName: lnd-ops
+      automountServiceAccountToken: false
+      containers:
+        - name: lnd
+          image: {{ $root.Values.lnd.image | quote }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --lnddir=/data/.lnd
+            {{- if eq $root.Values.profile "regtest" }}
+            - --bitcoin.regtest
+            - --bitcoin.node=bitcoind
+            - --bitcoind.rpchost={{ $root.Values.bitcoin.host }}:18443
+            - --bitcoind.rpcuser={{ $root.Values.bitcoin.rpcUser }}
+            - --bitcoind.rpcpass={{ $root.Values.bitcoin.rpcPassword }}
+            - --bitcoind.zmqpubrawblock=tcp://{{ $root.Values.bitcoin.host }}:28332
+            - --bitcoind.zmqpubrawtx=tcp://{{ $root.Values.bitcoin.host }}:28333
+            {{- else }}
+            - --bitcoin.testnet
+            - --bitcoin.node=neutrino
+            {{- end }}
+            - --rpclisten=0.0.0.0:10009
+            - --restlisten=0.0.0.0:8080
+            - --listen=0.0.0.0:9735
+            - --tlsextraip=127.0.0.1
+            {{- if $root.Values.monitoring.enabled }}
+            - --prometheus.enable
+            - --prometheus.listen=0.0.0.0:8989
+            {{- end }}
+          ports:
+            - {name: rpc, containerPort: 10009}
+            - {name: p2p, containerPort: 9735}
+            {{- if $root.Values.monitoring.enabled }}
+            - {name: lnd-metrics, containerPort: 8989}
+            {{- end }}
+          resources:
+            {{- toYaml $root.Values.lnd.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+        {{- if $root.Values.monitoring.enabled }}
+        - name: lndmon
+          image: {{ $root.Values.monitoring.lndmonImage | quote }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --lnd.host=127.0.0.1:10009
+            - --lnd.network={{ $root.Values.profile }}
+            - --lnd.macaroondir=/data/.lnd/data/chain/bitcoin/{{ $root.Values.profile }}
+            - --lnd.macaroonname=readonly.macaroon
+            - --lnd.tlspath=/data/.lnd/tls.cert
+            - --prometheus.listenaddr=0.0.0.0:9092
+            - --prometheus.logdir=/tmp/lndmon
+          ports:
+            - {name: lndmon, containerPort: 9092}
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+        {{- if $root.Values.monitoring.paymentCollectorImage }}
+        - name: payment-metrics
+          image: {{ $root.Values.monitoring.paymentCollectorImage | quote }}
+          imagePullPolicy: Never
+          env:
+            - {name: LND_TLS_CERT, value: /data/.lnd/tls.cert}
+            - {name: LND_READONLY_MACAROON, value: /data/.lnd/data/chain/bitcoin/{{ $root.Values.profile }}/readonly.macaroon}
+          ports:
+            - {name: payment-metrics, containerPort: 9093}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+        {{- end }}
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ $root.Values.lnd.storage }}
+{{- end }}

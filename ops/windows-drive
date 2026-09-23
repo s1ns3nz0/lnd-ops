@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+osrelease_file=${LND_OPS_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}
+mnt_root=${LND_OPS_MNT_ROOT:-/mnt}
+if [[ "$(uname -s)" != Linux ]] || ! grep -qiE '(microsoft|wsl)' "$osrelease_file" 2>/dev/null; then
+  echo 'FAIL: windows-drive must run inside WSL 2' >&2
+  exit 1
+fi
+[[ -n "${WSL_DISTRO_NAME:-}" ]] || { echo 'FAIL: WSL_DISTRO_NAME is unavailable' >&2; exit 1; }
+for tool in powershell.exe wslpath; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is unavailable" >&2; exit 1; }
+done
+script=$(wslpath -w "$repo_dir/ops/windows-encryption-status.ps1")
+drive=$(powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  -File "$script" -DistroName "$WSL_DISTRO_NAME" -OutputDrive | tr -d '\r\n')
+[[ "$drive" =~ ^[A-Za-z]:$ ]] || { echo "FAIL: invalid Windows backing drive: $drive" >&2; exit 1; }
+letter=$(printf '%s' "${drive%:}" | tr '[:upper:]' '[:lower:]')
+mount=$mnt_root/$letter
+[[ -d "$mount" ]] || { echo "FAIL: Windows backing drive is not mounted in WSL: $mount" >&2; exit 1; }
+printf '%s\n' "$mount"

@@ -1,0 +1,54 @@
+{
+  "lnd": {
+    "tag": "docker.io/lightninglabs/lnd:v0.21.3-beta",
+    "digest": "sha256:d29074335f3bffb2ac0e789b0d023c24fbb85ce67ecbfb7d677399842fe0535c"
+  },
+  "bitcoin-core": {
+    "tag": "docker.io/bitcoin/bitcoin:30.2",
+    "digest": "sha256:2b1d8a8d23c67b426afa8cd5b3ffd66b8c4ebbbceef3e214df8627aaead1f517"
+  },
+  "lndmon": {
+    "tag": "docker.io/lightninglabs/lndmon:v0.2.15",
+    "digest": "sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5"
+  },
+  "prometheus": {
+    "tag": "quay.io/prometheus/prometheus:v3.14.0-distroless",
+    "digest": "sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a"
+  },
+  "alertmanager": {
+    "tag": "quay.io/prometheus/alertmanager:v0.34.0",
+    "digest": "sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d"
+  },
+  "grafana": {
+    "tag": "docker.io/grafana/grafana:13.2.2-distroless",
+    "digest": "sha256:69a5d2d957ca0bba434c160dcd4f2d07de9d6c756a0ba10ae7f52b72ced1e4cc"
+  },
+  "grafana-sidecar": {
+    "tag": "quay.io/kiwigrid/k8s-sidecar:2.11.2",
+    "digest": "sha256:2912be006f62f9ea080194cf6d3afcd90daead8d101d0ba686a137a849f6a4f6"
+  },
+  "prometheus-operator": {
+    "tag": "quay.io/prometheus-operator/prometheus-operator:v0.94.0",
+    "digest": "sha256:cf153f64d6c38113fceb2cda7642365ea887f71edd7888f054e43e54cf177e55"
+  },
+  "prometheus-config-reloader": {
+    "tag": "quay.io/prometheus-operator/prometheus-config-reloader:v0.94.0",
+    "digest": "sha256:142a1f11df8dd165f00375b0b1826aecb9c9adeb05c39855893138d7c7575ff7"
+  },
+  "webhook-certgen": {
+    "tag": "ghcr.io/jkroepke/kube-webhook-certgen:1.8.8",
+    "digest": "sha256:cd85a621724cd9043a5b46a784578fa159437712f920166389fce830554e1c44"
+  },
+  "kube-state-metrics": {
+    "tag": "registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0",
+    "digest": "sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b"
+  },
+  "node-exporter": {
+    "tag": "quay.io/prometheus/node-exporter:v1.12.1-distroless",
+    "digest": "sha256:8c9bac11973b94b59be88d6e11fee4429aa743c8846cdc75d65b18db33f6a106"
+  },
+  "payment-collector-base": {
+    "tag": "docker.io/library/python:3.13-slim",
+    "digest": "sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+  }
+}

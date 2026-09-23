@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Prove that a testnet redeploy preserves funded LND and monitoring state."""
+import hashlib
+import json
+import os
+import pathlib
+import platform
+import subprocess
+import sys
+import time
+import urllib.parse
+from datetime import datetime, timezone
+
+repo = pathlib.Path(__file__).resolve().parent.parent
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+namespace = "lnd-testnet"
+pod = "lnd-0-0"
+scb_source = "/data/.lnd/data/chain/bitcoin/testnet/channel.backup"
+
+
+class ManualGate(Exception):
+    pass
+
+
+def run(*args):
+    result = subprocess.run(args, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f"Command failed: {args[0]} {args[1] if len(args) > 1 else ''}")
+    return result.stdout
+
+
+def kubectl(*args):
+    return run("kubectl", *args)
+
+
+def lncli(command):
+    try:
+        return json.loads(kubectl("-n", namespace, "exec", pod, "--", "lncli", "--lnddir=/data/.lnd", "--network=testnet", command))
+    except (RuntimeError, json.JSONDecodeError) as exc:
+        raise ManualGate("Create and unlock the testnet wallet before redeploy proof") from exc
+
+
+def prometheus_query(query, at=None):
+    params = {"query": query}
+    if at is not None:
+        params["time"] = str(at)
+    path = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + urllib.parse.urlencode(params)
+    result = json.loads(kubectl("get", "--raw", path))
+    if result.get("status") != "success":
+        raise RuntimeError("Prometheus query failed")
+    return result["data"]["result"]
+
+
+def snapshot(scb_host, history_time=None, history_series=None):
+    cluster_namespace = json.loads(kubectl("get", "namespace", "kube-system", "-o", "json"))
+    pvc = json.loads(kubectl("-n", namespace, "get", "pvc", "data-lnd-0-0", "-o", "json"))
+    prom_pvc = json.loads(kubectl("-n", "lnd-monitoring", "get", "pvc", "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0", "-o", "json"))
+    info = lncli("getinfo")
+    channels = lncli("listchannels").get("channels", [])
+    if not info.get("identity_pubkey") or not channels:
+        raise ManualGate("Testnet node identity and at least one open channel are required")
+    if not all(int(channel.get("capacity", 0)) > 0 for channel in channels):
+        raise ManualGate("Every open testnet channel must have positive capacity")
+    channel_points = sorted(channel["channel_point"] for channel in channels)
+    if not scb_host.is_file() or scb_host.stat().st_size == 0:
+        raise ManualGate("Copy the testnet SCB to the host with ops/backup-scb")
+    host_hash = hashlib.sha256(scb_host.read_bytes()).hexdigest()
+    try:
+        source_hash = kubectl("-n", namespace, "exec", pod, "--", "sha256sum", scb_source).split()[0]
+    except (RuntimeError, IndexError) as exc:
+        raise ManualGate("LND SCB is absent; open a channel and run ops/backup-scb") from exc
+    if source_hash != host_hash:
+        raise ManualGate("SCB source and host copy differ; run ops/backup-scb")
+    testnet_revision = int(json.loads(run("helm", "-n", namespace, "history", "lnd-ops", "-o", "json"))[-1]["revision"])
+    monitoring_revision = int(json.loads(run("helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"])
+    samples = prometheus_query('up{job="node-exporter"}', history_time)
+    if history_series is not None:
+        samples = [sample for sample in samples if sample["metric"] == history_series]
+    if not samples:
+        raise ManualGate("Prometheus node-exporter history is required before redeploy proof")
+    sample = samples[0]
+    if sample["value"][1] != "1":
+        raise ManualGate("Prometheus node-exporter scrape must be healthy")
+    return {
+        "node_key": info["identity_pubkey"],
+        "channel_points": channel_points,
+        "lnd_pvc_uid": pvc["metadata"]["uid"],
+        "prometheus_pvc_uid": prom_pvc["metadata"]["uid"],
+        "scb_source_sha256": source_hash,
+        "scb_host_sha256": host_hash,
+        "cluster_uid": cluster_namespace["metadata"]["uid"],
+        "helm_revisions": {"lnd-ops": testnet_revision, "lnd-ops-monitoring": monitoring_revision},
+        "prometheus_sample": sample["value"],
+        "prometheus_series": sample["metric"],
+    }
+
+
+def host_scb_path():
+    if sys.platform == "darwin":
+        return pathlib.Path.home() / "lnd-ops-backups/testnet/lnd-0/channel.backup"
+    osrelease = pathlib.Path("/proc/sys/kernel/osrelease")
+    if osrelease.is_file() and "microsoft" in osrelease.read_text().lower():
+        mount = run(str(repo / "ops/windows-drive")).strip()
+        return pathlib.Path(mount) / "lnd-ops-backups/testnet/lnd-0/channel.backup"
+    raise RuntimeError("Supported hosts: macOS and WSL 2")
+
+
+def default_evidence_path(now=None):
+    now = now or datetime.now(timezone.utc)
+    state_home = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state"))
+    return state_home / "lnd-ops/evidence" / f"testnet-redeploy-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+
+
+def evidence_root():
+    state_home = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state"))
+    return (state_home / "lnd-ops/evidence").resolve()
+
+
+def evidence_snapshot(data):
+    series = json.dumps(data["prometheus_series"], sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "node_key": data["node_key"],
+        "channel_points": data["channel_points"],
+        "lnd_pvc_uid": data["lnd_pvc_uid"],
+        "prometheus_pvc_uid": data["prometheus_pvc_uid"],
+        "scb_source_sha256": data["scb_source_sha256"],
+        "scb_host_sha256": data["scb_host_sha256"],
+        "cluster_uid_sha256": hashlib.sha256(data["cluster_uid"].encode()).hexdigest(),
+        "helm_revisions": data["helm_revisions"],
+        "prometheus_series_sha256": hashlib.sha256(series).hexdigest(),
+        "prometheus_sample": data["prometheus_sample"],
+    }
+
+
+def write_evidence(path, before, after, started_at, finished_at=None):
+    finished_at = finished_at or datetime.now(timezone.utc)
+    payload = {
+        "schema": "lnd-ops/redeploy-evidence/v1",
+        "result": "pass",
+        "started_at": started_at.isoformat().replace("+00:00", "Z"),
+        "finished_at": finished_at.isoformat().replace("+00:00", "Z"),
+        "host": {"system": platform.system(), "machine": platform.machine()},
+        "profile": "testnet",
+        "resources": {
+            "namespace": namespace,
+            "lnd_statefulset": "lnd-0",
+            "lnd_pvc": "data-lnd-0-0",
+            "monitoring_namespace": "lnd-monitoring",
+            "prometheus_release": "lnd-ops-monitoring",
+        },
+        "commands": ["ops/deploy testnet", "ops/deploy-monitoring"],
+        "preserved": [
+            "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid",
+            "scb_source_sha256", "scb_host_sha256", "cluster_uid_sha256",
+            "prometheus_series_sha256", "prometheus_sample",
+        ],
+        "before": evidence_snapshot(before),
+        "after": evidence_snapshot(after),
+    }
+    root = evidence_root()
+    path = path.resolve()
+    if not path.is_relative_to(root):
+        raise RuntimeError(f"Evidence path must remain under {root}")
+    if path.exists():
+        raise RuntimeError(f"Evidence path already exists: {path}")
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def parse_args(arguments):
+    if not arguments:
+        return default_evidence_path()
+    if len(arguments) == 2 and arguments[0] == "--evidence":
+        candidate = pathlib.Path(arguments[1]).expanduser()
+        if not candidate.is_absolute():
+            candidate = evidence_root() / candidate
+        candidate = candidate.resolve()
+        if not candidate.is_relative_to(evidence_root()):
+            raise ValueError(f"Evidence path must remain under {evidence_root()}")
+        if candidate.parent != evidence_root():
+            raise ValueError("Evidence NAME must be a filename, not a nested path")
+        return candidate
+    raise ValueError("Usage: ops/redeploy-check [--evidence FILE]")
+
+
+def main(arguments):
+    try:
+        started_at = datetime.now(timezone.utc)
+        evidence_path = parse_args(arguments)
+        if evidence_path.exists():
+            raise RuntimeError(f"Evidence path already exists: {evidence_path}")
+        scb_host = host_scb_path()
+        before = snapshot(scb_host)
+        print(f"Preflight passed: {len(before['channel_points'])} channel(s), SCB and Prometheus history present")
+        subprocess.run([str(repo / "ops/deploy"), "testnet"], check=True)
+        subprocess.run([str(repo / "ops/deploy-monitoring")], check=True)
+        fixed_time = float(before["prometheus_sample"][0])
+        for attempt in range(30):
+            try:
+                after = snapshot(scb_host, fixed_time, before["prometheus_series"])
+                break
+            except ManualGate:
+                if attempt == 29:
+                    raise
+                time.sleep(2)
+        for field in (
+            "node_key", "channel_points", "lnd_pvc_uid", "prometheus_pvc_uid",
+            "scb_source_sha256", "scb_host_sha256", "cluster_uid",
+        ):
+            if before[field] != after[field]:
+                raise RuntimeError(f"Redeploy changed {field}")
+        if before["prometheus_series"] != after["prometheus_series"] or before["prometheus_sample"] != after["prometheus_sample"]:
+            raise RuntimeError("Prometheus historical sample changed or disappeared")
+        for release in before["helm_revisions"]:
+            if after["helm_revisions"][release] <= before["helm_revisions"][release]:
+                raise RuntimeError(f"Redeploy did not advance Helm revision for {release}")
+        write_evidence(evidence_path, before, after, started_at)
+        print(f"OK redeploy preserved node key, {len(before['channel_points'])} channel(s), both PVCs, SCB and Prometheus history")
+        print(f"Evidence: {evidence_path}")
+        return 0
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

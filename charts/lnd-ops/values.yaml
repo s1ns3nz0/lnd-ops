@@ -1,0 +1,22 @@
+profile: regtest
+lnd:
+  image: docker.io/lightninglabs/lnd@sha256:d29074335f3bffb2ac0e789b0d023c24fbb85ce67ecbfb7d677399842fe0535c
+  nodes: 2
+  storage: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+bitcoin:
+  enabled: true
+  host: bitcoin
+  image: docker.io/bitcoin/bitcoin@sha256:2b1d8a8d23c67b426afa8cd5b3ffd66b8c4ebbbceef3e214df8627aaead1f517
+  storage: 10Gi
+  rpcUser: regtest
+  rpcPassword: local-regtest-only
+monitoring:
+  enabled: false
+  lndmonImage: docker.io/lightninglabs/lndmon@sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5
+  paymentCollectorImage: ""

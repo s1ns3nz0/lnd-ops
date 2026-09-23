@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 && "$1" == --confirm-disposable ]] || {
+  echo 'Usage: ops/reset-recovered-regtest --confirm-disposable' >&2
+  exit 2
+}
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+
+if ! "$repo_dir/ops/verify-regtest-recovery"; then
+  echo 'Recovery proof has not passed; refusing to delete wallet-bearing regtest PVCs' >&2
+  exit 10
+fi
+state=$(kubectl get namespace lnd-regtest -o json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("metadata",{}).get("labels",{}).get("lnd-ops-recovery",""))')
+[[ "$state" == started ]] || { echo 'Original regtest namespace is not marked as a recovery exercise' >&2; exit 1; }
+
+echo 'Deleting verified disposable recovery namespace and PVC'
+kubectl delete namespace lnd-regtest-recovery --wait=true
+echo 'Deleting original disposable regtest namespace, Bitcoin chain, and PVCs'
+kubectl delete namespace lnd-regtest --wait=true
+for namespace in lnd-regtest-recovery lnd-regtest; do
+  if kubectl get namespace "$namespace" >/dev/null 2>&1; then
+    echo "Namespace still exists: $namespace" >&2
+    exit 1
+  fi
+done
+echo 'Both disposable regtest namespaces are absent; a fresh ops/deploy regtest can recreate them'

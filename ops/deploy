@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+profile=${1:-}
+case "$profile" in
+  regtest|testnet) ;;
+  *) echo 'Usage: ops/deploy regtest|testnet [--monitoring]' >&2; exit 2 ;;
+esac
+[[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --monitoring ) ]] || {
+  echo 'Usage: ops/deploy regtest|testnet [--monitoring]' >&2
+  exit 2
+}
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+[[ -r "$KUBECONFIG" ]] || { echo "Kubeconfig missing: $KUBECONFIG; run ops/bootstrap" >&2; exit 1; }
+kubectl get nodes >/dev/null
+namespace=lnd-$profile
+if [[ "$profile" == regtest ]]; then
+  recovery_state=$(kubectl get namespace "$namespace" -o json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("metadata",{}).get("labels",{}).get("lnd-ops-recovery",""))' 2>/dev/null || true)
+  [[ "$recovery_state" != started ]] || {
+    echo 'Regtest recovery is in progress; refusing to restart the original node identity' >&2
+    exit 1
+  }
+fi
+
+monitoring=false
+if helm -n "$namespace" status lnd-ops >/dev/null 2>&1; then
+  monitoring=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("monitoring", {}).get("enabled", False)).lower())')
+fi
+if [[ "${2:-}" == --monitoring ]]; then
+  if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
+    echo "ACTION: deploy the wallet-free $profile profile before enabling monitoring" >&2
+    exit 10
+  fi
+  nodes=1
+  [[ "$profile" == regtest ]] && nodes=2
+  for ((i=0; i<nodes; i++)); do
+    pod=lnd-$i-0
+    if ! kubectl -n "$namespace" exec "$pod" -- test -s "/data/.lnd/data/chain/bitcoin/$profile/readonly.macaroon" >/dev/null 2>&1; then
+      echo "ACTION $pod: create/unlock wallet and provide its read-only macaroon before enabling monitoring" >&2
+      exit 10
+    fi
+    if ! kubectl -n "$namespace" exec "$pod" -- lncli --lnddir=/data/.lnd --network="$profile" getinfo >/dev/null 2>&1; then
+      echo "ACTION $pod: unlock wallet before enabling monitoring" >&2
+      exit 10
+    fi
+  done
+  monitoring=true
+fi
+
+if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
+  echo "Creating namespace $namespace"
+  kubectl create namespace "$namespace"
+fi
+kubectl label namespace "$namespace" pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
+
+echo "Applying $profile chart to $namespace"
+helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"
+  --namespace "$namespace"
+  --values "$repo_dir/charts/lnd-ops/values-$profile.yaml"
+  --set "monitoring.enabled=$monitoring")
+if [[ "$monitoring" == true ]]; then
+  # Adding the sidecar restarts the Pod and LND may need a manual wallet unlock.
+  collector_image=$("$repo_dir/ops/build-collector")
+  helm_command+=(--set-string "monitoring.paymentCollectorImage=$collector_image")
+else
+  helm_command+=(--wait --timeout 15m)
+fi
+"${helm_command[@]}"
+kubectl -n "$namespace" get pods,pvc
+if [[ "$monitoring" == true ]]; then
+  echo "ACTION: after the $profile rollout, unlock any locked LND wallet and run ops/verify $profile and ops/verify-monitoring"
+fi

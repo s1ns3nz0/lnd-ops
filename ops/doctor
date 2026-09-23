@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_dir/ops/versions.env"
+
+failures=0
+warn() { printf 'WARN: %s\n' "$*"; }
+fail() { printf 'FAIL: %s\n' "$*"; failures=$((failures + 1)); }
+ok() { printf 'OK: %s\n' "$*"; }
+
+kernel=$(uname -s)
+arch=$(uname -m)
+case "$arch" in
+  arm64|aarch64) platform=linux/arm64 ;;
+  x86_64|amd64) platform=linux/amd64 ;;
+  *) fail "unsupported CPU: $arch"; platform=unknown ;;
+esac
+
+case "$kernel" in
+  Darwin)
+    host=mac
+    if command -v limactl >/dev/null 2>&1; then
+      ok "Lima CLI available: $(limactl --version)"
+    elif [[ -x "${XDG_DATA_HOME:-$HOME/.local/share}/lnd-ops/tools/lima-$LIMA_VERSION/bin/limactl" ]]; then
+      ok "Pinned Lima $LIMA_VERSION bundle available"
+    else
+      warn 'Lima CLI missing; bootstrap must install pinned Lima before creating its VM'
+    fi
+    ;;
+  Linux)
+    if grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
+      host=wsl2
+      if "$repo_dir/ops/windows-preflight"; then
+        ok 'Windows 11 WSL 2 host preflight passed'
+      else
+        fail 'Windows 11 WSL 2 host preflight failed'
+      fi
+    else
+      fail 'Linux host is not WSL 2; this deployment target is not defined'
+      host=unknown
+    fi
+    ;;
+  *) fail "unsupported host: $kernel"; host=unknown ;;
+esac
+printf 'Target: %s (%s), image platform: %s\n' "$host" "$arch" "$platform"
+
+for tool in git helm kubectl curl python3 skopeo; do
+  if command -v "$tool" >/dev/null 2>&1; then ok "$tool available"; else fail "$tool missing"; fi
+done
+
+if command -v helm >/dev/null 2>&1; then
+  helm_version=$(helm version --short)
+  [[ "$helm_version" == "v$HELM_MAJOR."* ]] || fail "Helm $HELM_MAJOR required; found $helm_version"
+fi
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  ok 'Docker engine available'
+  if docker buildx version >/dev/null 2>&1; then
+    ok 'Docker Buildx available'
+  else
+    fail 'Docker Buildx missing'
+  fi
+else
+  fail 'Docker engine unavailable (needed for project image builds)'
+fi
+
+project_kubeconfig=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig
+if [[ -r "$project_kubeconfig" ]] && command -v kubectl >/dev/null 2>&1; then
+  if cluster_version=$(KUBECONFIG="$project_kubeconfig" kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}' --request-timeout=3s 2>/dev/null); then
+    ok "project cluster reachable: $cluster_version"
+  else
+    warn 'project kubeconfig exists but its cluster is not reachable yet'
+  fi
+fi
+
+if command -v df >/dev/null 2>&1; then
+  available_kib=$(df -Pk . | awk 'NR==2 {print $4}')
+  if [[ "$available_kib" =~ ^[0-9]+$ ]]; then
+    available_gib=$((available_kib / 1024 / 1024))
+    if (( available_gib < 80 )); then
+      warn "only ${available_gib} GiB free here; verify VM and chain storage capacity"
+    else
+      ok "${available_gib} GiB free here"
+    fi
+  fi
+fi
+
+if (( failures > 0 )); then
+  printf 'Preflight failed: %d required check(s)\n' "$failures" >&2
+  exit 1
+fi
+ok 'preflight passed'

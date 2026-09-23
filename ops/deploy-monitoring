@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+namespace=lnd-monitoring
+chart=$repo_dir/charts/vendor/kube-prometheus-stack-91.4.1.tgz
+expected=1bd5e7a88e758ed3ec22db0fe6e72b1352f3f0e7e5a93c79979f7edf361becdb
+if command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$chart" | awk '{print $1}')
+else
+  actual=$(sha256sum "$chart" | awk '{print $1}')
+fi
+[[ "$actual" == "$expected" ]] || { echo 'Vendored monitoring chart checksum mismatch' >&2; exit 1; }
+kubectl get nodes >/dev/null
+
+if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
+  kubectl create namespace "$namespace"
+fi
+kubectl label namespace "$namespace" lnd-ops-monitoring=true pod-security.kubernetes.io/enforce=privileged --overwrite >/dev/null
+
+kubectl -n "$namespace" create configmap lnd-ops-dashboards \
+  --from-file="$repo_dir/charts/dashboards" \
+  --dry-run=client -o yaml |
+  kubectl -n "$namespace" apply -f - >/dev/null
+kubectl -n "$namespace" label configmap lnd-ops-dashboards grafana_dashboard=1 --overwrite >/dev/null
+
+if ! kubectl -n "$namespace" get secret lnd-ops-grafana-admin >/dev/null 2>&1; then
+  staging=$(mktemp -d)
+  trap 'rm -rf "$staging"' EXIT
+  printf 'admin' > "$staging/admin-user"
+  python3 -c 'import secrets; print(secrets.token_urlsafe(32), end="")' > "$staging/admin-password"
+  kubectl -n "$namespace" create secret generic lnd-ops-grafana-admin \
+    --from-file=admin-user="$staging/admin-user" \
+    --from-file=admin-password="$staging/admin-password" >/dev/null
+  echo 'Created local Grafana administrator Secret'
+fi
+
+helm upgrade --install lnd-ops-monitoring "$chart" \
+  --namespace "$namespace" \
+  --values "$repo_dir/charts/monitoring-values.yaml" \
+  --wait --timeout 15m
+kubectl apply -f "$repo_dir/charts/monitoring-rules.yaml" >/dev/null
+
+# Helm's --wait does not wait for operator-managed Prometheus and Alertmanager
+# custom resources to become usable or for their scrape targets to appear.
+ready=false
+for attempt in {1..72}; do
+  if "$repo_dir/ops/verify-monitoring" --infrastructure-only >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  sleep 5
+done
+if [[ "$ready" != true ]]; then
+  "$repo_dir/ops/verify-monitoring" --infrastructure-only
+  echo "Monitoring did not become ready after $attempt checks" >&2
+  exit 1
+fi
+"$repo_dir/ops/verify-monitoring" --infrastructure-only
+kubectl -n "$namespace" get pods,pvc

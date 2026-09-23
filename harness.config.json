@@ -50,9 +50,9 @@
     "externalActions": "explicit-task-authorization"
   },
   "adapters": {
-    "active": [],
+    "active": ["project"],
     "definitions": {
-      "node": {
+      "project": {
         "testPolicy": {
           "platforms": [
             "linux"
@@ -61,7 +61,7 @@
           "vendorNeutral": true
         },
         "commands": {
-          "test": "npm test"
+          "verify": "ops/verify-source"
         }
       }
     }

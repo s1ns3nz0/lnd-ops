@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_dir"
+# shellcheck disable=SC1091
+source ops/versions.env
+
+for tool in bash python3 node helm; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is unavailable" >&2; exit 1; }
+done
+python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version'
+node -e 'const major=Number(process.versions.node.split(".")[0]); if (major < 20) process.exit(1)'
+[[ "$(helm version --short)" == "v$HELM_MAJOR."* ]] || { echo "FAIL: Helm $HELM_MAJOR is required" >&2; exit 1; }
+
+bash_count=0
+python_count=0
+while IFS= read -r -d '' script; do
+  IFS= read -r first_line < "$script" || true
+  case "$first_line" in
+    '#!/usr/bin/env bash') bash -n "$script"; bash_count=$((bash_count + 1)) ;;
+    '#!/usr/bin/env python3')
+      python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$script"
+      python_count=$((python_count + 1))
+      ;;
+  esac
+done < <(find ops -type f -print0)
+(( bash_count > 0 && python_count > 0 )) || { echo 'FAIL: no Bash or Python ops scripts discovered' >&2; exit 1; }
+python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("collector/payment_metrics.py").read_text())'
+
+python3 -m json.tool ops/images.lock.json >/dev/null
+dashboard_count=0
+while IFS= read -r -d '' dashboard; do
+  python3 -m json.tool "$dashboard" >/dev/null
+  dashboard_count=$((dashboard_count + 1))
+done < <(find charts/dashboards -type f -name '*.json' -print0)
+(( dashboard_count > 0 )) || { echo 'FAIL: no dashboard JSON files discovered' >&2; exit 1; }
+
+python_test_count=$(find tests -type f -name 'test_*.py' | wc -l | tr -d ' ')
+(( python_test_count > 0 )) || { echo 'FAIL: no Python tests discovered' >&2; exit 1; }
+python3 -m unittest discover -s tests -p 'test_*.py'
+node_tests=()
+while IFS= read -r -d '' test_file; do
+  node_tests+=("$test_file")
+done < <(find tests -type f -name '*.test.mjs' -print0)
+(( ${#node_tests[@]} > 0 )) || { echo 'FAIL: no Node tests discovered' >&2; exit 1; }
+node --test "${node_tests[@]}"
+
+helm lint charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml
+helm lint charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml
+helm lint charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml
+helm lint charts/vendor/kube-prometheus-stack-91.4.1.tgz -f charts/monitoring-values.yaml
+helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
+helm template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
+helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
+helm template lnd-ops-monitoring charts/vendor/kube-prometheus-stack-91.4.1.tgz \
+  -n lnd-monitoring -f charts/monitoring-values.yaml >/dev/null
+
+printf 'OK: syntax/JSON (%d Bash, %d Python, %d dashboards), discovered unit tests, and configured Helm lint/renders passed\n' \
+  "$bash_count" "$python_count" "$dashboard_count"
+echo 'NOTE: registry platforms, container builds, Kubernetes schema/install, and runtime behavior are separate checks'

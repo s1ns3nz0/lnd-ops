@@ -1,0 +1,4 @@
+profile: testnet
+lnd:
+  nodes: 1
+  storage: 30Gi

@@ -1,0 +1,12 @@
+# Mac full clean infrastructure bootstrap (2026-09-22)
+
+This is a clean-start proof for the wallet-free Mac infrastructure, from no project VM or K3s cluster. It is not proof of the complete MVP, any funded-node preservation, or the Windows host.
+
+1. Confirmed both regtest LND Pods had no `wallet.db` under their regtest data paths. `ops/reset-disposable regtest --confirm-unfunded` checked that condition again, then removed the regtest namespace and PVCs. Deleted the disposable `lnd-monitoring` namespace and its Prometheus PVC. The testnet namespace was absent.
+2. Ran `limactl stop lnd-ops-k3s` and `limactl delete --force lnd-ops-k3s`. This removed the project K3s cluster, its locally cached container images, volumes, and monitoring CRDs. The pinned Ubuntu image download cache on the Mac remained.
+3. `ops/doctor` passed, reporting the existing kubeconfig as unreachable before bootstrap. `ops/bootstrap` created and started a new Lima VM and K3s `v1.36.4+k3s1` node. K3s Secret encryption reported enabled and `lima-lnd-ops-k3s` became Ready. First boot took about two minutes; no manual VM restart was needed.
+4. `ops/deploy regtest` pulled images into the new K3s image store and created Bitcoin Core plus two LND Pods, all Running. Three new PVCs were Bound: Bitcoin `00b3768b-3efb-4697-ba12-d49e258d5482`, LND 0 `8c0b6a6d-1926-4b79-8f89-94464a8fd913`, and LND 1 `243115df-5332-4d13-98f9-a17534fb8ba1`. `ops/verify regtest` passed infrastructure checks and exited `10` at the two manual wallet gates.
+5. `ops/deploy-monitoring` installed the chart, CRDs, project dashboard, and alert rules into the fresh cluster. All six monitoring Pods reached Ready. The new 10 GiB Prometheus PVC was Bound (`08a6ffec-2a9b-4c62-a491-ddf5d349906f`). Its post-install `ops/verify-monitoring --infrastructure-only` check passed after Prometheus loaded both project alert rules. Grafana's authenticated API returned dashboard UID `lnd-ops-kubernetes` with four panels.
+6. `ops/deploy testnet` created its separate LND Pod (Running) and a 30 GiB Bound PVC (`65e1069a-6fdc-4c02-a6f1-0fd677698960`). `ops/verify testnet` passed infrastructure checks and exited `10` at its manual wallet gate.
+
+The three project namespaces are now present to allow the operator's manual wallet steps. This clean run used the installed Mac `limactl` 2.2.0; the bundled download path was tested separately. The Windows WSL 2 path, manual wallet/seed/channel/payment/recovery exercises, LND monitoring signals, and full stage 4 dashboards remain pending.

@@ -1,0 +1,23 @@
+# Mac stage 2 infrastructure reset evidence (2026-09-22)
+
+This proves the wallet-free infrastructure slice only. The two-wallet channel, payment, and SCB recovery exit check is pending operator wallet creation.
+
+1. `helm template` rendered both regtest (9 objects) and testnet (4 objects); `kubectl apply --dry-run=client` parsed both outputs.
+2. `ops/deploy regtest` created `lnd-regtest`, one Bitcoin Core Pod, two LND Pods, and three Bound PVCs. All three Pods reached Running. Bitcoin Core `getblockchaininfo` returned `chain=regtest`. LND logs reported that both wallets awaited creation.
+3. `ops/verify regtest` passed the Pod, PVC, ServiceAccount, ingress policy, and Bitcoin Core checks, then exited `10` with wallet creation actions for both LND nodes.
+4. A second `ops/deploy regtest` preserved the three PVC UIDs: `9e8893f1-c1a7-43c0-8274-3fb5c58a7993`, `fdaab7fd-8574-45b4-953b-0380d255f496`, and `e0c18f59-eea8-43f6-aeeb-a61f0a6559a3`.
+5. `ops/reset-disposable regtest --confirm-unfunded` checked that both wallets lacked `wallet.db`, deleted the namespace and PVCs, and confirmed namespace absence. `ops/deploy regtest` then recreated all resources; the three new PVC UIDs are `5cad3870-cd29-449e-82b5-cb6c3e7a23ce`, `8e1822c1-94ec-488f-8c75-c65911ac6241`, and `53856948-5afa-46c8-9547-d0eddd328c74`. All Pods again reached Running. `ops/verify regtest` again exited `10` at the manual wallet gate.
+
+6. To check without the K3s image cache, `ops/reset-disposable regtest --confirm-unfunded` removed the wallet-free namespace again. `limactl stop lnd-ops-k3s && limactl delete --force lnd-ops-k3s` removed the full VM, including K3s and its image store. `ops/bootstrap` recreated a Ready, encrypted K3s node. The first VM boot briefly stalled before SSH; a forced stop and second start recovered it. The bootstrap script then encountered a transient Secret-encryption API error while the new server was starting. A bounded retry was added, after which bootstrap passed. `ops/deploy regtest` pulled both pinned images into the new K3s containerd store and recreated three Running Pods with three Bound PVCs (`a2a921fe-ce07-4f79-8995-46259c139d75`, `6555faf7-37b0-4f8c-90f1-8c6100714fc6`, `d9d5822c-cae7-4eb8-83a3-ea553c2c39eb`). The Lima Ubuntu download cache remained on the Mac; project image layers did not.
+
+The required Windows run and stage 2 wallet/channel/payment/recovery exercise remain pending.
+
+The SCB commands now accept `regtest lnd-0` and `regtest lnd-1` in addition to the default testnet node. On the wallet-free Mac stack, `ops/backup-scb regtest lnd-0` exited `10` before creating a host file because no channel backup exists; `ops/backup-status regtest lnd-0` exited `10` for the absent host copy. `ops/backup-scb testnet lnd-1` rejected the invalid node with exit `2`. Shellcheck and Bash syntax checks passed. A real regtest SCB copy and recovery remain pending.
+
+A disposable Mac fixture with a mocked Kubernetes SCB confirmed that `ops/backup-scb regtest lnd-0` writes a 0600 backup and 0600 successful-transfer record, and `ops/backup-status regtest lnd-0` validates the source and recorded hashes. Changing the copy to mode 0644 made status exit `1`. The Windows PowerShell ACL set and verification paths have not been executed on Windows. This fixture does not prove a real LND SCB copy or recovery.
+
+`ops/exercise-regtest` now provides a rerunnable channel and payment exercise after manual wallet creation. On the fresh wallet-free Mac cluster it exited `10`; Bitcoin Core `listwalletdir` returned no wallets both before and after the run, confirming the manual gate stopped it before creating the mining wallet. The channel and payment success path remains pending both operator-created wallets.
+
+The recovery chart now renders one new LND StatefulSet without Bitcoin Core and points to the original regtest Bitcoin service. `ops/prepare-regtest-recovery --confirm-disposable` exited `10` before mutation on the wallet-free cluster; the original StatefulSet stayed at one replica and no recovery namespace or access policy appeared. A temporary `lnd-ops-recovery=started` namespace label made `ops/deploy regtest` exit `1` before Helm revision 2 changed; the label was then removed. The recovery success path remains untested until a real channel, host SCB, and operator-entered seed exist.
+
+`ops/reset-recovered-regtest --confirm-disposable` also exited `10` before deletion while the recovery proof was absent; all three regtest PVC UIDs remained unchanged. This tests the refusal path only. Full seed+SCB recovery, cleanup, and clean rerun still require operator-created disposable wallets and an actual channel.

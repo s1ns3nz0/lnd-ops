@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profile=${1:-}
+case "$profile" in
+  regtest) nodes=2 ;;
+  testnet) nodes=1 ;;
+  *) echo 'Usage: ops/verify regtest|testnet' >&2; exit 2 ;;
+esac
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+namespace=lnd-$profile
+
+kubectl -n "$namespace" get serviceaccount lnd-ops -o jsonpath='{.automountServiceAccountToken}' | grep -Fxq false
+kubectl -n "$namespace" get networkpolicy default-deny-ingress >/dev/null
+kubectl -n "$namespace" get namespace "$namespace" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -Fxq baseline
+
+if [[ "$profile" == regtest ]]; then
+  kubectl -n "$namespace" get networkpolicy regtest-peer-traffic lnd-to-bitcoin >/dev/null
+  kubectl -n "$namespace" rollout status statefulset/bitcoin --timeout=5m
+  kubectl -n "$namespace" exec bitcoin-0 -- bitcoin-cli -regtest \
+    -rpcuser=regtest -rpcpassword=local-regtest-only getblockchaininfo | \
+    python3 -c 'import json,sys; assert json.load(sys.stdin)["chain"] == "regtest"'
+fi
+
+pending=0
+for ((i=0; i<nodes; i++)); do
+  name=lnd-$i
+  kubectl -n "$namespace" rollout status "statefulset/$name" --timeout=5m
+  kubectl -n "$namespace" get pvc "data-$name-0" >/dev/null
+  if ! kubectl -n "$namespace" exec "$name-0" -- test -f "/data/.lnd/data/chain/bitcoin/$profile/admin.macaroon" >/dev/null 2>&1; then
+    echo "ACTION $name: create and unlock the $profile wallet; record its seed offline"
+    pending=1
+    continue
+  fi
+  if ! kubectl -n "$namespace" exec "$name-0" -- lncli --lnddir=/data/.lnd --network="$profile" getinfo | \
+      python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["identity_pubkey"]'; then
+    echo "ACTION $name: unlock wallet or inspect LND logs"
+    pending=1
+  else
+    echo "OK $name: wallet unlocked and node identity available"
+  fi
+done
+
+if (( pending )); then
+  echo 'Infrastructure checks passed; wallet gate pending' >&2
+  exit 10
+fi
+echo "OK $profile infrastructure and wallets"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_dir/ops/versions.env"
+if [[ "$(uname -s)" != Linux ]] || ! grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
+  echo 'FAIL: run this script inside the target WSL 2 Ubuntu distribution' >&2
+  exit 1
+fi
+[[ "$(uname -m)" == x86_64 ]] || { echo 'FAIL: Windows target requires amd64 WSL' >&2; exit 1; }
+command -v apt-get >/dev/null || { echo 'FAIL: Ubuntu apt-get is required' >&2; exit 1; }
+
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  ca-certificates curl git python3 skopeo docker.io docker-buildx
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+
+staging=$(mktemp -d)
+trap 'find "$staging" -type f -delete 2>/dev/null || true; rmdir "$staging/linux-amd64" "$staging" 2>/dev/null || true' EXIT
+helm_archive=$staging/helm.tar.gz
+curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o "$helm_archive"
+printf '%s  %s\n' "$HELM_LINUX_AMD64_SHA256" "$helm_archive" | sha256sum --check --status || {
+  echo 'FAIL: Helm archive checksum mismatch' >&2
+  exit 1
+}
+tar -xzf "$helm_archive" -C "$staging"
+sudo install -m 0755 "$staging/linux-amd64/helm" /usr/local/bin/helm
+
+kubectl_file=$staging/kubectl
+curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o "$kubectl_file"
+printf '%s  %s\n' "$KUBECTL_LINUX_AMD64_SHA256" "$kubectl_file" | sha256sum --check --status || {
+  echo 'FAIL: kubectl checksum mismatch' >&2
+  exit 1
+}
+sudo install -m 0755 "$kubectl_file" /usr/local/bin/kubectl
+
+helm version --short
+kubectl version --client
+skopeo --version
+if ! docker info >/dev/null 2>&1; then
+  echo 'ACTION: close this Ubuntu window, run wsl --shutdown in PowerShell, reopen Ubuntu, then run ops/doctor' >&2
+  exit 10
+fi
+docker buildx version
+echo 'OK: Windows WSL prerequisites installed'

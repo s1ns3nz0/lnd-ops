@@ -11,6 +11,8 @@ coverage/
 dist/
 build/
 .cache/
+__pycache__/
+*.pyc
 
 # Local agent/runtime state. Plans and reports are committed provenance, not
 # disposable output. Keep explicit placeholders for local-only directories.
@@ -30,3 +32,7 @@ build/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+windows-smoke.log
+
+# Local wallet recovery notes. Never commit seed words or passwords.
+/prhase

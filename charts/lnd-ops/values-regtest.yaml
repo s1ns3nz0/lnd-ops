@@ -1,0 +1,3 @@
+profile: regtest
+lnd:
+  nodes: 2

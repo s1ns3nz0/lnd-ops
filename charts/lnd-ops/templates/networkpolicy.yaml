@@ -1,0 +1,70 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+{{- if .Values.monitoring.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-scrape
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              lnd-ops-monitoring: "true"
+      ports:
+        - {protocol: TCP, port: 8989}
+        - {protocol: TCP, port: 9092}
+        {{- if .Values.monitoring.paymentCollectorImage }}
+        - {protocol: TCP, port: 9093}
+        {{- end }}
+{{- end }}
+{{- if eq .Values.profile "regtest" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: regtest-peer-traffic
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
+      ports:
+        - {protocol: TCP, port: 9735}
+{{- if .Values.bitcoin.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lnd-to-bitcoin
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bitcoin
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
+      ports:
+        - {protocol: TCP, port: 18443}
+        - {protocol: TCP, port: 28332}
+        - {protocol: TCP, port: 28333}
+{{- end }}
+{{- end }}

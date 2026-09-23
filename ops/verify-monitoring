@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Check live monitoring components; distinguish infrastructure from LND signals."""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import urllib.parse
+
+arguments = sys.argv[1:]
+infrastructure_only = arguments == ["--infrastructure-only"]
+profile = "testnet"
+if arguments and not infrastructure_only:
+    if len(arguments) == 2 and arguments[0] == "--profile" and arguments[1] in ("regtest", "testnet"):
+        profile = arguments[1]
+    else:
+        sys.exit("Usage: ops/verify-monitoring [--infrastructure-only|--profile regtest|testnet]")
+
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+
+
+def kubectl(*args):
+    return subprocess.check_output(["kubectl", *args], text=True)
+
+
+def service_json(service, port, path):
+    prefix = f"/api/v1/namespaces/lnd-monitoring/services/http:{service}:{port}/proxy"
+    return json.loads(kubectl("get", "--raw", prefix + path))
+
+
+def count(query):
+    response = service_json(
+        "lnd-ops-monitoring-kube-pr-prometheus",
+        9090,
+        "/api/v1/query?" + urllib.parse.urlencode({"query": query}),
+    )
+    if response["status"] != "success":
+        raise RuntimeError(f"Prometheus query failed: {query}")
+    result = response["data"]["result"]
+    return float(result[0]["value"][1]) if result else 0.0
+
+
+prometheus = json.loads(kubectl("-n", "lnd-monitoring", "get", "prometheus", "lnd-ops-monitoring-kube-pr-prometheus", "-o", "json"))
+if prometheus["spec"].get("retention") != "14d":
+    sys.exit("Prometheus retention is not 14d")
+alertmanager = json.loads(kubectl("-n", "lnd-monitoring", "get", "alertmanager", "lnd-ops-monitoring-kube-pr-alertmanager", "-o", "json"))
+if alertmanager.get("status", {}).get("availableReplicas", 0) < 1:
+    sys.exit("Alertmanager unavailable")
+grafana = service_json("lnd-ops-monitoring-grafana", 80, "/api/health")
+if grafana.get("database") != "ok":
+    sys.exit("Grafana database unhealthy")
+if count('count(up{job="node-exporter"} == 1)') < 1:
+    sys.exit("node exporter not scraped")
+if count('count(up{job="kube-state-metrics"} == 1)') < 1:
+    sys.exit("kube-state-metrics not scraped")
+if count("count(node_filesystem_avail_bytes)") < 1:
+    sys.exit("node filesystem metric missing")
+if count("count(kube_pod_status_phase)") < 1:
+    sys.exit("Kubernetes Pod metric missing")
+prometheus_config = service_json("lnd-ops-monitoring-kube-pr-prometheus", 9090, "/api/v1/status/config")["data"]["yaml"]
+if (
+    "job_name: lnd-payments" not in prometheus_config
+    or "job_name: lnd-wallet-state" not in prometheus_config
+    or "metrics_path: /wallet-state" not in prometheus_config
+    or "payment-metrics" not in prometheus_config
+):
+    sys.exit("LND payment or wallet-state scrape job missing")
+rules = service_json("lnd-ops-monitoring-kube-pr-prometheus", 9090, "/api/v1/rules")
+loaded_alerts = {
+    rule["name"]: rule
+    for group in rules["data"]["groups"]
+    for rule in group["rules"]
+    if rule.get("type") == "alerting"
+}
+for name in (
+    "LndOpsPodNotReady", "LndOpsGuestDiskLow", "LndOpsChainSyncStalled",
+    "LndOpsChannelInactive", "LndOpsLndmonUnavailable", "LndOpsPaymentCollectorUnavailable",
+    "LndOpsWalletLocked", "LndOpsWalletStateUnavailable",
+):
+    if name not in loaded_alerts or loaded_alerts[name].get("health") == "err":
+        sys.exit(f"Prometheus alert rule missing or unhealthy: {name}")
+print("OK Grafana, Prometheus 14d, Alertmanager, Kubernetes and disk metrics")
+
+if not infrastructure_only:
+    expected_nodes = 2 if profile == "regtest" else 1
+    namespace = f"lnd-{profile}"
+    if (
+        count(f'count(up{{job="lndmon",namespace="{namespace}"}} == 1)') < expected_nodes
+        or count(f'count(up{{job="lnd-wallet-state",namespace="{namespace}"}} == 1)') < expected_nodes
+        or count(f'count(up{{job="lnd-grpc",namespace="{namespace}"}} == 1)') < expected_nodes
+        or count(f'count(up{{job="lnd-payments",namespace="{namespace}"}} == 1)') < expected_nodes
+        or count(f'count(lnd_chain_synced{{namespace="{namespace}"}})') < expected_nodes
+        or count(f'count(lnd_ops_wallet_state{{namespace="{namespace}",state="SERVER_ACTIVE"}} == 1)') < expected_nodes
+        or count(f'count(count by (service) (lnd_ops_outgoing_payments_1h{{namespace="{namespace}"}}))') < expected_nodes
+        or count(f'count(lnd_ops_outgoing_fee_sat_1h{{namespace="{namespace}"}})') < expected_nodes
+        or count(f'count(lnd_ops_received_invoices_1h{{namespace="{namespace}"}})') < expected_nodes
+    ):
+        print(f"ACTION: create/unlock all {profile} LND wallets and enable LND, wallet-state, lndmon, and payment scrapes", file=sys.stderr)
+        sys.exit(10)
+    if (
+        count(f'sum(lnd_ops_outgoing_payments_1h{{namespace="{namespace}",status="SUCCEEDED"}})') < 1
+        or count(f'sum(lnd_ops_received_invoices_1h{{namespace="{namespace}",state="SETTLED"}})') < 1
+        or count(f'sum(lnd_ops_outgoing_latency_samples_1h{{namespace="{namespace}"}})') < 1
+    ):
+        print(f"ACTION: make a fresh outgoing and incoming {profile} payment after monitoring starts", file=sys.stderr)
+        sys.exit(10)
+    print(f"OK {profile} LND scrapes, chain signal, and recent send/receive payment samples")

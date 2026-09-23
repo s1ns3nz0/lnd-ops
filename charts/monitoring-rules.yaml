@@ -1,0 +1,77 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lnd-ops-infrastructure
+  namespace: lnd-monitoring
+  labels:
+    release: lnd-ops-monitoring
+spec:
+  groups:
+    - name: lnd-ops-infrastructure
+      rules:
+        - alert: LndOpsPodNotReady
+          expr: kube_pod_status_ready{namespace=~"lnd-regtest|lnd-testnet",condition="false"} == 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND namespace Pod {{ $labels.namespace }}/{{ $labels.pod }} is not Ready"
+            runbook: docs/runbooks/pod-not-ready.md
+        - alert: LndOpsGuestDiskLow
+          expr: node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"} < 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "K3s guest root filesystem has less than 10% free space"
+            runbook: docs/runbooks/guest-disk-low.md
+    - name: lnd-ops-node
+      rules:
+        - alert: LndOpsWalletLocked
+          expr: (lnd_ops_wallet_state{state="LOCKED",namespace=~"lnd-regtest|lnd-testnet"} == 1) and on (namespace, service) (up{job="lnd-wallet-state"} == 1)
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND wallet is locked for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/wallet-locked.md
+        - alert: LndOpsWalletStateUnavailable
+          expr: up{job="lnd-wallet-state",namespace=~"lnd-regtest|lnd-testnet"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND wallet state is unavailable for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/lnd-monitoring-unavailable.md
+        - alert: LndOpsChainSyncStalled
+          expr: ((lnd_chain_synced{namespace=~"lnd-regtest|lnd-testnet"} == 0) and on (namespace, service) (up{job="lndmon"} == 1)) unless on (namespace, service) (lnd_ops_wallet_state{state=~"LOCKED|NON_EXISTING"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND chain sync is stalled for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/chain-sync-stalled.md
+        - alert: LndOpsChannelInactive
+          expr: ((lnd_channels_inactive_total{namespace=~"lnd-regtest|lnd-testnet"} > 0) and on (namespace, service) (up{job="lndmon"} == 1)) unless on (namespace, service) (lnd_ops_wallet_state{state=~"LOCKED|NON_EXISTING"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "An LND channel is inactive on {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/channel-inactive.md
+        - alert: LndOpsLndmonUnavailable
+          expr: (up{job="lndmon",namespace=~"lnd-regtest|lnd-testnet"} == 0) unless on (namespace, service) (lnd_ops_wallet_state{state=~"LOCKED|NON_EXISTING"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND monitoring is unavailable for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/lnd-monitoring-unavailable.md
+        - alert: LndOpsPaymentCollectorUnavailable
+          expr: (up{job="lnd-payments",namespace=~"lnd-regtest|lnd-testnet"} == 0) unless on (namespace, service) (lnd_ops_wallet_state{state=~"LOCKED|NON_EXISTING"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Payment collector is unavailable for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/lnd-monitoring-unavailable.md

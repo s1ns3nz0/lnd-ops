@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Verify locked OCI index digests and both target platforms without pulling layers."""
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+repo = pathlib.Path(__file__).resolve().parent.parent
+lock = json.loads((repo / "ops/images.lock.json").read_text())
+required = {("linux", "arm64"), ("linux", "amd64")}
+failures = 0
+
+
+def rendered_references():
+    commands = [
+        ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-regtest.yaml", "--set", "monitoring.enabled=true"],
+        ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-testnet.yaml", "--set", "monitoring.enabled=true"],
+        ["helm", "template", "lnd-ops-monitoring", "charts/vendor/kube-prometheus-stack-91.4.1.tgz", "-n", "lnd-monitoring", "-f", "charts/monitoring-values.yaml"],
+    ]
+    references = set()
+    for command in commands:
+        rendered = subprocess.check_output(command, text=True, cwd=repo)
+        references.update(re.findall(r'^\s*image:\s*["\']?([^\s"\']+)', rendered, re.MULTILINE))
+        references.update(re.findall(r'--prometheus-config-reloader=([^\s"\']+)', rendered))
+    return references
+
+
+locked_references = {
+    (image["tag"].rsplit(":", 1)[0], image["digest"])
+    for name, image in lock.items()
+    if name != "payment-collector-base"
+}
+collector_base = lock["payment-collector-base"]
+dockerfile = (repo / "collector/Dockerfile").read_text()
+expected_base_arg = f'ARG BASE_IMAGE={collector_base["tag"]}@{collector_base["digest"]}'
+if dockerfile.splitlines()[:2] != [expected_base_arg, 'FROM ${BASE_IMAGE}']:
+    print("FAIL payment collector Dockerfile base does not match image lock", file=sys.stderr)
+    failures += 1
+rendered = rendered_references()
+rendered_pairs = set()
+for reference in sorted(rendered):
+    if "@" not in reference:
+        print(f"FAIL unpinned rendered image: {reference}", file=sys.stderr)
+        failures += 1
+        continue
+    repository, digest = reference.split("@", 1)
+    repository = repository.rsplit(":", 1)[0]
+    rendered_pairs.add((repository, digest))
+    if (repository, digest) not in locked_references:
+        print(f"FAIL rendered image absent from lock: {reference}", file=sys.stderr)
+        failures += 1
+for repository, digest in sorted(locked_references - rendered_pairs):
+    print(f"FAIL locked image absent from rendered charts: {repository}@{digest}", file=sys.stderr)
+    failures += 1
+print(f"Checked {len(rendered)} rendered image references against the lock")
+
+for name, image in lock.items():
+    ref = "docker://" + image["tag"]
+    result = subprocess.run(["skopeo", "inspect", "--raw", ref], capture_output=True)
+    if result.returncode:
+        print(f"FAIL {name}: registry inspection failed: {result.stderr.decode().strip()}", file=sys.stderr)
+        failures += 1
+        continue
+    digest = "sha256:" + hashlib.sha256(result.stdout).hexdigest()
+    index = json.loads(result.stdout)
+    platforms = {
+        (m.get("platform", {}).get("os"), m.get("platform", {}).get("architecture"))
+        for m in index.get("manifests", [])
+    }
+    missing = required - platforms
+    if digest != image["digest"] or missing:
+        print(f"FAIL {name}: digest={digest}, missing={sorted(missing)}", file=sys.stderr)
+        failures += 1
+    else:
+        print(f"OK {name}: {image['tag']}@{digest} supports linux/amd64 and linux/arm64")
+
+sys.exit(1 if failures else 0)

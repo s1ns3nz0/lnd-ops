@@ -5,17 +5,19 @@ This document records the agreed monitoring scope. Metric names and queries must
 ## Data sources
 
 - LND's Prometheus exporter: gRPC behavior. Confirm the selected release image has the monitoring feature and that the endpoint works.
-- lndmon: chain sync, channel state, liquidity, peers, and wallet data. Its documented metrics include `lnd_synced_to_chain`, `lnd_synced_to_graph`, channel inbound/outbound bandwidth, active/inactive channels, pending HTLCs, and peer count.
+- lndmon: chain sync, channel state, liquidity, peers, and wallet data. The pinned v0.2.15 source emits `lnd_chain_synced` and `lnd_graph_synced` (the repository's `metrics.md` lists older `lnd_synced_to_chain` and `lnd_synced_to_graph` names), plus channel inbound/outbound bandwidth, active/inactive channels, pending HTLCs, and peer count.
 - Kubernetes: kube-state-metrics for object state; kubelet and node exporter for workload, volume, and host resource usage. Verify the selected K3s and local-path storage combination exposes volume capacity metrics.
-- A separate wallet-state check: distinguish a locked wallet from a stalled sync or failed lndmon scrape. Choose its implementation only after testing LND's actual startup behavior.
+- Wallet state: the project collector reads LND's TLS-protected, macaroon-free `/v1/state` endpoint and exposes a fixed one-hot state metric on `/wallet-state`. On the pinned Mac regtest LND image, this returned `NON_EXISTING` before wallet creation. The collector is enabled after manual wallet setup, so live `LOCKED` and `SERVER_ACTIVE` transitions still need verification.
 - Host-specific backup jobs: copy each SCB outside its K3s data volume, to the Windows folder or a macOS host folder. Backup freshness monitoring is deferred.
 - Logs and events: kagent reads current Pod logs and Kubernetes events. Add long-term log storage only after a runbook needs history that these sources cannot provide.
 
-Sources: [LND configuration](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf), [lndmon metrics](https://github.com/lightninglabs/lndmon/blob/master/metrics.md), [Kubernetes node metrics](https://kubernetes.io/docs/reference/instrumentation/node-metrics/), [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics).
+Sources: [LND configuration](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf), [LND GetState](https://lightning.engineering/api-docs/api/lnd/state/get-state/index.html), [lndmon v0.2.15 chain collector](https://github.com/lightninglabs/lndmon/blob/v0.2.15/collectors/chain_collector.go), [lndmon metrics](https://github.com/lightninglabs/lndmon/blob/v0.2.15/metrics.md), [Kubernetes node metrics](https://kubernetes.io/docs/reference/instrumentation/node-metrics/), [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics).
 
 ## Dashboard
 
 Create one Grafana operations overview and three detail views in the first dashboard release: node/channel, payment/liquidity, and Kubernetes.
+
+The initial Git-provisioned dashboard set has all four views. The pinned lndmon source emits aggregate **outgoing** payment outcome and HTLC-attempt counters (`lnd_total_payments`, `lnd_total_htlc_attempts`) plus per-channel inbound/outbound bandwidth. `collector/payment_metrics.py` computes trailing-hour outgoing outcomes, successful-payment fees and observed HTLC resolution latency, plus settled incoming invoice count from paginated LND REST responses. The pinned-base Dockerfile builds for linux/arm64 and linux/amd64; `ops/build-collector` loads the host variant into K3s during a monitoring-enabled deployment. The collector has not yet been deployed against an unlocked LND wallet or validated with live payment data. A canceled invoice is not a failed incoming payment, so receive failures remain an explicit gap. Existing panels must be tested with live wallet/channel/payment samples before the dashboard set is accepted.
 
 | Area | Show |
 | --- | --- |
@@ -42,6 +44,8 @@ Keep Prometheus data for 14 days initially. Monitor Prometheus storage usage and
 6. **Monitoring unavailable:** alert on LND/lndmon scrape failure and on observability Pod failure while Prometheus remains healthy. A stopped Prometheus or PC cannot deliver its own Alertmanager alert in this architecture.
 
 Each alert should carry the affected workload, severity, observed evidence, and runbook reference. kagent first gathers read-only metrics, Kubernetes events, and logs, then proposes the documented action. Low-risk automated actions require their own tested policy. LND restarts, wallet unlocks, and channel, payment, or fund operations require human approval.
+
+The chart now loads chain-sync, inactive-channel, wallet-locked, wallet-state-unavailable, lndmon-unavailable, and payment-collector-unavailable rules in addition to Pod and guest-disk rules. Prometheus reports all eight rules healthy after a Mac monitoring upgrade. `ops/test-lnd-alerts` proved that synthetic chain-sync and inactive-channel metrics reach Alertmanager after the five-minute rule duration. Its `--wallet-locked` mode proved that a synthetic locked state reaches Alertmanager and suppresses dependent alerts even while lndmon serves fault metrics. Both modes clean up their fixture resources. Real wallet lock and unlock transitions and LND fault injection await an unlocked wallet.
 
 Each K3s installation runs its own Prometheus, Alertmanager, and kagent. It cannot alert while its Mac Lima VM, Windows WSL 2 environment, or host is stopped. External availability monitoring is outside this reproducible demonstration scope.
 

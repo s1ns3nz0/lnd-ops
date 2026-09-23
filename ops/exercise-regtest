@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Exercise a disposable regtest channel and payment after manual wallet setup."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+
+
+class StepError(Exception):
+    pass
+
+
+def run(step, command):
+    result = subprocess.run(command, text=True, capture_output=True, timeout=120)
+    if result.returncode:
+        raise StepError(step)
+    return result.stdout.strip()
+
+
+def lnd(node, step, *args):
+    return run(step, ["kubectl", "-n", "lnd-regtest", "exec", f"{node}-0", "--", "lncli", "--lnddir=/data/.lnd", "--network=regtest", *args])
+
+
+def lnd_json(node, step, *args):
+    return json.loads(lnd(node, step, *args))
+
+
+def bitcoin(step, *args, wallet=False):
+    command = ["kubectl", "-n", "lnd-regtest", "exec", "bitcoin-0", "--", "bitcoin-cli", "-regtest", "-rpcuser=regtest", "-rpcpassword=local-regtest-only"]
+    if wallet:
+        command.append("-rpcwallet=miner")
+    return run(step, command + list(args))
+
+
+def bitcoin_json(step, *args, wallet=False):
+    return json.loads(bitcoin(step, *args, wallet=wallet))
+
+
+def mine(address, blocks):
+    bitcoin("mine regtest blocks", "generatetoaddress", str(blocks), address)
+
+
+def wait_chain_sync():
+    for _ in range(30):
+        height = int(bitcoin("read regtest block height", "getblockcount"))
+        ready = True
+        for node in ("lnd-0", "lnd-1"):
+            info = lnd_json(node, f"read {node} sync state", "getinfo")
+            if not info.get("synced_to_chain") or int(info.get("block_height", 0)) < height:
+                ready = False
+                break
+        if ready:
+            return
+        time.sleep(2)
+    raise StepError("LND nodes did not sync to the mined regtest height")
+
+
+def wait_channel(peer_key):
+    for _ in range(30):
+        channels = lnd_json("lnd-0", "list channels", "listchannels").get("channels", [])
+        for channel in channels:
+            if channel.get("remote_pubkey") == peer_key and channel.get("active"):
+                return channel
+        time.sleep(2)
+    raise StepError("channel did not become active after confirmation")
+
+
+def pay_and_verify(payer, payee, amount_sat):
+    invoice = lnd_json(payee, f"create {amount_sat} sat regtest invoice", "addinvoice", "--amt", str(amount_sat))
+    payment_request = invoice["payment_request"]
+    payment_hash = invoice["r_hash"]
+    for attempt in range(5):
+        try:
+            lnd(payer, f"pay {amount_sat} sat regtest invoice", "payinvoice", "--pay_req", payment_request, "--fee_limit", "10", "--force")
+            break
+        except StepError:
+            if attempt == 4:
+                raise
+            time.sleep(2)
+    payments = lnd_json(payer, "verify outgoing payment", "listpayments", "--max_payments", "20").get("payments", [])
+    invoices = lnd_json(payee, "verify settled invoice", "listinvoices", "--max_invoices", "20").get("invoices", [])
+    matching_payments = [
+        payment for payment in payments
+        if str(payment.get("payment_hash", "")).lower() == str(payment_hash).lower()
+        and payment.get("status") == "SUCCEEDED"
+    ]
+    if not matching_payments:
+        raise StepError(f"{payer} outgoing payment not recorded as SUCCEEDED")
+    if int(matching_payments[-1].get("fee_sat", 0)) > 10:
+        raise StepError(f"{payer} payment fee exceeded 10 sats")
+    if not any(str(entry.get("r_hash", "")).lower() == str(payment_hash).lower() and entry.get("state") == "SETTLED" for entry in invoices):
+        raise StepError(f"{payee} incoming invoice not recorded as SETTLED")
+    return payment_hash
+
+
+def main():
+    if len(sys.argv) != 1:
+        raise StepError("usage: ops/exercise-regtest")
+    try:
+        info0 = lnd_json("lnd-0", "unlock or create lnd-0 wallet first", "getinfo")
+        info1 = lnd_json("lnd-1", "unlock or create lnd-1 wallet first", "getinfo")
+    except (StepError, json.JSONDecodeError):
+        print("ACTION: create and unlock both regtest wallets; record both seeds offline", file=sys.stderr)
+        return 10
+    peer_key = info1["identity_pubkey"]
+
+    available = {entry["name"] for entry in bitcoin_json("list Bitcoin wallets", "listwalletdir")["wallets"]}
+    loaded = set(bitcoin_json("list loaded Bitcoin wallets", "listwallets"))
+    if "miner" not in available:
+        bitcoin("create regtest mining wallet", "createwallet", "miner")
+    elif "miner" not in loaded:
+        bitcoin("load regtest mining wallet", "loadwallet", "miner")
+    miner_address = bitcoin("create mining address", "getnewaddress", wallet=True)
+    if float(bitcoin("read miner balance", "getbalance", wallet=True)) < 0.03:
+        mine(miner_address, 101)
+    wait_chain_sync()
+
+    peers = lnd_json("lnd-0", "list connected peers", "listpeers").get("peers", [])
+    if not any(peer.get("pub_key") == peer_key for peer in peers):
+        lnd("lnd-0", "connect regtest peer", "connect", f"{peer_key}@lnd-1:9735")
+
+    existing = lnd_json("lnd-0", "list channels", "listchannels").get("channels", [])
+    if not any(channel.get("remote_pubkey") == peer_key for channel in existing):
+        wallet = lnd_json("lnd-0", "read lnd-0 wallet balance", "walletbalance")
+        if int(wallet.get("confirmed_balance", 0)) < 1_100_000:
+            address = lnd_json("lnd-0", "create lnd-0 funding address", "newaddress", "p2wkh")["address"]
+            bitcoin("fund lnd-0 with disposable regtest coins", "sendtoaddress", address, "0.02", wallet=True)
+            mine(miner_address, 6)
+            wait_chain_sync()
+        lnd("lnd-0", "open disposable regtest channel", "openchannel", "--node_key", peer_key, "--local_amt", "1000000", "--sat_per_vbyte", "1")
+        mine(miner_address, 6)
+        wait_chain_sync()
+    channel = wait_channel(peer_key)
+
+    seeded_remote_liquidity = False
+    if int(channel.get("remote_balance", 0)) < 30_000:
+        pay_and_verify("lnd-0", "lnd-1", 50_000)
+        seeded_remote_liquidity = True
+    pay_and_verify("lnd-0", "lnd-1", 10_000)
+    pay_and_verify("lnd-1", "lnd-0", 10_000)
+    print(f"Regtest bidirectional payments verified; lnd-0={info0['identity_pubkey']}; lnd-1={peer_key}; channel={channel['channel_point']}; forward_sat=10000; reverse_sat=10000; liquidity_seeded={str(seeded_remote_liquidity).lower()}")
+    print("Next: run ops/backup-scb and ops/backup-status for both regtest nodes")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (StepError, KeyError, ValueError, subprocess.TimeoutExpired) as error:
+        print(f"Regtest exercise stopped: {error}", file=sys.stderr)
+        sys.exit(1)

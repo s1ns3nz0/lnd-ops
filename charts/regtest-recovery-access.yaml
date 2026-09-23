@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-regtest-recovery-bitcoin
+  namespace: lnd-regtest
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bitcoin
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              lnd-ops-recovery: "true"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lnd-0
+      ports:
+        - {protocol: TCP, port: 18443}
+        - {protocol: TCP, port: 28332}
+        - {protocol: TCP, port: 28333}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-regtest-recovery-peer
+  namespace: lnd-regtest
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lnd-1
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              lnd-ops-recovery: "true"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lnd-0
+      ports:
+        - {protocol: TCP, port: 9735}

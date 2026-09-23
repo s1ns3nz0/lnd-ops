@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+profile=${1:-testnet}
+node=${2:-lnd-0}
+case "$profile/$node" in
+  testnet/lnd-0|regtest/lnd-0|regtest/lnd-1) ;;
+  *) echo 'Usage: ops/backup-scb [testnet|regtest [lnd-0|lnd-1]]' >&2; exit 2 ;;
+esac
+[[ $# -le 2 ]] || { echo 'Too many arguments' >&2; exit 2; }
+source_file=/data/.lnd/data/chain/bitcoin/$profile/channel.backup
+pod=$node-0
+namespace=lnd-$profile
+
+case "$(uname -s)" in
+  Darwin) backup_root=$HOME/lnd-ops-backups ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2' >&2; exit 1; }
+    backup_root=$("$repo_dir/ops/windows-drive")/lnd-ops-backups
+    ;;
+  *) echo 'Unsupported host' >&2; exit 1 ;;
+esac
+
+if ! kubectl -n "$namespace" exec "$pod" -- test -s "$source_file" >/dev/null 2>&1; then
+  echo 'SCB absent or empty; open a channel first' >&2
+  exit 10
+fi
+
+destination_dir=$backup_root/$profile/$node
+mkdir -p "$destination_dir"
+if [[ "$(uname -s)" == Darwin ]]; then
+  chmod 700 "$backup_root" "$backup_root/$profile" "$destination_dir"
+else
+  command -v powershell.exe >/dev/null || { echo 'PowerShell required to set Windows backup ACL' >&2; exit 1; }
+  acl_script=$(wslpath -w "$repo_dir/ops/windows-backup-acl.ps1")
+  for dir in "$backup_root" "$backup_root/$profile" "$destination_dir"; do
+    powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$dir")" >/dev/null
+    powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$dir")" -Verify >/dev/null
+  done
+fi
+
+target=$destination_dir/channel.backup
+record=$destination_dir/.last-success
+tmp=
+record_tmp=
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+cleanup() { [[ -z "$tmp" ]] || rm -f "$tmp"; [[ -z "$record_tmp" ]] || rm -f "$record_tmp"; }
+trap cleanup EXIT
+digest() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}';
+  else sha256sum "$1" | awk '{print $1}'; fi
+}
+source_digest() { kubectl -n "$namespace" exec "$pod" -- sha256sum "$source_file" | awk '{print $1}'; }
+
+for _ in 1 2 3; do
+  before=$(source_digest)
+  tmp=$(mktemp "$destination_dir/.channel.backup.XXXXXXXX")
+  if ! kubectl -n "$namespace" exec "$pod" -- cat "$source_file" > "$tmp"; then
+    rm -f "$tmp"
+    exit 1
+  fi
+  after=$(source_digest)
+  local_digest=$(digest "$tmp")
+  if [[ "$before" == "$after" && "$after" == "$local_digest" ]]; then
+    if [[ "$(uname -s)" == Darwin ]]; then
+      chmod 600 "$tmp"
+    else
+      powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$tmp")" >/dev/null
+      powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$tmp")" -Verify >/dev/null
+    fi
+    mv -f "$tmp" "$target"
+    tmp=
+    record_tmp=$(mktemp "$destination_dir/.last-success.XXXXXXXX")
+    printf '%s %s\n' "$(date +%s)" "$local_digest" > "$record_tmp"
+    if [[ "$(uname -s)" == Darwin ]]; then
+      chmod 600 "$record_tmp"
+    else
+      powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$record_tmp")" >/dev/null
+      powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$record_tmp")" -Verify >/dev/null
+    fi
+    mv -f "$record_tmp" "$record"
+    record_tmp=
+    printf 'SCB copy verified: sha256:%s\n' "$local_digest"
+    exit 0
+  fi
+  rm -f "$tmp"
+done
+echo 'SCB changed during copy or checksum mismatched' >&2
+exit 1

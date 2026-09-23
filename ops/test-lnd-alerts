@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Inject disposable lndmon metrics and prove alert delivery, then clean up."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.parse
+
+
+repo = pathlib.Path(__file__).resolve().parent.parent
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+prometheus_api = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy"
+alertmanager_api = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy"
+
+
+def kubectl_json(path):
+    return json.loads(subprocess.check_output(["kubectl", "get", "--raw", path], text=True))
+
+
+def apply_manifest(content, verb):
+    subprocess.run(["kubectl", verb, "-f", "-"], input=content, text=True, check=True, stdout=subprocess.DEVNULL)
+
+
+def active_names(items, source, fixture_name):
+    return {
+        item["labels"]["alertname"]
+        for item in items
+        if item.get("labels", {}).get("service") == fixture_name
+        and item.get("labels", {}).get("namespace") == "lnd-regtest"
+        and (
+            (source == "prometheus" and item.get("state") == "firing")
+            or (source == "alertmanager" and item.get("status", {}).get("state") == "active")
+        )
+    }
+
+
+def main():
+    if sys.argv[1:] == []:
+        fixture_name = "lnd-ops-alert-fixture"
+        alert_names = {"LndOpsChainSyncStalled", "LndOpsChannelInactive"}
+        fixture_file = "lnd-alerts.yaml"
+    elif sys.argv[1:] == ["--wallet-locked"]:
+        fixture_name = "lnd-ops-wallet-fixture"
+        alert_names = {"LndOpsWalletLocked"}
+        fixture_file = "wallet-locked.yaml"
+    else:
+        sys.exit("Usage: ops/test-lnd-alerts [--wallet-locked]")
+    subprocess.run(["kubectl", "get", "namespace", "lnd-regtest"], check=True, stdout=subprocess.DEVNULL)
+    image = subprocess.check_output([str(repo / "ops/build-collector")], text=True).strip()
+    manifest = (repo / "tests/fixtures" / fixture_file).read_text().replace("__IMAGE__", image)
+    # A prior interrupted run may have left a terminating Pod. Wait for it to
+    # disappear so apply creates a fresh Pod rather than updating a dying one.
+    subprocess.run(
+        ["kubectl", "delete", "pod", fixture_name, "-n", "lnd-regtest", "--ignore-not-found", "--wait=true"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    try:
+        apply_manifest(manifest, "apply")
+        deadline = time.monotonic() + 480
+        last_notice = 0
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            if now - last_notice >= 60:
+                print("Waiting for fixture metrics and alert duration...", flush=True)
+                last_notice = now
+            try:
+                prometheus = kubectl_json(prometheus_api + "/api/v1/alerts")
+                firing = active_names(prometheus["data"]["alerts"], "prometheus", fixture_name)
+                if firing == alert_names:
+                    alertmanager = kubectl_json(alertmanager_api + "/api/v2/alerts")
+                    delivered = active_names(alertmanager, "alertmanager", fixture_name)
+                    if delivered == alert_names:
+                        if fixture_file == "wallet-locked.yaml":
+                            fixture_alerts = [
+                                item for item in prometheus["data"]["alerts"]
+                                if item.get("labels", {}).get("service") == fixture_name
+                            ]
+                            if any(item["labels"].get("alertname") != "LndOpsWalletLocked" for item in fixture_alerts):
+                                continue
+                            query = urllib.parse.urlencode({"query": f'up{{job="lndmon",service="{fixture_name}"}}'})
+                            targets = kubectl_json(prometheus_api + "/api/v1/query?" + query)
+                            if not any(sample["value"][1] == "1" for sample in targets["data"]["result"]):
+                                continue
+                            print("OK wallet-locked alert reached Alertmanager; dependent alerts suppressed with lndmon up")
+                        else:
+                            print("OK both chain-sync and inactive-channel fixture alerts reached Alertmanager")
+                        return 0
+            except (subprocess.CalledProcessError, KeyError, ValueError):
+                pass
+            time.sleep(10)
+        print("Timed out waiting for fixture alerts in Alertmanager", file=sys.stderr)
+        return 1
+    finally:
+        subprocess.run(["kubectl", "delete", "-f", "-", "--ignore-not-found", "--wait=true"], input=manifest, text=True, check=True, stdout=subprocess.DEVNULL)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

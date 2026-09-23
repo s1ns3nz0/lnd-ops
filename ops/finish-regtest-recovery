@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 && "$1" == --preserve-original-wallet ]] || {
+  echo 'Usage: ops/finish-regtest-recovery --preserve-original-wallet' >&2
+  exit 2
+}
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+original_namespace=lnd-regtest
+recovery_namespace=lnd-regtest-recovery
+
+"$repo_dir/ops/verify-regtest-recovery"
+state=$(kubectl get namespace "$original_namespace" -o jsonpath='{.metadata.labels.lnd-ops-recovery}')
+[[ "$state" == started ]] || { echo 'FAIL: original namespace is not marked as a recovery exercise' >&2; exit 1; }
+original_pvc_uid=$(kubectl get namespace "$recovery_namespace" -o jsonpath='{.metadata.annotations.lnd-ops\.dev/original-pvc-uid}')
+current_pvc_uid=$(kubectl -n "$original_namespace" get pvc data-lnd-0-0 -o jsonpath='{.metadata.uid}')
+[[ "$original_pvc_uid" == "$current_pvc_uid" ]] || { echo 'FAIL: original wallet PVC identity changed' >&2; exit 1; }
+
+echo 'Stopping recovered copy before restarting the preserved original identity'
+kubectl -n "$recovery_namespace" scale statefulset/lnd-0 --replicas=0
+kubectl -n "$recovery_namespace" wait --for=delete pod/lnd-0-0 --timeout=3m
+kubectl delete namespace "$recovery_namespace" --wait=true
+
+kubectl -n "$original_namespace" delete networkpolicy \
+  allow-regtest-recovery-bitcoin allow-regtest-recovery-peer --ignore-not-found >/dev/null
+kubectl label namespace "$original_namespace" lnd-ops-recovery- >/dev/null
+kubectl -n "$original_namespace" scale statefulset/lnd-0 --replicas=1
+kubectl -n "$original_namespace" rollout status statefulset/lnd-0 --timeout=5m
+
+[[ "$(kubectl -n "$original_namespace" get pvc data-lnd-0-0 -o jsonpath='{.metadata.uid}')" == "$original_pvc_uid" ]] || {
+  echo 'FAIL: original wallet PVC changed while resuming' >&2
+  exit 1
+}
+if kubectl get namespace "$recovery_namespace" >/dev/null 2>&1; then
+  echo 'FAIL: recovery namespace still exists' >&2
+  exit 1
+fi
+echo "OK: recovered copy retired; original wallet PVC preserved: $original_pvc_uid"
+echo 'ACTION: interactively unlock the preserved original lnd-0 wallet'
+echo 'kubectl -n lnd-regtest exec -it lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest unlock'

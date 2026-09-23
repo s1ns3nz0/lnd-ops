@@ -1,0 +1,8 @@
+profile: regtest
+lnd:
+  nodes: 1
+bitcoin:
+  enabled: false
+  host: bitcoin.lnd-regtest.svc.cluster.local
+monitoring:
+  enabled: false

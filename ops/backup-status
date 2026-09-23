@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+profile=${1:-testnet}
+node=${2:-lnd-0}
+case "$profile/$node" in
+  testnet/lnd-0|regtest/lnd-0|regtest/lnd-1) ;;
+  *) echo 'Usage: ops/backup-status [testnet|regtest [lnd-0|lnd-1]]' >&2; exit 2 ;;
+esac
+[[ $# -le 2 ]] || { echo 'Too many arguments' >&2; exit 2; }
+source_file=/data/.lnd/data/chain/bitcoin/$profile/channel.backup
+namespace=lnd-$profile
+pod=$node-0
+case "$(uname -s)" in
+  Darwin) target=$HOME/lnd-ops-backups/$profile/$node/channel.backup ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2' >&2; exit 1; }
+    target=$("$repo_dir/ops/windows-drive")/lnd-ops-backups/$profile/$node/channel.backup
+    ;;
+  *) echo 'Unsupported host' >&2; exit 1 ;;
+esac
+
+[[ -s "$target" ]] || { echo 'SCB host copy missing'; exit 10; }
+record=$(dirname "$target")/.last-success
+[[ -s "$record" ]] || { echo 'SCB successful transfer record missing'; exit 10; }
+if [[ "$(uname -s)" == Darwin ]]; then
+  for dir in "$(dirname "$target")" "$(dirname "$(dirname "$target")")" "$(dirname "$(dirname "$(dirname "$target")")")"; do
+    [[ "$(stat -f %Lp "$dir")" == 700 ]] || { echo 'SCB backup directory permissions are not 700' >&2; exit 1; }
+  done
+  for file in "$target" "$record"; do
+    [[ "$(stat -f %Lp "$file")" == 600 ]] || { echo 'SCB backup file permissions are not 600' >&2; exit 1; }
+  done
+else
+  command -v powershell.exe >/dev/null || { echo 'PowerShell required to verify Windows backup ACL' >&2; exit 1; }
+  acl_script=$(wslpath -w "$repo_dir/ops/windows-backup-acl.ps1")
+  for path in "$(dirname "$target")" "$(dirname "$(dirname "$target")")" "$(dirname "$(dirname "$(dirname "$target")")")" "$target" "$record"; do
+    powershell.exe -NoProfile -File "$acl_script" -Path "$(wslpath -w "$path")" -Verify >/dev/null
+  done
+fi
+read -r transfer_epoch recorded_hash < "$record"
+[[ "$transfer_epoch" =~ ^[0-9]+$ && "$recorded_hash" =~ ^[0-9a-f]{64}$ ]] || { echo 'SCB transfer record invalid' >&2; exit 1; }
+source_hash=$(kubectl -n "$namespace" exec "$pod" -- sha256sum "$source_file" | awk '{print $1}')
+if command -v shasum >/dev/null 2>&1; then
+  host_hash=$(shasum -a 256 "$target" | awk '{print $1}')
+else
+  host_hash=$(sha256sum "$target" | awk '{print $1}')
+fi
+[[ "$recorded_hash" == "$host_hash" ]] || { echo 'SCB copy and transfer record differ' >&2; exit 1; }
+[[ "$source_hash" == "$host_hash" ]] || { echo 'SCB source and host copy differ' >&2; exit 1; }
+age_seconds=$(( $(date +%s) - transfer_epoch ))
+(( age_seconds >= 0 )) || { echo 'SCB transfer record is dated in the future' >&2; exit 1; }
+printf 'Last successful SCB transfer: %s seconds ago; sha256:%s\n' "$age_seconds" "$host_hash"
+echo 'SCB source and host copy match'

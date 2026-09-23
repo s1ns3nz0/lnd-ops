@@ -1,0 +1,45 @@
+# Project-owned, disposable Lima VM. LND wallets must never be copied from it.
+minimumLimaVersion: 2.2.0
+images:
+  - location: https://cloud-images.ubuntu.com/releases/resolute/release-20260720/ubuntu-26.04-server-cloudimg-arm64.img
+    arch: aarch64
+    digest: sha256:7bcf159e29ad0000bfed9c57875908c39268f5ed1257f4958fa6a9f5f60edd54
+    variant: server
+cpus: 4
+memory: 8GiB
+disk: 80GiB
+mounts: []
+containerd:
+  system: false
+  user: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      if [ -e /etc/rancher/k3s/config.yaml ]; then
+        grep -q '^secrets-encryption: true$' /etc/rancher/k3s/config.yaml
+      else
+        install -d -m 700 /etc/rancher/k3s
+        cat > /etc/rancher/k3s/config.yaml <<'CONFIG'
+      secrets-encryption: true
+      disable:
+        - traefik
+        - servicelb
+      tls-san:
+        - 127.0.0.1
+      CONFIG
+        chmod 600 /etc/rancher/k3s/config.yaml
+      fi
+      if ! command -v k3s >/dev/null 2>&1; then
+        curl -sfL '@K3S_INSTALLER_URL@' -o /tmp/lnd-ops-k3s-install.sh
+        echo '@K3S_INSTALLER_SHA256@  /tmp/lnd-ops-k3s-install.sh' | sha256sum -c -
+        INSTALL_K3S_VERSION='@K3S_VERSION@' sh /tmp/lnd-ops-k3s-install.sh
+        rm -f /tmp/lnd-ops-k3s-install.sh
+      fi
+probes:
+  - script: |
+      #!/bin/sh
+      sudo test -s /etc/rancher/k3s/k3s.yaml
+      sudo k3s kubectl get node >/dev/null
+    hint: Check `limactl shell lnd-ops-k3s sudo journalctl -u k3s`.

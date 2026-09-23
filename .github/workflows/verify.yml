@@ -1,0 +1,87 @@
+name: Verify operator slice
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-powershell:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Parse Windows scripts and verify backup ACL enforcement
+        shell: pwsh
+        run: |
+          $scripts = @(
+            'ops/windows-host-state.ps1',
+            'ops/windows-encryption-status.ps1',
+            'ops/windows-backup-acl.ps1',
+            'ops/windows-enable-wsl.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script), [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) { throw "$script parser errors: $errors" }
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'lnd-ops-acl'
+          $file = Join-Path $root 'channel.backup'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Set-Content -LiteralPath $file -Value 'disposable fixture'
+          & ./ops/windows-backup-acl.ps1 -Path $root
+          & ./ops/windows-backup-acl.ps1 -Path $root -Verify
+          & ./ops/windows-backup-acl.ps1 -Path $file
+          & ./ops/windows-backup-acl.ps1 -Path $file -Verify
+
+  linux:
+    runs-on: ubuntu-24.04
+    env:
+      HELM_IMAGE: docker.io/alpine/helm@sha256:8edcaedab4d9864886b7f443d55731be87d4b5ec7dca714c24551455707a8aac
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Check scripts and image lock syntax
+        run: |
+          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
+          bash -n ops/build-collector
+          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/verify-monitoring", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts")]'
+          python3 -m py_compile ops/exercise-regtest ops/verify-regtest-recovery collector/payment_metrics.py
+          python3 -m json.tool ops/images.lock.json >/dev/null
+          for dashboard in charts/dashboards/*.json; do python3 -m json.tool "$dashboard" >/dev/null; done
+      - name: Test SCB transfer and repository harness
+        run: |
+          npm test
+          python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Render both profiles in pinned Linux Helm image
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/vendor/kube-prometheus-stack-91.4.1.tgz -f charts/monitoring-values.yaml
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml --set monitoring.enabled=true --set-string monitoring.paymentCollectorImage=localhost/lnd-ops-payment-collector:ci >/dev/null
+      - name: Build payment collector for both CPU architectures
+        run: |
+          docker buildx create --name lnd-ops-ci --use
+          docker buildx build --platform linux/amd64,linux/arm64 --output type=cacheonly collector
+          docker buildx build --platform linux/amd64 --load --tag localhost/lnd-ops-payment-collector:ci collector
+          docker run --rm --platform linux/amd64 --entrypoint python3 localhost/lnd-ops-payment-collector:ci -c 'import platform, runpy; assert platform.machine() == "x86_64"; runpy.run_path("/app/payment_metrics.py", run_name="smoke")'
+      - name: Verify pinned image indexes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          wrapper=$(mktemp -d)
+          trap 'rm -rf "$wrapper"' EXIT
+          cat > "$wrapper/helm" <<'EOF'
+          #!/bin/sh
+          exec docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" "$@"
+          EOF
+          chmod +x "$wrapper/helm"
+          PATH="$wrapper:$PATH" ops/check-images

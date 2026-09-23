@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Read-only proof that an isolated regtest seed+SCB recovery has settled."""
+
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+
+
+def kubectl_json(*args):
+    return json.loads(subprocess.check_output(["kubectl", *args], text=True, stderr=subprocess.DEVNULL))
+
+
+def lncli(namespace, pod, *args):
+    return kubectl_json("-n", namespace, "exec", pod, "--", "lncli", "--lnddir=/data/.lnd", "--network=regtest", *args)
+
+
+def main():
+    if len(sys.argv) != 1:
+        sys.exit("Usage: ops/verify-regtest-recovery")
+    try:
+        namespace = kubectl_json("get", "namespace", "lnd-regtest-recovery", "-o", "json")
+    except subprocess.CalledProcessError:
+        print("ACTION: run ops/prepare-regtest-recovery after channel and SCB verification", file=sys.stderr)
+        return 10
+    annotations = namespace["metadata"].get("annotations", {})
+    pubkey = annotations["lnd-ops.dev/original-pubkey"]
+    channel_point = annotations["lnd-ops.dev/channel-point"]
+    confirmed_before = int(annotations["lnd-ops.dev/confirmed-before"])
+    local_before = int(annotations["lnd-ops.dev/channel-local-before"])
+    recorded_scb_hash = annotations["lnd-ops.dev/scb-sha256"]
+    original_pvc_uid = annotations["lnd-ops.dev/original-pvc-uid"]
+
+    original = kubectl_json("-n", "lnd-regtest", "get", "statefulset", "lnd-0", "-o", "json")
+    if original["spec"]["replicas"] != 0 or original.get("status", {}).get("readyReplicas", 0) != 0:
+        sys.exit("FAIL: original lnd-0 must remain stopped during recovery")
+    pvc = kubectl_json("-n", "lnd-regtest", "get", "pvc", "data-lnd-0-0", "-o", "json")
+    if pvc["metadata"]["uid"] != original_pvc_uid:
+        sys.exit("FAIL: original lnd-0 PVC identity changed")
+    if sys.platform == "darwin":
+        host_scb = pathlib.Path.home() / "lnd-ops-backups/regtest/lnd-0/channel.backup"
+    elif sys.platform == "linux" and any(word in pathlib.Path("/proc/sys/kernel/osrelease").read_text().lower() for word in ("microsoft", "wsl")):
+        windows_mount = subprocess.check_output([REPO / "ops/windows-drive"], text=True).strip()
+        host_scb = pathlib.Path(windows_mount) / "lnd-ops-backups/regtest/lnd-0/channel.backup"
+    else:
+        sys.exit("FAIL: unsupported host for SCB verification")
+    if not host_scb.is_file() or hashlib.sha256(host_scb.read_bytes()).hexdigest() != recorded_scb_hash:
+        sys.exit("FAIL: host SCB does not match prepared recovery copy")
+    pod_scb_hash = subprocess.check_output(
+        ["kubectl", "-n", "lnd-regtest-recovery", "exec", "lnd-0-0", "--", "sha256sum", "/data/recovery.backup"],
+        text=True, stderr=subprocess.DEVNULL,
+    ).split()[0]
+    if pod_scb_hash != recorded_scb_hash:
+        sys.exit("FAIL: recovery Pod SCB differs from verified host copy")
+    recovery = lncli("lnd-regtest-recovery", "lnd-0-0", "getinfo")
+    if recovery["identity_pubkey"] != pubkey:
+        sys.exit("FAIL: recovered node public key differs from original")
+    active = lncli("lnd-regtest-recovery", "lnd-0-0", "listchannels").get("channels", [])
+    if any(channel.get("channel_point") == channel_point and channel.get("active") for channel in active):
+        sys.exit("FAIL: recovered channel is still active")
+    closed = lncli("lnd-regtest", "lnd-1-0", "closedchannels").get("channels", [])
+    if not any(channel.get("channel_point") == channel_point for channel in closed):
+        print("PENDING: peer has not recorded the recovered channel close", file=sys.stderr)
+        return 10
+    confirmed_after = int(lncli("lnd-regtest-recovery", "lnd-0-0", "walletbalance").get("confirmed_balance", 0))
+    if confirmed_after <= confirmed_before + local_before // 2:
+        print("PENDING: recovered channel funds have not appeared in confirmed on-chain balance", file=sys.stderr)
+        return 10
+    print(f"OK recovered pubkey={pubkey}; closed channel={channel_point}; confirmed balance {confirmed_before}->{confirmed_after} sat")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (subprocess.CalledProcessError, KeyError, ValueError) as error:
+        print(f"Recovery verification unavailable: {type(error).__name__}", file=sys.stderr)
+        sys.exit(10)

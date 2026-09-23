@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ "$(uname -s)" != Linux ]] || ! grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
+  echo 'FAIL: windows-smoke must run inside WSL 2' >&2
+  exit 1
+fi
+
+run_wallet_gate() {
+  local profile=$1 status
+  set +e
+  "$repo_dir/ops/verify" "$profile"
+  status=$?
+  set -e
+  case "$status" in
+    0) echo "OK: $profile functional verification passed" ;;
+    10) echo "PENDING: $profile requires its manual wallet/funding step" ;;
+    *) echo "FAIL: $profile verification exited $status" >&2; return "$status" ;;
+  esac
+}
+
+"$repo_dir/ops/windows-preflight"
+"$repo_dir/ops/doctor"
+"$repo_dir/ops/check-images"
+"$repo_dir/ops/bootstrap"
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+"$repo_dir/ops/doctor"
+"$repo_dir/ops/deploy" regtest
+run_wallet_gate regtest
+"$repo_dir/ops/deploy" testnet
+run_wallet_gate testnet
+"$repo_dir/ops/deploy-monitoring"
+"$repo_dir/ops/verify-monitoring" --infrastructure-only
+echo 'OK: Windows WSL 2 infrastructure smoke test passed'

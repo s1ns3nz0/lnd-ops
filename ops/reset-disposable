@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ ( "${1:-}" == regtest || "${1:-}" == testnet ) && "${2:-}" == --confirm-unfunded ]] || {
+  echo 'Usage: ops/reset-disposable regtest|testnet --confirm-unfunded' >&2
+  exit 2
+}
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+profile=$1
+namespace=lnd-$profile
+if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
+  echo "$namespace is absent"
+  exit 0
+fi
+
+nodes=(lnd-0)
+if [[ "$profile" == regtest ]]; then
+  nodes+=(lnd-1)
+fi
+for name in "${nodes[@]}"; do
+  kubectl -n "$namespace" get pod "$name-0" >/dev/null || {
+    echo "Cannot inspect $name wallet; refusing reset" >&2; exit 1;
+  }
+  kubectl -n "$namespace" exec "$name-0" -- test -d "/data/.lnd/data/chain/bitcoin/$profile" >/dev/null || {
+    echo "Cannot inspect $name data directory; refusing reset" >&2; exit 1;
+  }
+  if ! kubectl -n "$namespace" exec "$name-0" -- test ! -e "/data/.lnd/data/chain/bitcoin/$profile/wallet.db" >/dev/null 2>&1; then
+    echo "$name wallet absence was not confirmed; refusing reset" >&2; exit 1
+  fi
+done
+
+echo "Deleting disposable, wallet-free namespace $namespace (including its PVCs)"
+kubectl delete namespace "$namespace" --wait=true
+kubectl get namespace "$namespace" >/dev/null 2>&1 && {
+  echo "$namespace still exists" >&2; exit 1;
+}
+echo "Disposable $profile resources removed"

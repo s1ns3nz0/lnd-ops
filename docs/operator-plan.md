@@ -12,7 +12,7 @@ Build a reproducible Lightning Labs platform engineering portfolio project. Run 
 - Add lndmon, Prometheus, Grafana, and Alertmanager. Manage LND and its operating policy in a project Helm chart; install general monitoring components from maintained charts.
 - Reach Grafana and LND management interfaces through local `kubectl port-forward` sessions.
 - Connect to peers outbound first. Open a testnet channel and make a payment.
-- Automatically copy each node's Static Channel Backup (SCB) outside its K3s data volume: `C:\lnd-ops-backups` on Windows and a dedicated macOS host folder on Mac. Keep each wallet seed offline. Same-machine copies do not cover loss of that machine.
+- Automatically copy each node's Static Channel Backup (SCB) outside its K3s data volume: `<WSL-backing-drive>:\lnd-ops-backups` on Windows and a dedicated macOS host folder on Mac. Keep each wallet seed offline. Same-machine copies do not cover loss of that machine.
 - Clone this GitHub repository on either machine and run the same profile-specific deployment commands. Keep wallets and persistent data separate across machines and networks.
 
 ## End-to-end portfolio demonstration criteria

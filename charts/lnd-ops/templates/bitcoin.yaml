@@ -1,0 +1,60 @@
+{{- if and (eq .Values.profile "regtest") .Values.bitcoin.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: bitcoin
+spec:
+  selector:
+    app.kubernetes.io/name: bitcoin
+  ports:
+    - {name: rpc, port: 18443, targetPort: 18443}
+    - {name: zmq-block, port: 28332, targetPort: 28332}
+    - {name: zmq-tx, port: 28333, targetPort: 28333}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bitcoin
+spec:
+  serviceName: bitcoin
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bitcoin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bitcoin
+    spec:
+      serviceAccountName: lnd-ops
+      automountServiceAccountToken: false
+      containers:
+        - name: bitcoin
+          image: {{ .Values.bitcoin.image | quote }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - -regtest
+            - -server
+            - -txindex
+            - -fallbackfee=0.0002
+            - -rpcbind=0.0.0.0:18443
+            - -rpcallowip=0.0.0.0/0
+            - -rpcuser={{ .Values.bitcoin.rpcUser }}
+            - -rpcpassword={{ .Values.bitcoin.rpcPassword }}
+            - -zmqpubrawblock=tcp://0.0.0.0:28332
+            - -zmqpubrawtx=tcp://0.0.0.0:28333
+          ports:
+            - {name: rpc, containerPort: 18443}
+            - {name: zmq-block, containerPort: 28332}
+            - {name: zmq-tx, containerPort: 28333}
+          volumeMounts:
+            - {name: data, mountPath: /home/bitcoin/.bitcoin}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.bitcoin.storage }}
+{{- end }}

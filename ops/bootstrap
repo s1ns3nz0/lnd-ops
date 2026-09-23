@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_dir/ops/versions.env"
+vm_name=lnd-ops-k3s
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops
+
+wait_for_encryption() {
+  local status=''
+  for ((attempt=1; attempt<=30; attempt++)); do
+    if status=$("$@" 2>/dev/null) && [[ "$status" == *'Encryption Status: Enabled'* ]]; then
+      echo 'K3s Secret encryption enabled'
+      return 0
+    fi
+    sleep 2
+  done
+  echo "K3s Secret encryption did not become ready: $status" >&2
+  return 1
+}
+
+verify_local_api_listener() {
+  local sockets
+  sockets=$(sudo ss -H -ltn 'sport = :6443')
+  [[ -n "$sockets" ]] || { echo 'K3s API is not listening on port 6443' >&2; return 1; }
+  if printf '%s\n' "$sockets" | awk '{print $4}' | grep -Ev '^(127\.0\.0\.1|\[::1\]):6443$' >/dev/null; then
+    echo 'K3s API has a non-loopback listener; refusing a LAN-visible control plane' >&2
+    printf '%s\n' "$sockets" >&2
+    return 1
+  fi
+  echo 'K3s API listener is loopback-only'
+}
+
+ensure_lima() {
+  if [[ "${LND_OPS_USE_BUNDLED_LIMA:-0}" != 1 ]] && command -v limactl >/dev/null 2>&1 && \
+     limactl --version | grep -Fq "$LIMA_VERSION"; then
+    return 0
+  fi
+  [[ "$(uname -m)" == arm64 ]] || { echo 'Pinned Lima bundle currently supports Mac arm64 only' >&2; exit 1; }
+  local bundle_root=${XDG_DATA_HOME:-$HOME/.local/share}/lnd-ops/tools
+  local install_dir=$bundle_root/lima-$LIMA_VERSION
+  if [[ ! -x "$install_dir/bin/limactl" ]]; then
+    mkdir -p "$bundle_root"
+    local staging archive actual
+    staging=$(mktemp -d "$bundle_root/.lima-install.XXXXXXXX")
+    archive=$staging/lima.tar.gz
+    echo "Downloading pinned Lima $LIMA_VERSION"
+    curl -fsSL "https://github.com/lima-vm/lima/releases/download/v$LIMA_VERSION/lima-$LIMA_VERSION-Darwin-arm64.tar.gz" -o "$archive"
+    actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+    [[ "$actual" == "$LIMA_DARWIN_ARM64_SHA256" ]] || { rm -rf "$staging"; echo 'Lima checksum mismatch' >&2; exit 1; }
+    mkdir "$staging/unpacked"
+    tar -xzf "$archive" -C "$staging/unpacked"
+    mv "$staging/unpacked" "$install_dir"
+    rm -rf "$staging"
+  fi
+  export PATH="$install_dir/bin:$PATH"
+  limactl --version | grep -Fq "$LIMA_VERSION"
+}
+
+case "$(uname -s)" in
+  Darwin)
+    ensure_lima
+    if ! limactl list --format '{{.Name}}' 2>/dev/null | grep -Fxq "$vm_name"; then
+      rendered=$(mktemp)
+      trap 'rm -f "$rendered"' EXIT
+      sed -e "s|@K3S_VERSION@|$K3S_VERSION|g" \
+        -e "s|@K3S_INSTALLER_URL@|$K3S_INSTALLER_URL|g" \
+        -e "s|@K3S_INSTALLER_SHA256@|$K3S_INSTALLER_SHA256|g" \
+        "$repo_dir/ops/lima.yaml.in" > "$rendered"
+      echo "Creating project VM $vm_name with K3s $K3S_VERSION"
+      limactl create --yes --name "$vm_name" "$rendered"
+    fi
+    echo "Starting project VM $vm_name"
+    limactl start "$vm_name"
+    installed=$(limactl shell "$vm_name" -- k3s --version | head -1)
+    [[ "$installed" == *"$K3S_VERSION"* ]] || { echo "Unexpected K3s: $installed" >&2; exit 1; }
+    wait_for_encryption limactl shell "$vm_name" -- sudo k3s secrets-encrypt status
+    mkdir -p "$state_dir"
+    chmod 700 "$state_dir"
+    limactl shell "$vm_name" -- sudo cat /etc/rancher/k3s/k3s.yaml > "$state_dir/kubeconfig"
+    chmod 600 "$state_dir/kubeconfig"
+    echo "KUBECONFIG=$state_dir/kubeconfig"
+    KUBECONFIG="$state_dir/kubeconfig" kubectl wait --for=condition=Ready nodes --all --timeout=2m
+    KUBECONFIG="$state_dir/kubeconfig" kubectl get nodes
+    ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2 Linux' >&2; exit 1; }
+    "$repo_dir/ops/windows-preflight"
+    if command -v k3s >/dev/null 2>&1; then
+      installed=$(k3s --version | head -1)
+      [[ "$installed" == *"$K3S_VERSION"* ]] || { echo "Unexpected K3s: $installed" >&2; exit 1; }
+    else
+      sudo install -d -m 700 /etc/rancher/k3s
+      printf 'secrets-encryption: true\nbind-address: 127.0.0.1\ntls-san-security: true\ndisable:\n  - traefik\n  - servicelb\ntls-san:\n  - 127.0.0.1\n' | sudo tee /etc/rancher/k3s/config.yaml >/dev/null
+      sudo chmod 600 /etc/rancher/k3s/config.yaml
+      installer=$(mktemp)
+      trap 'rm -f "$installer"' EXIT
+      curl -sfL "$K3S_INSTALLER_URL" -o "$installer"
+      actual=$(sha256sum "$installer" | awk '{print $1}')
+      [[ "$actual" == "$K3S_INSTALLER_SHA256" ]] || { echo 'K3s installer checksum mismatch' >&2; exit 1; }
+      echo "Installing K3s $K3S_VERSION in WSL 2"
+      sudo env INSTALL_K3S_VERSION="$K3S_VERSION" sh "$installer"
+    fi
+    sudo systemctl is-active --quiet k3s || { echo 'K3s service inactive' >&2; exit 1; }
+    verify_local_api_listener
+    wait_for_encryption sudo k3s secrets-encrypt status
+    mkdir -p "$state_dir"
+    chmod 700 "$state_dir"
+    # The privileged read is redirected into an operator-owned file.
+    # shellcheck disable=SC2024
+    sudo cat /etc/rancher/k3s/k3s.yaml > "$state_dir/kubeconfig"
+    chmod 600 "$state_dir/kubeconfig"
+    echo "KUBECONFIG=$state_dir/kubeconfig"
+    KUBECONFIG="$state_dir/kubeconfig" kubectl wait --for=condition=Ready nodes --all --timeout=2m
+    KUBECONFIG="$state_dir/kubeconfig" kubectl get nodes
+    ;;
+  *) echo 'Supported hosts: macOS and WSL 2 Linux' >&2; exit 1 ;;
+esac

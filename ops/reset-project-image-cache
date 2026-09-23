@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_dir/ops/versions.env"
+
+[[ "${1:-}" == --confirm-cluster-removed && $# -eq 1 ]] || {
+  echo 'Usage: ops/reset-project-image-cache --confirm-cluster-removed' >&2
+  exit 2
+}
+
+case "$(uname -s)" in
+  Darwin)
+    lima_cli=''
+    if command -v limactl >/dev/null 2>&1; then
+      lima_cli=$(command -v limactl)
+    elif [[ -x "${XDG_DATA_HOME:-$HOME/.local/share}/lnd-ops/tools/lima-$LIMA_VERSION/bin/limactl" ]]; then
+      lima_cli=${XDG_DATA_HOME:-$HOME/.local/share}/lnd-ops/tools/lima-$LIMA_VERSION/bin/limactl
+    fi
+    if [[ -n "$lima_cli" ]]; then
+      if ! lima_list=$("$lima_cli" list 2>&1); then
+        echo "FAIL: cannot verify Lima state: $lima_list" >&2
+        exit 1
+      fi
+      if printf '%s\n' "$lima_list" | awk 'NR > 1 {print $1}' | grep -Fxq lnd-ops-k3s; then
+        echo 'FAIL: lnd-ops-k3s still exists; remove the disposable project VM first' >&2
+        exit 1
+      fi
+    fi
+    if [[ -d "${LIMA_HOME:-$HOME/.lima}/lnd-ops-k3s" ]]; then
+      echo 'FAIL: lnd-ops-k3s state directory still exists; remove the disposable project VM first' >&2
+      exit 1
+    fi
+    ;;
+  Linux)
+    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null || {
+      echo 'FAIL: expected WSL 2' >&2
+      exit 1
+    }
+    command -v systemctl >/dev/null 2>&1 || { echo 'FAIL: systemctl is unavailable; cannot verify K3s removal' >&2; exit 1; }
+    set +e
+    k3s_status=$(systemctl is-active k3s 2>&1)
+    k3s_status_rc=$?
+    set -e
+    case "$k3s_status/$k3s_status_rc" in
+      inactive/3|unknown/4) ;;
+      active/0) echo 'FAIL: K3s is still active; remove the disposable project cluster first' >&2; exit 1 ;;
+      *) echo "FAIL: cannot verify K3s service state: $k3s_status" >&2; exit 1 ;;
+    esac
+    command -v pgrep >/dev/null 2>&1 || { echo 'FAIL: pgrep is unavailable; cannot verify K3s removal' >&2; exit 1; }
+    if pgrep -x k3s >/dev/null 2>&1 || pgrep -x k3s-server >/dev/null 2>&1; then
+      echo 'FAIL: a K3s process is still running' >&2
+      exit 1
+    fi
+    if command -v k3s >/dev/null 2>&1; then
+      echo 'FAIL: K3s executable still exists; run the K3s uninstall script first' >&2
+      exit 1
+    fi
+    if [[ -e /var/lib/rancher/k3s || -e /etc/rancher/k3s ]]; then
+      echo 'FAIL: K3s project state still exists; run the K3s uninstall script first' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo 'FAIL: supported hosts are macOS and WSL 2' >&2
+    exit 1
+    ;;
+esac
+
+command -v docker >/dev/null 2>&1 || { echo 'FAIL: Docker is unavailable' >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo 'FAIL: Docker engine is unavailable' >&2; exit 1; }
+docker_endpoint=$(docker context inspect --format '{{(index .Endpoints "docker").Host}}' 2>/dev/null) || {
+  echo 'FAIL: cannot inspect the active Docker context' >&2
+  exit 1
+}
+case "$docker_endpoint" in
+  unix://*|npipe://*) ;;
+  *) echo "FAIL: Docker context is not local: $docker_endpoint" >&2; exit 1 ;;
+esac
+
+mapfile_compat() {
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && project_images+=("$line")
+  done
+}
+
+project_images=()
+mapfile_compat < <(
+  docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '
+    /^localhost\/lnd-ops-payment-collector:/ ||
+    /^(docker\.io\/library\/)?python:lnd-ops-verified-/ { print }
+  '
+)
+
+if (( ${#project_images[@]} == 0 )); then
+  echo 'OK: no project-owned Docker image tags remain'
+  exit 0
+fi
+
+printf 'Removing project image tag: %s\n' "${project_images[@]}"
+docker image rm "${project_images[@]}" >/dev/null
+
+if docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '
+  /^localhost\/lnd-ops-payment-collector:/ ||
+  /^(docker\.io\/library\/)?python:lnd-ops-verified-/ { found=1 }
+  END { exit found ? 0 : 1 }
+'; then
+  echo 'FAIL: project-owned Docker image tags remain' >&2
+  exit 1
+fi
+echo 'OK: no project-owned Docker image tags were observed after removal'
