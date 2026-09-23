@@ -33,9 +33,9 @@ if ($basePath -notmatch '^(?:\\\\\?\\)?([A-Za-z]:)\\') {
 }
 $drive = $Matches[1].ToUpperInvariant()
 
-$firewallRule = Get-NetFirewallRule -Name 'lnd-ops-block-k3s-api' -ErrorAction SilentlyContinue
+$firewallRule = Get-NetFirewallRule -DisplayName 'lnd-ops: block inbound Kubernetes API' -ErrorAction SilentlyContinue
 if ($null -eq $firewallRule) {
-    throw 'Required Windows firewall rule lnd-ops-block-k3s-api is missing; rerun windows-enable-wsl.ps1 as Administrator'
+    throw 'Required Windows firewall rule for inbound TCP 6443 is missing; rerun the Ubuntu windows-enable-log-access script as Windows Administrator'
 }
 $portFilter = $firewallRule | Get-NetFirewallPortFilter
 if ($firewallRule.Enabled -ne 'True' -or

@@ -54,6 +54,7 @@ test('remote WSL log access is key-only and scoped to the operator Mac', async (
   assert.match(source, /connectport=22/);
   assert.match(source, /config iphlpsvc start= auto/);
   assert.match(source, /profile=any/);
+  assert.match(source, /localport=6443/);
   assert.match(source, /ssh-keygen -l/);
   assert.match(source, /sshd -T -C/);
   assert.match(source, /install -d -m 0755 \/run\/sshd/);

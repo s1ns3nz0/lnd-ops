@@ -124,6 +124,10 @@ rule_name='lnd-ops WSL SSH from operator Mac'
 "$netsh_exe" advfirewall firewall delete rule name="$rule_name" >/dev/null 2>&1 || true
 "$netsh_exe" advfirewall firewall add rule name="$rule_name" dir=in action=allow enable=yes \
   profile=any protocol=TCP localport="$listen_port" remoteip="$allowed_client_ip" >/dev/null
+k3s_rule_name='lnd-ops: block inbound Kubernetes API'
+"$netsh_exe" advfirewall firewall delete rule name="$k3s_rule_name" >/dev/null 2>&1 || true
+"$netsh_exe" advfirewall firewall add rule name="$k3s_rule_name" dir=in action=block enable=yes \
+  profile=any protocol=TCP localport=6443 >/dev/null
 
 "$netsh_exe" interface portproxy show v4tov4 | tr -d '\r'
 echo "OK: WSL SSH is available through Windows TCP $listen_port for client $allowed_client_ip"
