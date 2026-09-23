@@ -161,7 +161,32 @@ lncli_testnet payinvoice --fee_limit 10 --timeout 60s "$OUTGOING_INVOICE"
 unset OUTGOING_INVOICE
 ```
 
-For the incoming direction, create a 10 satoshi invoice and privately give the returned `payment_request` to the reviewed external payer. Do not record the invoice in evidence.
+For the incoming direction, use either a reviewed external payer or the independent test-only payer wallet managed by `ops/testnet-payer`. The latter removes dependency on public faucet websites while preserving a distinct LND identity and a real testnet Lightning payment. It uses a private 30,000 sat channel funded by `lnd-0`, pushes 15,000 sat to the payer side, and therefore changes the `lnd-0` SCB.
+
+Enable the payer workload without replacing the `lnd-0` StatefulSet or PVC:
+
+```sh
+ops/testnet-payer enable
+```
+
+On its first use, create the payer wallet with the interactive command printed by `enable`. This is a test-only identity. Store its seed and password as secret recovery material and never reuse it for mainnet funds. After it synchronizes:
+
+```sh
+ops/testnet-payer open-channel
+```
+
+The first call broadcasts the funding transaction and exits `10`. After one testnet confirmation, rerun it until it reports an active channel. Create an invoice without putting it in shell history, save only the payment request in a mode `0600` file under the private state directory, and have the payer settle it:
+
+```sh
+install -d -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops"
+umask 077
+lncli_testnet addinvoice --amt 10 --memo phase1-incoming --expiry 3600 \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["payment_request"])' \
+  > "${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/phase1-incoming-invoice.txt"
+ops/testnet-payer pay "${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/phase1-incoming-invoice.txt"
+```
+
+When using another payer instead, create a 10 satoshi invoice and privately give the returned `payment_request` to that payer. Do not record the invoice in evidence.
 
 ```sh
 lncli_testnet addinvoice --amt 10 --memo phase1-incoming --expiry 3600

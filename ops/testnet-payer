@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+namespace=lnd-testnet
+release=lnd-ops
+main_pod=lnd-0-0
+payer_pod=lnd-1-0
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/testnet-payer
+
+usage() {
+  echo 'Usage: ops/testnet-payer enable|status|open-channel|pay INVOICE_FILE' >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+command=$1
+shift
+
+lncli() {
+  local pod=$1
+  shift
+  kubectl -n "$namespace" exec "$pod" -c lnd -- \
+    lncli --lnddir=/data/.lnd --network=testnet "$@"
+}
+
+wallet_ready() {
+  lncli "$1" getinfo >/dev/null 2>&1
+}
+
+case "$command" in
+  enable)
+    [[ $# -eq 0 ]] || usage
+    helm -n "$namespace" status "$release" >/dev/null 2>&1 || {
+      echo 'ACTION: deploy and initialize the persistent testnet lnd-0 node first' >&2
+      exit 10
+    }
+    wallet_ready "$main_pod" || {
+      echo 'ACTION: unlock the persistent testnet lnd-0 wallet first' >&2
+      exit 10
+    }
+    helm upgrade "$release" "$repo_dir/charts/lnd-ops" \
+      --namespace "$namespace" --reuse-values --set lnd.nodes=2
+    kubectl -n "$namespace" rollout status statefulset/lnd-1 --timeout=5m >/dev/null || true
+    echo 'OK testnet payer workload enabled; the existing lnd-0 StatefulSet and PVC were retained'
+    if ! wallet_ready "$payer_pod"; then
+      cat <<'EOF'
+ACTION: create or unlock the test-only payer wallet interactively:
+  kubectl -n lnd-testnet exec -it lnd-1-0 -c lnd -- \
+    lncli --lnddir=/data/.lnd --network=testnet create
+EOF
+      exit 10
+    fi
+    ;;
+  status)
+    [[ $# -eq 0 ]] || usage
+    wallet_ready "$main_pod" || { echo 'ACTION: unlock lnd-0' >&2; exit 10; }
+    wallet_ready "$payer_pod" || { echo 'ACTION: create or unlock lnd-1' >&2; exit 10; }
+    main_key=$(lncli "$main_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
+    payer_key=$(lncli "$payer_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
+    lncli "$main_pod" listchannels | python3 -c '
+import json,sys
+peer=sys.argv[1]
+channels=[c for c in json.load(sys.stdin).get("channels",[]) if c.get("remote_pubkey")==peer]
+active=sum(bool(c.get("active")) for c in channels)
+print(f"OK payer wallets ready: distinct_identities={sys.argv[2] != peer} channels={len(channels)} active={active}")
+' "$payer_key" "$main_key"
+    ;;
+  open-channel)
+    [[ $# -eq 0 ]] || usage
+    wallet_ready "$main_pod" || { echo 'ACTION: unlock lnd-0' >&2; exit 10; }
+    wallet_ready "$payer_pod" || { echo 'ACTION: create or unlock lnd-1' >&2; exit 10; }
+    payer_key=$(lncli "$payer_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
+    lncli "$main_pod" connect "${payer_key}@lnd-1:9735" >/dev/null 2>&1 || true
+    counts=$(lncli "$main_pod" listchannels | python3 -c '
+import json,sys
+peer=sys.argv[1]
+channels=[c for c in json.load(sys.stdin).get("channels",[]) if c.get("remote_pubkey")==peer]
+print(len(channels), sum(bool(c.get("active")) for c in channels))
+' "$payer_key")
+    read -r existing active <<<"$counts"
+    if (( existing > 0 )); then
+      echo "OK payer channel already exists: total=$existing active=$active"
+      (( active > 0 )) || exit 10
+      exit 0
+    fi
+    pending=$(lncli "$main_pod" pendingchannels | python3 -c '
+import json,sys
+peer=sys.argv[1]
+d=json.load(sys.stdin)
+print(sum(1 for x in d.get("pending_open_channels",[]) if x.get("channel",{}).get("remote_node_pub")==peer))
+' "$payer_key")
+    if (( pending == 0 )); then
+      lncli "$main_pod" openchannel --node_key="$payer_key" --local_amt=30000 --push_amt=15000 --private >/dev/null
+      echo 'OK payer channel funding transaction broadcast'
+    else
+      echo 'OK payer channel funding transaction is already pending'
+    fi
+    echo 'ACTION: wait for a testnet confirmation, then rerun ops/testnet-payer open-channel'
+    exit 10
+    ;;
+  pay)
+    [[ $# -eq 1 ]] || usage
+    invoice_file=$1
+    [[ -f "$invoice_file" && ! -L "$invoice_file" ]] || { echo 'Invoice file must be a regular file' >&2; exit 1; }
+    [[ $(stat -c %a "$invoice_file" 2>/dev/null || stat -f %Lp "$invoice_file") == 600 ]] || {
+      echo 'Invoice file must have mode 0600' >&2
+      exit 1
+    }
+    wallet_ready "$main_pod" || { echo 'ACTION: unlock lnd-0' >&2; exit 10; }
+    wallet_ready "$payer_pod" || { echo 'ACTION: create or unlock lnd-1' >&2; exit 10; }
+    payment_request=$(cat "$invoice_file")
+    main_key=$(lncli "$main_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
+    decoded=$(lncli "$payer_pod" decodepayreq "$payment_request")
+    read -r destination amount hash <<<"$(python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(d.get("destination",""), d.get("num_satoshis","0"), d.get("payment_hash",""))
+' <<<"$decoded")"
+    [[ "$destination" == "$main_key" ]] || { echo 'Invoice destination is not lnd-0' >&2; exit 1; }
+    [[ "$amount" =~ ^[0-9]+$ ]] && (( amount > 0 && amount <= 100 )) || {
+      echo 'Invoice amount must be between 1 and 100 satoshis' >&2
+      exit 1
+    }
+    install -d -m 700 "$state_dir"
+    result=$state_dir/payment-$(date -u +%Y%m%dT%H%M%S).txt
+    lncli "$payer_pod" payinvoice --force --fee_limit=100 "$payment_request" >"$result"
+    chmod 600 "$result"
+    payment_request=
+    lncli "$main_pod" lookupinvoice "$hash" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+if d.get("state") != "SETTLED":
+    raise SystemExit("invoice did not settle")
+print("OK payer settled lnd-0 invoice: amount_sat={}".format(d.get("amt_paid_sat")))
+'
+    echo "Private payment response: $result"
+    ;;
+  *) usage ;;
+esac
