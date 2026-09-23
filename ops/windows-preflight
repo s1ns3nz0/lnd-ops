@@ -28,6 +28,7 @@ state = json.load(sys.stdin)
 assert state["wslVersion"] == 2
 assert "Windows 11" in state["osCaption"]
 assert state["backingDrive"].endswith(":")
+assert state["firewallProtected"] is True
 print("OK: {}; WSL 2 distro={}; backing drive={}".format(
     state["osCaption"], state["distroName"], state["backingDrive"]
 ))

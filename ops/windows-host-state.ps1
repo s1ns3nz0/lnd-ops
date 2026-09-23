@@ -33,6 +33,19 @@ if ($basePath -notmatch '^(?:\\\\\?\\)?([A-Za-z]:)\\') {
 }
 $drive = $Matches[1].ToUpperInvariant()
 
+$firewallRule = Get-NetFirewallRule -Name 'lnd-ops-block-k3s-api' -ErrorAction SilentlyContinue
+if ($null -eq $firewallRule) {
+    throw 'Required Windows firewall rule lnd-ops-block-k3s-api is missing; rerun windows-enable-wsl.ps1 as Administrator'
+}
+$portFilter = $firewallRule | Get-NetFirewallPortFilter
+if ($firewallRule.Enabled -ne 'True' -or
+    $firewallRule.Direction -ne 'Inbound' -or
+    $firewallRule.Action -ne 'Block' -or
+    $portFilter.Protocol -ne 'TCP' -or
+    $portFilter.LocalPort -notcontains '6443') {
+    throw 'Required Windows firewall rule does not block inbound TCP 6443'
+}
+
 $protected = $null
 if ($RequireEncryption) {
     & manage-bde.exe -status $drive -protectionaserrorlevel | Out-Null
@@ -54,6 +67,7 @@ if ($OutputDrive) {
     wslVersion = [int]$distro.Version
     vhdPath = $vhdPath
     backingDrive = $drive
+    firewallProtected = $true
     encryptionRequired = [bool]$RequireEncryption
     encrypted = $protected
 } | ConvertTo-Json -Compress

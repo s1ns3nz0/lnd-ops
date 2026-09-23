@@ -20,18 +20,6 @@ wait_for_encryption() {
   return 1
 }
 
-verify_local_api_listener() {
-  local sockets
-  sockets=$(sudo ss -H -ltn 'sport = :6443')
-  [[ -n "$sockets" ]] || { echo 'K3s API is not listening on port 6443' >&2; return 1; }
-  if printf '%s\n' "$sockets" | awk '{print $4}' | grep -Ev '^(127\.0\.0\.1|\[::1\]):6443$' >/dev/null; then
-    echo 'K3s API has a non-loopback listener; refusing a LAN-visible control plane' >&2
-    printf '%s\n' "$sockets" >&2
-    return 1
-  fi
-  echo 'K3s API listener is loopback-only'
-}
-
 ensure_lima() {
   if [[ "${LND_OPS_USE_BUNDLED_LIMA:-0}" != 1 ]] && command -v limactl >/dev/null 2>&1 && \
      limactl --version | grep -Fq "$LIMA_VERSION"; then
@@ -87,15 +75,25 @@ case "$(uname -s)" in
   Linux)
     grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2 Linux' >&2; exit 1; }
     "$repo_dir/ops/windows-preflight"
+    desired_config=$(mktemp)
+    trap 'rm -f "$desired_config"' EXIT
+    printf 'secrets-encryption: true\ntls-san-security: true\ndisable:\n  - traefik\n  - servicelb\ntls-san:\n  - 127.0.0.1\n' > "$desired_config"
+    config_changed=false
+    if ! sudo test -f /etc/rancher/k3s/config.yaml || ! sudo cmp -s "$desired_config" /etc/rancher/k3s/config.yaml; then
+      sudo install -d -m 700 /etc/rancher/k3s
+      sudo install -m 600 "$desired_config" /etc/rancher/k3s/config.yaml
+      config_changed=true
+    fi
     if command -v k3s >/dev/null 2>&1; then
       installed=$(k3s --version | head -1)
       [[ "$installed" == *"$K3S_VERSION"* ]] || { echo "Unexpected K3s: $installed" >&2; exit 1; }
+      if [[ "$config_changed" == true ]]; then
+        echo 'Applying corrected K3s configuration'
+        sudo systemctl restart k3s
+      fi
     else
-      sudo install -d -m 700 /etc/rancher/k3s
-      printf 'secrets-encryption: true\nbind-address: 127.0.0.1\ntls-san-security: true\ndisable:\n  - traefik\n  - servicelb\ntls-san:\n  - 127.0.0.1\n' | sudo tee /etc/rancher/k3s/config.yaml >/dev/null
-      sudo chmod 600 /etc/rancher/k3s/config.yaml
       installer=$(mktemp)
-      trap 'rm -f "$installer"' EXIT
+      trap 'rm -f "$installer" "$desired_config"' EXIT
       curl -sfL "$K3S_INSTALLER_URL" -o "$installer"
       actual=$(sha256sum "$installer" | awk '{print $1}')
       [[ "$actual" == "$K3S_INSTALLER_SHA256" ]] || { echo 'K3s installer checksum mismatch' >&2; exit 1; }
@@ -103,7 +101,6 @@ case "$(uname -s)" in
       sudo env INSTALL_K3S_VERSION="$K3S_VERSION" sh "$installer"
     fi
     sudo systemctl is-active --quiet k3s || { echo 'K3s service inactive' >&2; exit 1; }
-    verify_local_api_listener
     wait_for_encryption sudo k3s secrets-encrypt status
     mkdir -p "$state_dir"
     chmod 700 "$state_dir"

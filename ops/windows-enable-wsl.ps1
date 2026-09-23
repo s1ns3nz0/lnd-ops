@@ -24,10 +24,17 @@ if ($installed -notcontains $DistroName) {
 
 & wsl.exe --set-version $DistroName 2
 if ($LASTEXITCODE -ne 0) { throw "Failed to configure $DistroName as WSL 2" }
+$firewallRule = 'lnd-ops-block-k3s-api'
+Get-NetFirewallRule -Name $firewallRule -ErrorAction SilentlyContinue |
+    Remove-NetFirewallRule
+New-NetFirewallRule -Name $firewallRule `
+    -DisplayName 'lnd-ops: block inbound Kubernetes API' `
+    -Direction Inbound -Action Block -Enabled True -Profile Any `
+    -Protocol TCP -LocalPort 6443 | Out-Null
 $config = "[boot]`nsystemd=true`n"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($config))
 & wsl.exe --distribution $DistroName --user root -- sh -c "echo '$encoded' | base64 -d > /etc/wsl.conf && chmod 644 /etc/wsl.conf"
 if ($LASTEXITCODE -ne 0) { throw 'Failed to enable systemd in /etc/wsl.conf' }
 & wsl.exe --shutdown
 if ($LASTEXITCODE -ne 0) { throw 'Failed to stop WSL after changing its configuration' }
-Write-Output "OK: $DistroName is configured as WSL 2 with systemd. Open Ubuntu again before continuing."
+Write-Output "OK: $DistroName is WSL 2 with systemd and Windows inbound TCP 6443 is blocked. Open Ubuntu again before continuing."

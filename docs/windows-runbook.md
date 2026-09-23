@@ -1,6 +1,6 @@
 # Windows 11 Home test runbook
 
-This is the amd64 acceptance path for the MVP. It keeps the Kubernetes API on WSL loopback, stores the WSL virtual disk on its actual Windows backing volume, and writes SCBs outside that virtual disk on the same encrypted volume. A same-PC backup does not cover loss of the PC.
+This is the amd64 acceptance path for the MVP. It blocks inbound Kubernetes API traffic at the Windows firewall while allowing Pods inside WSL to reach the API, stores the WSL virtual disk on its actual Windows backing volume, and writes SCBs outside that virtual disk on the same encrypted volume. A same-PC backup does not cover loss of the PC.
 
 ## 1. Enable WSL 2 and systemd
 
@@ -40,7 +40,7 @@ The command fails with a list of missing requirements. It also rejects Windows v
 ops/windows-smoke 2>&1 | tee windows-smoke.log
 ```
 
-The script verifies linux/amd64 and linux/arm64 support for the locked OCI indexes, installs the pinned K3s release after checking the installer hash, rejects a non-loopback API listener, deploys regtest and testnet, and verifies Prometheus, Grafana, Alertmanager, and the policy/runtime-security infrastructure. It downloads from the configured public registries and leaves a K3s cluster plus wallet-free PVCs. It is safe to rerun after a partial failure because Helm uses upgrade/install semantics. On a fresh host, wallet checks are reported as `PENDING`; they are manual gates and do not fail the infrastructure test. Any other nonzero exit is a failure.
+The script verifies linux/amd64 and linux/arm64 support for the locked OCI indexes, installs the pinned K3s release after checking the installer hash, requires the Windows inbound TCP 6443 block rule, deploys regtest and testnet, and verifies Prometheus, Grafana, Alertmanager, and the policy/runtime-security infrastructure. It downloads from the configured public registries and leaves a K3s cluster plus wallet-free PVCs. It is safe to rerun after a partial failure because Helm uses upgrade/install semantics. On a fresh host, wallet checks are reported as `PENDING`; they are manual gates and do not fail the infrastructure test. Any other nonzero exit is a failure.
 
 Expected final line:
 
