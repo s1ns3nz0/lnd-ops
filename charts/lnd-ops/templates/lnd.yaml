@@ -93,7 +93,8 @@ spec:
         {{- if $root.Values.monitoring.paymentCollectorImage }}
         - name: payment-metrics
           image: {{ $root.Values.monitoring.paymentCollectorImage | quote }}
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
+          command: [python3, /app/payment_metrics.py]
           env:
             - {name: LND_TLS_CERT, value: /data/.lnd/tls.cert}
             - {name: LND_READONLY_MACAROON, value: /data/.lnd/data/chain/bitcoin/{{ $root.Values.profile }}/readonly.macaroon}
@@ -104,8 +105,16 @@ spec:
             limits: {memory: 256Mi}
           volumeMounts:
             - {name: data, mountPath: /data, readOnly: true}
+            - {name: payment-collector-source, mountPath: /app/payment_metrics.py, subPath: payment_metrics.py, readOnly: true}
         {{- end }}
         {{- end }}
+      {{- if and $root.Values.monitoring.enabled $root.Values.monitoring.paymentCollectorImage }}
+      volumes:
+        - name: payment-collector-source
+          configMap:
+            name: lnd-payment-collector
+            defaultMode: 0444
+      {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

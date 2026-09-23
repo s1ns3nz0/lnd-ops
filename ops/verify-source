@@ -27,6 +27,10 @@ while IFS= read -r -d '' script; do
 done < <(find ops -type f -print0)
 (( bash_count > 0 && python_count > 0 )) || { echo 'FAIL: no Bash or Python ops scripts discovered' >&2; exit 1; }
 python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("collector/payment_metrics.py").read_text())'
+cmp collector/payment_metrics.py charts/lnd-ops/files/payment_metrics.py >/dev/null || {
+  echo 'collector source and Helm-mounted copy differ' >&2
+  exit 1
+}
 
 python3 -m json.tool ops/images.lock.json >/dev/null
 dashboard_count=0

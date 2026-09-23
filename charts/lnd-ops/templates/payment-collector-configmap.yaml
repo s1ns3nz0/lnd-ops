@@ -1,0 +1,9 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.paymentCollectorImage }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lnd-payment-collector
+data:
+  payment_metrics.py: |
+{{ .Files.Get "files/payment_metrics.py" | indent 4 }}
+{{- end }}

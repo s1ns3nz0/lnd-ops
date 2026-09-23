@@ -19,4 +19,4 @@ bitcoin:
 monitoring:
   enabled: false
   lndmonImage: docker.io/lightninglabs/lndmon@sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5
-  paymentCollectorImage: ""
+  paymentCollectorImage: docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0

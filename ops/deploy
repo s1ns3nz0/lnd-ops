@@ -61,9 +61,10 @@ helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"
   --values "$repo_dir/charts/lnd-ops/values-$profile.yaml"
   --set "monitoring.enabled=$monitoring")
 if [[ "$monitoring" == true ]]; then
-  # Adding the sidecar restarts the Pod and LND may need a manual wallet unlock.
-  collector_image=$("$repo_dir/ops/build-collector")
-  helm_command+=(--set-string "monitoring.paymentCollectorImage=$collector_image")
+  # Adding the sidecars restarts the Pod and LND may need a manual wallet unlock.
+  # The collector source is mounted from the chart and runs on the pinned
+  # multi-architecture Python image, so deployment needs no node-local import.
+  :
 else
   helm_command+=(--wait --timeout 15m)
 fi
