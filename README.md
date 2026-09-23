@@ -44,6 +44,8 @@ Prerequisites: on Mac, Docker with Buildx, Helm 4, kubectl, Python 3, skopeo, vi
 
 Before putting funds into a testnet wallet, run `ops/check-host-encryption --check-only`, record the host disk-encryption recovery key independently of that host, then run `ops/check-host-encryption --confirm-recovery-key-recorded`. Do not save the key in the repository, WSL filesystem, shell history, screenshots, or the encrypted machine alone. The script verifies active FileVault and the Lima data location on Mac. From WSL it finds the current distribution's Windows backing volume, requires WSL 2, and checks that volume's protection without reading the recovery key. Exit `10` means encryption passed while recovery-key confirmation remains pending. The [Mac encryption evidence](docs/evidence/mac-host-encryption-2026-09-23.md) records that pending state.
 
+The wallet seed, wallet password, SCB, SCB encryption passphrase, and macaroons have separate roles. The seed recreates on-chain wallet keys, the password unlocks the local wallet database, the SCB supports channel data-loss recovery, its GPG passphrase protects the off-PVC backup, and macaroons authorize RPC operations. The [testnet runbook](docs/testnet-runbook.md#wallet-and-recovery-material) defines their recovery boundaries and storage rules.
+
 ```sh
 ops/doctor
 ops/check-images

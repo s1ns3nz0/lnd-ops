@@ -14,6 +14,20 @@ Run commands from the repository root in WSL. The same flow is repeated later on
 - Review a faucet, peer operator, address, channel limits, and invoice immediately before use. Do not reuse an address merely because it appears in old documentation.
 - Do not uninstall releases or delete the namespace, StatefulSet, PVC, wallet, channel, or SCB during this phase.
 
+## Wallet and recovery material
+
+These items serve different purposes and are not interchangeable.
+
+| Item | Purpose | When it is needed | Storage rule |
+| --- | --- | --- | --- |
+| 24-word cipher seed | Recreates the deterministic on-chain wallet keys and starts an LND recovery | Full wallet recovery after data loss | Record offline and off-host; never store in Git, WSL, chat, logs, or screenshots |
+| Wallet password | Encrypts and unlocks the local `wallet.db` | Every manual unlock after LND restarts | Store outside Git and separately from the seed backup |
+| Static Channel Backup (SCB) | Records the information required to ask channel peers to force-close channels during data-loss recovery | Recovery of funds from channels when the live channel database is lost | Keep a current copy outside the Kubernetes PVC; update it after channel changes |
+| SCB encryption passphrase | Encrypts and decrypts the host-side `.gpg` SCB file | Decrypting the SCB during recovery | Create a unique 20+ character passphrase; keep it outside this PC and separate from the wallet password |
+| Macaroon | Authorizes specific LND RPC operations | Monitoring, diagnostics, and operator commands | Grant minimum permissions; never commit or display its bytes |
+
+The seed does not reconstruct the latest off-chain channel state by itself. The SCB does not contain wallet funds and cannot unlock `wallet.db`. The SCB passphrase does not unlock the wallet. A practical recovery therefore requires the seed, a current SCB, and access to the SCB encryption passphrase; keep them in independently protected locations.
+
 ## 1. Update and verify the deployment
 
 ```sh
@@ -67,7 +81,7 @@ Generate a native SegWit testnet address:
 lncli_testnet newaddress p2wkh
 ```
 
-Review a currently operating Bitcoin testnet3 faucet in a browser, verify that it explicitly supports testnet3, and request at least **300,000 testnet satoshis**. Sharing the generated address is expected; do not share any wallet credential. The minimum is the 200,000 satoshi channel plus a 50,000 satoshi reserve plus funding-fee headroom. Keep at least 50,000 satoshis outside the channel for later on-chain operations.
+Review a currently operating Bitcoin testnet3 faucet in a browser and verify that it explicitly supports testnet3. Sharing the generated address is expected; do not share any wallet credential. Prefer at least **300,000 testnet satoshis** for the 200,000 satoshi channel below. If faucet limits yield 150,000 to 299,999 sats, use the documented 100,000 satoshi channel with a 25,000 satoshi push. In either case retain at least 50,000 satoshis plus funding-fee headroom outside the channel.
 
 Wait for a confirmed balance:
 
@@ -101,11 +115,13 @@ Reject the candidate if its pubkey does not match the independently reviewed sou
 
 ## 5. Open a public channel
 
-The default Phase 1 target is a 200,000 satoshi public channel with 50,000 satoshis pushed to the remote side. The push creates initial inbound capacity and gives those testnet satoshis to the peer. Increase the amount only when the reviewed peer requires it and the faucet balance leaves the required reserve.
+The preferred Phase 1 target is a 200,000 satoshi public channel with 50,000 satoshis pushed to the remote side. With a confirmed balance below 300,000 sats, use a 100,000 satoshi public channel and a 25,000 satoshi push. The push creates initial inbound capacity and gives those testnet satoshis to the peer. Increase the amount only when the reviewed peer requires it and the faucet balance leaves the required reserve.
 
 Check the current testnet fee estimate and choose a funding rate no greater than 10 sat/vbyte for this demo. If the network requires more, wait rather than silently exceeding the ceiling.
 
 ```sh
+# Preferred values; use 100000 and 25000 respectively when the
+# confirmed faucet balance is between 150000 and 299999 sats.
 CHANNEL_SATS=200000
 PUSH_SATS=50000
 FEE_SAT_VBYTE=2
@@ -172,6 +188,12 @@ ops/backup-status-encrypted testnet lnd-0
 ```
 
 The encrypted copy is stored at `~/lnd-ops-backups-encrypted/testnet/lnd-0/channel.backup.gpg`, outside the Kubernetes PVC. The status check proves that its recorded plaintext hash equals the live LND SCB hash without decrypting it again.
+
+`ops/backup-scb-encrypted` asks for a new encryption passphrase; it is not asking for the wallet password or seed. The script streams the live SCB directly from the Pod into GPG AES-256 encryption, decrypts the new ciphertext in memory to verify its hash, and writes only the encrypted file plus a non-secret transfer record. Both files are operator-owned mode `0600`, and their parent directories are mode `0700`.
+
+`ops/backup-status-encrypted` needs no passphrase. It checks file permissions, the ciphertext checksum, and whether the transfer record's plaintext checksum still equals the current live SCB. It proves that the stored ciphertext is the copy produced from the current SCB; the successful backup command is the proof that the chosen passphrase could decrypt that ciphertext at creation time.
+
+Losing the encrypted SCB passphrase makes this host copy unusable for recovery. Losing the SCB while retaining the seed can still require data-loss recovery and peer force-closes. Never test recovery against the active testnet wallet; the isolated recovery exercise owns that procedure.
 
 Create a new encrypted copy after any channel open or close changes the SCB.
 
