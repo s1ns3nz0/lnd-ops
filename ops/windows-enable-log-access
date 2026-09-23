@@ -38,10 +38,20 @@ if [[ ! "$listen_port" =~ ^[0-9]+$ ]] || ((listen_port < 1024 || listen_port > 6
   echo 'FAIL: --listen-port must be between 1024 and 65535' >&2
   exit 1
 fi
-for tool in net.exe netsh.exe; do
-  command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: WSL interop tool missing: $tool" >&2; exit 1; }
-done
-if ! net.exe session >/dev/null 2>&1; then
+find_windows_tool() {
+  local name=$1 candidate
+  candidate=$(command -v "$name" 2>/dev/null || true)
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return
+  fi
+  candidate="/mnt/c/Windows/System32/$name"
+  [[ -x "$candidate" ]] || { echo "FAIL: WSL interop tool missing: $name" >&2; return 1; }
+  printf '%s\n' "$candidate"
+}
+net_exe=$(find_windows_tool net.exe)
+netsh_exe=$(find_windows_tool netsh.exe)
+if ! "$net_exe" session >/dev/null 2>&1; then
   echo 'FAIL: close Ubuntu, then open Ubuntu with Run as administrator and rerun this command' >&2
   exit 1
 fi
@@ -86,14 +96,14 @@ except (ValueError, AssertionError):
     raise SystemExit('FAIL: cannot determine the default-route WSL IPv4 address')
 PY
 
-netsh.exe interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" >/dev/null 2>&1 || true
-netsh.exe interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" connectaddress="$wsl_ip" connectport=22 >/dev/null
+"$netsh_exe" interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" >/dev/null 2>&1 || true
+"$netsh_exe" interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" connectaddress="$wsl_ip" connectport=22 >/dev/null
 rule_name='lnd-ops WSL SSH from operator Mac'
-netsh.exe advfirewall firewall delete rule name="$rule_name" >/dev/null 2>&1 || true
-netsh.exe advfirewall firewall add rule name="$rule_name" dir=in action=allow enable=yes \
+"$netsh_exe" advfirewall firewall delete rule name="$rule_name" >/dev/null 2>&1 || true
+"$netsh_exe" advfirewall firewall add rule name="$rule_name" dir=in action=allow enable=yes \
   profile=private protocol=TCP localport="$listen_port" remoteip="$allowed_client_ip" >/dev/null
 
-netsh.exe interface portproxy show v4tov4 | tr -d '\r'
+"$netsh_exe" interface portproxy show v4tov4 | tr -d '\r'
 echo "OK: WSL SSH is available through Windows TCP $listen_port for client $allowed_client_ip"
 echo "WSL target: $wsl_ip:22; Linux user: $USER"
 echo 'Rerun this script after WSL gets a different IPv4 address.'
