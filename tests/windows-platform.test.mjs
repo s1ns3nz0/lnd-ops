@@ -42,7 +42,7 @@ test('WSL K3s permits in-cluster API access and requires the Windows firewall ga
   assert.doesNotMatch(source, /bind-address: 127\.0\.0\.1/);
   assert.match(source, /tls-san-security: true/);
   const hostState = await readFile(path.join(repo, 'ops/windows-host-state.ps1'), 'utf8');
-  assert.match(hostState, /lnd-ops-block-k3s-api/);
+  assert.match(hostState, /lnd-ops: block inbound Kubernetes API/);
   assert.match(hostState, /LocalPort -notcontains '6443'/);
 });
 
