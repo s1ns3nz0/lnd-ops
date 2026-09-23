@@ -105,7 +105,8 @@ To let the operator Mac read WSL logs without enabling SMB, create a dedicated E
 git pull
 ops/windows-enable-log-access \
   --public-key 'ssh-ed25519 AAAA... lnd-ops-mac-access' \
-  --allowed-client-ip 172.30.1.14
+  --allowed-client-ip 172.30.1.14 \
+  --linux-user miata
 ```
 
 The Ubuntu script installs OpenSSH Server, disables SSH password and root login, installs the supplied public key, uses Windows `netsh.exe` to map TCP 2222 to WSL TCP 22, and permits that Windows port only from the supplied Mac IPv4 address on private networks. The WSL NAT address can change after `wsl --shutdown`; rerun the script to refresh the mapping when that happens.

@@ -2,21 +2,25 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: ops/windows-enable-log-access --public-key "ssh-ed25519 ..." --allowed-client-ip IPv4 [--listen-port 2222]' >&2
+  echo 'Usage: ops/windows-enable-log-access --public-key "ssh-ed25519 ..." --allowed-client-ip IPv4 --linux-user USER [--listen-port 2222]' >&2
   exit 2
 }
 
 public_key=''
 allowed_client_ip=''
 listen_port=2222
+linux_user=''
 while (($#)); do
   case "$1" in
     --public-key) [[ $# -ge 2 ]] || usage; public_key=$2; shift 2 ;;
     --allowed-client-ip) [[ $# -ge 2 ]] || usage; allowed_client_ip=$2; shift 2 ;;
+    --linux-user) [[ $# -ge 2 ]] || usage; linux_user=$2; shift 2 ;;
     --listen-port) [[ $# -ge 2 ]] || usage; listen_port=$2; shift 2 ;;
     *) usage ;;
   esac
 done
+
+[[ "$linux_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'FAIL: --linux-user is required and contains unsupported characters' >&2; exit 1; }
 
 if [[ "$(uname -s)" != Linux ]] || ! grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
   echo 'FAIL: run this script inside WSL 2 Ubuntu' >&2
@@ -59,16 +63,28 @@ fi
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
 key_check=$(mktemp)
-trap 'rm -f "$key_check"' EXIT
+root_keys=''
+trap 'rm -f "$key_check" ${root_keys:+"$root_keys"}' EXIT
 printf '%s\n' "$public_key" > "$key_check"
 ssh-keygen -l -f "$key_check" >/dev/null || { echo 'FAIL: invalid Ed25519 public key data' >&2; exit 1; }
 
-[[ ! -L "$HOME/.ssh" ]] || { echo 'FAIL: refusing a symlinked .ssh directory' >&2; exit 1; }
-install -d -m 700 "$HOME/.ssh"
-[[ ! -L "$HOME/.ssh/authorized_keys" ]] || { echo 'FAIL: refusing a symlinked authorized_keys file' >&2; exit 1; }
-touch "$HOME/.ssh/authorized_keys"
-grep -Fqx "$public_key" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$public_key" >> "$HOME/.ssh/authorized_keys"
-chmod 600 "$HOME/.ssh/authorized_keys"
+target_home=$(getent passwd "$linux_user" | cut -d: -f6)
+[[ -n "$target_home" && -d "$target_home" ]] || { echo "FAIL: Linux user not found: $linux_user" >&2; exit 1; }
+target_group=$(id -gn "$linux_user")
+[[ ! -L "$target_home/.ssh" ]] || { echo 'FAIL: refusing a symlinked .ssh directory' >&2; exit 1; }
+sudo install -d -m 700 -o "$linux_user" -g "$target_group" "$target_home/.ssh"
+[[ ! -L "$target_home/.ssh/authorized_keys" ]] || { echo 'FAIL: refusing a symlinked authorized_keys file' >&2; exit 1; }
+if [[ ! -e "$target_home/.ssh/authorized_keys" ]]; then
+  sudo install -m 600 -o "$linux_user" -g "$target_group" /dev/null "$target_home/.ssh/authorized_keys"
+fi
+sudo grep -Fqx "$public_key" "$target_home/.ssh/authorized_keys" || printf '%s\n' "$public_key" | sudo tee -a "$target_home/.ssh/authorized_keys" >/dev/null
+sudo chown "$linux_user:$target_group" "$target_home/.ssh/authorized_keys"
+sudo chmod 600 "$target_home/.ssh/authorized_keys"
+if [[ "$linux_user" != root ]] && sudo test -f /root/.ssh/authorized_keys; then
+  root_keys=$(mktemp)
+  sudo awk -v key="$public_key" '$0 != key' /root/.ssh/authorized_keys > "$root_keys"
+  sudo install -m 600 -o root -g root "$root_keys" /root/.ssh/authorized_keys
+fi
 
 sudo tee /etc/ssh/sshd_config.d/00-lnd-ops.conf >/dev/null <<'EOF'
 PubkeyAuthentication yes
@@ -82,7 +98,7 @@ sudo systemctl enable --now ssh
 sudo systemctl restart ssh
 sudo systemctl is-active --quiet ssh
 ss -H -ltn 'sport = :22' | grep -q . || { echo 'FAIL: sshd is not listening on TCP 22' >&2; exit 1; }
-effective=$(sudo sshd -T -C "user=$USER,host=localhost,addr=127.0.0.1")
+effective=$(sudo sshd -T -C "user=$linux_user,host=localhost,addr=127.0.0.1")
 grep -qx 'pubkeyauthentication yes' <<<"$effective"
 grep -qx 'passwordauthentication no' <<<"$effective"
 grep -qx 'kbdinteractiveauthentication no' <<<"$effective"
@@ -106,5 +122,5 @@ rule_name='lnd-ops WSL SSH from operator Mac'
 
 "$netsh_exe" interface portproxy show v4tov4 | tr -d '\r'
 echo "OK: WSL SSH is available through Windows TCP $listen_port for client $allowed_client_ip"
-echo "WSL target: $wsl_ip:22; Linux user: $USER"
+echo "WSL target: $wsl_ip:22; Linux user: $linux_user"
 echo 'Rerun this script after WSL gets a different IPv4 address.'
