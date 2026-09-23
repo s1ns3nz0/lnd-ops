@@ -32,8 +32,10 @@ for ((i=0; i<nodes; i++)); do
     pending=1
     continue
   fi
-  if ! kubectl -n "$namespace" exec "$name-0" -- lncli --lnddir=/data/.lnd --network="$profile" getinfo | \
-      python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["identity_pubkey"]'; then
+  info=$(kubectl -n "$namespace" exec "$name-0" -c lnd -- \
+    lncli --lnddir=/data/.lnd --network="$profile" getinfo 2>/dev/null || true)
+  if ! python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["identity_pubkey"]' \
+      <<<"$info" >/dev/null 2>&1; then
     echo "ACTION $name: unlock wallet or inspect LND logs"
     pending=1
   else
