@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+profile=${1:-}
+node=${2:-}
+case "$profile/$node" in
+  testnet/lnd-0|regtest/lnd-0|regtest/lnd-1) ;;
+  *) echo 'Usage: ops/backup-status-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2 ;;
+esac
+[[ $# -eq 2 ]] || { echo 'Usage: ops/backup-status-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2; }
+
+source_file=/data/.lnd/data/chain/bitcoin/$profile/channel.backup
+target=$HOME/lnd-ops-backups-encrypted/$profile/$node/channel.backup.gpg
+record=$(dirname "$target")/.last-success
+[[ -s "$target" && -s "$record" ]] || { echo 'Encrypted SCB or transfer record missing'; exit 10; }
+for dir in "$(dirname "$target")" "$(dirname "$(dirname "$target")")" "$(dirname "$(dirname "$(dirname "$target")")")"; do
+  [[ "$(stat -c %a "$dir")" == 700 ]] || { echo 'Encrypted SCB directory permissions are not 700' >&2; exit 1; }
+done
+for file in "$target" "$record"; do
+  [[ "$(stat -c %a "$file")" == 600 ]] || { echo 'Encrypted SCB file permissions are not 600' >&2; exit 1; }
+done
+read -r epoch plain_hash cipher_hash format < "$record"
+[[ "$epoch" =~ ^[0-9]+$ && "$plain_hash" =~ ^[0-9a-f]{64}$ && "$cipher_hash" =~ ^[0-9a-f]{64}$ && "$format" == gpg-symmetric-v1 ]] || {
+  echo 'Encrypted SCB transfer record invalid' >&2; exit 1;
+}
+actual_cipher_hash=$(sha256sum "$target" | awk '{print $1}')
+source_hash=$(kubectl -n "lnd-$profile" exec "$node-0" -- sha256sum "$source_file" | awk '{print $1}')
+[[ "$cipher_hash" == "$actual_cipher_hash" ]] || { echo 'Encrypted SCB and transfer record differ' >&2; exit 1; }
+[[ "$plain_hash" == "$source_hash" ]] || { echo 'SCB source and recorded encrypted backup differ' >&2; exit 1; }
+age_seconds=$(( $(date +%s) - epoch ))
+(( age_seconds >= 0 )) || { echo 'SCB transfer record is dated in the future' >&2; exit 1; }
+printf 'Encrypted SCB verified: %s seconds old; plaintext-sha256:%s ciphertext-sha256:%s\n' "$age_seconds" "$plain_hash" "$cipher_hash"

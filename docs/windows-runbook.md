@@ -85,6 +85,17 @@ ops/redeploy-check regtest
 
 On Windows, the backup scripts use `<WSL-backing-drive>:\lnd-ops-backups`, apply an ACL for the current Windows user and SYSTEM, and verify the copied SCB hash. Existing wallet PVCs are reused during ordinary redeployment.
 
+If Windows Home does not expose Device Encryption yet, use the explicit temporary encrypted-file path instead of weakening the normal backup gate:
+
+```sh
+ops/backup-scb-encrypted regtest lnd-0
+ops/backup-scb-encrypted regtest lnd-1
+ops/backup-status-encrypted regtest lnd-0
+ops/backup-status-encrypted regtest lnd-1
+```
+
+These commands stream each SCB directly into GPG AES-256 symmetric encryption under `~/lnd-ops-backups-encrypted`, immediately decrypt it in memory to verify the plaintext hash, and leave no plaintext backup. Enter a strong unique passphrase interactively and keep it outside this PC. The passphrase is never accepted as an argument, environment variable, or log input. `ops/redeploy-check regtest` accepts these verified encrypted copies. Enable Secure Boot and Windows Device Encryption later, then replace them with the normal `ops/backup-scb` copies.
+
 ## 6. Disposable clean-start proof
 
 Only run the destructive commands in the [clean-start runbook](clean-start-runbook.md) after `ops/reset-disposable regtest --confirm-unfunded` and `ops/reset-disposable testnet --confirm-unfunded` both positively inspect the data and succeed. The K3s uninstall removes its datastore and local PVC data. Once any wallet exists, preserve the PVC and use `ops/redeploy-check` instead.

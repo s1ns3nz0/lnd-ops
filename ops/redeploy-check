@@ -109,6 +109,10 @@ def host_scb_path():
 
 
 def regtest_host_scb_paths():
+    encrypted_root = pathlib.Path.home() / "lnd-ops-backups-encrypted/regtest"
+    encrypted = {f"lnd-{index}": encrypted_root / f"lnd-{index}/channel.backup.gpg" for index in range(2)}
+    if all(path.is_file() for path in encrypted.values()):
+        return encrypted
     if sys.platform == "darwin":
         root = pathlib.Path.home() / "lnd-ops-backups/regtest"
     else:
@@ -151,14 +155,27 @@ def regtest_snapshot(scb_hosts, history_time=None, history_series=None):
         host = scb_hosts[name]
         if not host.is_file() or host.stat().st_size == 0:
             raise ManualGate(f"Copy the {pod} SCB to the host with ops/backup-scb")
-        host_hash = hashlib.sha256(host.read_bytes()).hexdigest()
         source = "/data/.lnd/data/chain/bitcoin/regtest/channel.backup"
         try:
             source_hash = kubectl("-n", "lnd-regtest", "exec", pod, "--", "sha256sum", source).split()[0]
         except (RuntimeError, IndexError) as exc:
             raise ManualGate(f"{pod} SCB is absent; open a channel and run ops/backup-scb") from exc
-        if source_hash != host_hash:
-            raise ManualGate(f"{pod} SCB source and host copy differ; run ops/backup-scb")
+        if host.suffix == ".gpg":
+            record = host.parent / ".last-success"
+            try:
+                fields = record.read_text().split()
+                _, plain_hash, cipher_hash, backup_format = fields
+            except (OSError, ValueError) as exc:
+                raise ManualGate(f"{pod} encrypted SCB transfer record is absent or invalid") from exc
+            host_hash = hashlib.sha256(host.read_bytes()).hexdigest()
+            if backup_format != "gpg-symmetric-v1" or cipher_hash != host_hash or plain_hash != source_hash:
+                raise ManualGate(f"{pod} encrypted SCB or transfer record differs from the source")
+        else:
+            host_hash = hashlib.sha256(host.read_bytes()).hexdigest()
+            plain_hash = host_hash
+            backup_format = "plain-on-encrypted-volume-v1"
+            if source_hash != host_hash:
+                raise ManualGate(f"{pod} SCB source and host copy differ; run ops/backup-scb")
         pvc = json.loads(kubectl("-n", "lnd-regtest", "get", "pvc", f"data-{name}-0", "-o", "json"))
         nodes[name] = {
             "node_key": info["identity_pubkey"],
@@ -166,6 +183,8 @@ def regtest_snapshot(scb_hosts, history_time=None, history_series=None):
             "lnd_pvc_uid": pvc["metadata"]["uid"],
             "scb_source_sha256": source_hash,
             "scb_host_sha256": host_hash,
+            "scb_plaintext_sha256": plain_hash,
+            "scb_format": backup_format,
         }
         all_channel_points.update(channel_points)
     if len(all_channel_points) != 1:

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+profile=${1:-}
+node=${2:-}
+case "$profile/$node" in
+  testnet/lnd-0|regtest/lnd-0|regtest/lnd-1) ;;
+  *) echo 'Usage: ops/backup-scb-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2 ;;
+esac
+[[ $# -eq 2 ]] || { echo 'Usage: ops/backup-scb-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2; }
+[[ -t 0 && -t 1 ]] || { echo 'Run in an interactive terminal; the encryption passphrase is never accepted through arguments or pipes' >&2; exit 2; }
+command -v gpg >/dev/null || { echo 'gpg is required' >&2; exit 1; }
+
+source_file=/data/.lnd/data/chain/bitcoin/$profile/channel.backup
+namespace=lnd-$profile
+pod=$node-0
+destination_dir=$HOME/lnd-ops-backups-encrypted/$profile/$node
+target=$destination_dir/channel.backup.gpg
+record=$destination_dir/.last-success
+mkdir -p "$destination_dir"
+chmod 700 "$HOME/lnd-ops-backups-encrypted" "$HOME/lnd-ops-backups-encrypted/$profile" "$destination_dir"
+
+kubectl -n "$namespace" exec "$pod" -- test -s "$source_file" >/dev/null 2>&1 || {
+  echo 'SCB absent or empty; open a channel first' >&2
+  exit 10
+}
+
+read -r -s -p "Encryption passphrase for $node SCB: " passphrase; echo
+read -r -s -p 'Repeat encryption passphrase: ' confirmation; echo
+[[ -n "$passphrase" && "$passphrase" == "$confirmation" ]] || { echo 'Passphrases are empty or do not match' >&2; exit 1; }
+confirmation=
+tmp=$(mktemp "$destination_dir/.channel.backup.gpg.XXXXXXXX")
+record_tmp=
+cleanup() { rm -f "$tmp" "${record_tmp:-}"; passphrase=; }
+trap cleanup EXIT
+
+source_hash() { kubectl -n "$namespace" exec "$pod" -- sha256sum "$source_file" | awk '{print $1}'; }
+digest() { sha256sum "$1" | awk '{print $1}'; }
+before=$(source_hash)
+if ! kubectl -n "$namespace" exec "$pod" -- cat "$source_file" | \
+    gpg --batch --yes --quiet --pinentry-mode loopback --passphrase-fd 3 \
+      --symmetric --cipher-algo AES256 --s2k-digest-algo SHA512 --output "$tmp" 3<<<"$passphrase"; then
+  echo 'SCB encryption failed' >&2
+  exit 1
+fi
+after=$(source_hash)
+verified=$(gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 3 \
+  --decrypt "$tmp" 3<<<"$passphrase" | sha256sum | awk '{print $1}')
+[[ "$before" == "$after" && "$after" == "$verified" ]] || {
+  echo 'SCB changed during encryption or decrypted checksum mismatched' >&2
+  exit 1
+}
+cipher_hash=$(digest "$tmp")
+chmod 600 "$tmp"
+mv -f "$tmp" "$target"
+tmp=
+record_tmp=$(mktemp "$destination_dir/.last-success.XXXXXXXX")
+printf '%s %s %s gpg-symmetric-v1\n' "$(date +%s)" "$verified" "$cipher_hash" > "$record_tmp"
+chmod 600 "$record_tmp"
+mv -f "$record_tmp" "$record"
+record_tmp=
+passphrase=
+printf 'Encrypted SCB verified: plaintext-sha256:%s ciphertext-sha256:%s\n' "$verified" "$cipher_hash"
+echo 'Store this passphrase outside the PC; it is required for recovery'

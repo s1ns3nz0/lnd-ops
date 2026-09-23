@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile, chmod } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -68,6 +69,43 @@ esac
     await writeFile(record, originalRecord, { mode: 0o600 });
     await writeFile(source, 'changed source backup\n');
     assert.match(run('backup-status').stderr, /source and host copy differ/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('encrypted SCB status verifies ciphertext and current source hashes without a passphrase', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'lnd-ops-scb-encrypted-'));
+  try {
+    const bin = join(root, 'bin');
+    const home = join(root, 'home');
+    const directory = join(home, 'lnd-ops-backups-encrypted/regtest/lnd-0');
+    await mkdir(bin, { recursive: true });
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await chmod(join(home, 'lnd-ops-backups-encrypted'), 0o700);
+    await chmod(join(home, 'lnd-ops-backups-encrypted/regtest'), 0o700);
+    const plaintext = Buffer.from('disposable scb plaintext');
+    const ciphertext = Buffer.from('encrypted fixture bytes');
+    const hash = (value) => createHash('sha256').update(value).digest('hex');
+    const target = join(directory, 'channel.backup.gpg');
+    const record = join(directory, '.last-success');
+    await writeFile(target, ciphertext, { mode: 0o600 });
+    await writeFile(record, `${Math.floor(Date.now() / 1000)} ${hash(plaintext)} ${hash(ciphertext)} gpg-symmetric-v1\n`, { mode: 0o600 });
+    await writeFile(join(bin, 'kubectl'), `#!/bin/sh\nprintf '${hash(plaintext)}  /data/channel.backup\\n'\n`, { mode: 0o755 });
+    await writeFile(join(bin, 'stat'), `#!/usr/bin/env python3
+import os, sys
+assert sys.argv[1] == '-c' and sys.argv[2] == '%a'
+print(oct(os.stat(sys.argv[3]).st_mode & 0o777)[2:])
+`, { mode: 0o755 });
+    const run = () => spawnSync(join(repo, 'ops/backup-status-encrypted'), ['regtest', 'lnd-0'], {
+      cwd: repo,
+      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    const verified = run();
+    assert.equal(verified.status, 0, verified.stderr);
+    await writeFile(target, 'tampered', { mode: 0o600 });
+    assert.match(run().stderr, /Encrypted SCB and transfer record differ/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
