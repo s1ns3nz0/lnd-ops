@@ -76,6 +76,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
 EOF
+sudo install -d -m 0755 /run/sshd
 sudo sshd -t
 sudo systemctl enable --now ssh
 sudo systemctl restart ssh
