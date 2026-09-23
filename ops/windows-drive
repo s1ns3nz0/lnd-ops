@@ -8,13 +8,18 @@ if [[ "$(uname -s)" != Linux ]] || ! grep -qiE '(microsoft|wsl)' "$osrelease_fil
   echo 'FAIL: windows-drive must run inside WSL 2' >&2
   exit 1
 fi
-[[ -n "${WSL_DISTRO_NAME:-}" ]] || { echo 'FAIL: WSL_DISTRO_NAME is unavailable' >&2; exit 1; }
 for tool in powershell.exe wslpath; do
   command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is unavailable" >&2; exit 1; }
 done
+distro_name=${WSL_DISTRO_NAME:-}
+if [[ -z "$distro_name" ]]; then
+  windows_root=$(wslpath -w / | tr -d '\r')
+  distro_name=$(python3 -c 'import sys; p=[x for x in sys.argv[1].split("\\") if x]; print(p[1] if len(p) >= 2 and p[0] in ("wsl.localhost", "wsl$") else "")' "$windows_root")
+fi
+[[ "$distro_name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo 'FAIL: cannot determine the current WSL distribution name' >&2; exit 1; }
 script=$(wslpath -w "$repo_dir/ops/windows-encryption-status.ps1")
 drive=$(powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-  -File "$script" -DistroName "$WSL_DISTRO_NAME" -OutputDrive | tr -d '\r\n')
+  -File "$script" -DistroName "$distro_name" -OutputDrive | tr -d '\r\n')
 [[ "$drive" =~ ^[A-Za-z]:$ ]] || { echo "FAIL: invalid Windows backing drive: $drive" >&2; exit 1; }
 letter=$(printf '%s' "${drive%:}" | tr '[:upper:]' '[:lower:]')
 mount=$mnt_root/$letter

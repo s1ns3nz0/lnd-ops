@@ -16,7 +16,7 @@ test('windows-drive uses the encrypted WSL backing volume reported by PowerShell
   await writeFile(path.join(root, 'osrelease'), '5.15.0-microsoft-standard-WSL2\n');
   const commands = {
     uname: '#!/bin/sh\n[ "$1" = -s ] && echo Linux || echo x86_64\n',
-    wslpath: '#!/bin/sh\necho C:\\\\repo\\\\ops\\\\windows-encryption-status.ps1\n',
+    wslpath: '#!/bin/sh\nif [ "$2" = / ]; then printf "\\\\\\\\wsl.localhost\\\\Ubuntu\\\\\\n"; else echo C:\\\\repo\\\\ops\\\\windows-encryption-status.ps1; fi\n',
     'powershell.exe': '#!/bin/sh\necho D:\n',
   };
   for (const [name, body] of Object.entries(commands)) {
@@ -35,6 +35,12 @@ test('windows-drive uses the encrypted WSL backing volume reported by PowerShell
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), path.join(mounts, 'd'));
+});
+
+test('windows-drive discovers its distribution name in SSH sessions', async () => {
+  const source = await readFile(path.join(repo, 'ops/windows-drive'), 'utf8');
+  assert.match(source, /wslpath -w \//);
+  assert.match(source, /wsl\.localhost/);
 });
 
 test('WSL K3s permits in-cluster API access and requires the Windows firewall gate', async () => {
