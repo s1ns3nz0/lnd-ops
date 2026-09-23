@@ -76,6 +76,7 @@ ops/check-host-encryption --confirm-recovery-key-recorded
 Create the LND wallets running inside the Windows WSL Kubernetes cluster interactively and keep their seeds out of the repository. Regtest requires the two wallets `lnd-0` and `lnd-1`; testnet uses its own later wallet. Follow the [regtest runbook](regtest-runbook.md), including its channel and bidirectional payment steps, then use:
 
 ```sh
+ops/unlock-regtest
 ops/exercise-regtest
 ops/backup-scb regtest lnd-0
 ops/backup-scb regtest lnd-1

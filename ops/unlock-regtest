@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+[[ -r "$KUBECONFIG" ]] || {
+  echo "Kubeconfig missing: $KUBECONFIG; run ops/bootstrap" >&2
+  exit 1
+}
+[[ -t 0 && -t 1 ]] || {
+  echo 'Run ops/unlock-regtest in an interactive terminal; wallet passwords are never accepted through arguments or pipes' >&2
+  exit 2
+}
+
+for node in lnd-0 lnd-1; do
+  pod=$node-0
+  if kubectl -n lnd-regtest exec "$pod" -c lnd -- \
+      lncli --lnddir=/data/.lnd --network=regtest getinfo >/dev/null 2>&1; then
+    echo "OK $node: already unlocked"
+    continue
+  fi
+  echo "Unlocking $node; enter its wallet password at the LND prompt"
+  kubectl -n lnd-regtest exec -it "$pod" -c lnd -- \
+    lncli --lnddir=/data/.lnd --network=regtest unlock
+done
+
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/verify" regtest
