@@ -26,7 +26,7 @@ This file owns phase order, portfolio scope, and final demo acceptance. The link
 | Phase | Status at this revision | Next proof |
 | --- | --- | --- |
 | Windows regtest functional baseline | Complete | Keep passing during later changes |
-| Phase 0 acceptance command | Next | One stable coordinator and result schema |
+| Phase 0 acceptance command | Complete on Windows | Keep the read-only gate passing; repeat on Mac before the final demo |
 | Windows testnet | Pending | External peer, channel, payment, backup, and redeploy evidence |
 | Mac runtime equivalence | Pending | Host-specific clean and functional evidence |
 | Security enforcement | Pending | Positive and negative policy tests |
@@ -74,7 +74,7 @@ The project is complete when a reviewer can clone the public repository and foll
 
 - exit `0` for a complete pass, `10` for a missing manual or freshness gate, `1` for a failed invariant, and `2` for invalid invocation;
 - a versioned JSON result under the private project state directory plus a concise terminal summary;
-- the exact evidence paths, one-hour payment freshness rule, SCB source/hash equality rule, and required successful redeploy result;
+- the exact evidence paths, one-hour correlated payment freshness rule, SCB source/hash equality rule, and a successful redeploy result no older than 24 hours;
 - timeouts and host-neutral behavior for Mac arm64 and Windows WSL 2 amd64;
 - tests that cover a complete pass, a manual gate, stale evidence, mismatched identity/storage state, and malformed evidence.
 

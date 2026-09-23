@@ -55,6 +55,14 @@ ops/deploy-monitoring
 ops/verify-monitoring --infrastructure-only
 ```
 
+After wallets, the active channel, recent bidirectional payments, both SCB copies, live monitoring, and a passing wallet-preserving redeploy proof exist, run the read-only Phase 0 gate:
+
+```sh
+ops/acceptance regtest
+```
+
+It exits `0` only when the complete regtest state still matches passing redeploy evidence from the last 24 hours, exits `10` for a missing manual or one-hour payment freshness gate, and exits `1` for a broken invariant or malformed evidence. The payment gate correlates each node's successful payment hash with the other node's settled invoice. A passing run writes a private `0600` JSON result under `${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/evidence/` without running payments, changing channels, creating backups, or redeploying workloads.
+
 `ops/verify regtest` exits `10` while wallet creation or unlock is pending. Follow the [regtest runbook](docs/regtest-runbook.md) for that manual gate; afterward, `ops/exercise-regtest` can mine disposable coins, open a channel, and verify fresh payments in both directions. Its success path awaits wallet creation. `ops/reset-disposable regtest|testnet --confirm-unfunded` removes the selected namespace and its PVCs only while every wallet in that profile is absent. It must not be used for a funded node. Management access uses the local kubeconfig; no public Kubernetes endpoint or LND service is configured.
 
 For a disposable wallet-free clean-start proof, remove the Mac Lima VM or uninstall Windows K3s first, then run `ops/reset-project-image-cache --confirm-cluster-removed`. It fails closed when it cannot prove cluster absence and refuses remote Docker contexts. Once wallets exist, preserve and reuse their PVCs; prove ordinary deployment by comparing identity and state before and after chart reapplication. Docker Buildx layers and upstream registry cache remain reusable; project collector and verified-base tags are absent at the successful reset command's completion.
