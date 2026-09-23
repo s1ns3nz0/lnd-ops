@@ -111,6 +111,10 @@ kube-state-metrics:
   image:
     sha: sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b
 prometheus-node-exporter:
+  # WSL 2 and Lima root mounts are not shared mounts. Node exporter only reads
+  # the mounted tree, so recursive host mount propagation is unnecessary.
+  hostRootFsMount:
+    mountPropagation: None
   image:
     digest: sha256:8c9bac11973b94b59be88d6e11fee4429aa743c8846cdc75d65b18db33f6a106
     distroless: true
