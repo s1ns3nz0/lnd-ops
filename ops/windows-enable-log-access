@@ -82,6 +82,8 @@ sudo chown "$linux_user:$target_group" "$target_home/.ssh/authorized_keys"
 sudo chmod 600 "$target_home/.ssh/authorized_keys"
 if [[ "$linux_user" != root ]] && sudo test -f /root/.ssh/authorized_keys; then
   root_keys=$(mktemp)
+  # Root privileges are needed for the input; the output is intentionally operator-owned staging.
+  # shellcheck disable=SC2024
   sudo awk -v key="$public_key" '$0 != key' /root/.ssh/authorized_keys > "$root_keys"
   sudo install -m 600 -o root -g root "$root_keys" /root/.ssh/authorized_keys
 fi
