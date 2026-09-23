@@ -70,3 +70,10 @@ test('remote WSL log access is key-only and scoped to the operator Mac', async (
   assert.match(source, /user=\$linux_user/);
   assert.doesNotMatch(source, /PRIVATE KEY/);
 });
+
+test('collector base loading avoids the skopeo Docker API compatibility path', async () => {
+  const source = await readFile(path.join(repo, 'ops/build-collector'), 'utf8');
+  assert.match(source, /docker-archive:/);
+  assert.match(source, /docker load -i/);
+  assert.doesNotMatch(source, /docker-daemon:/);
+});

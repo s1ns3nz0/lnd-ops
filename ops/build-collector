@@ -35,8 +35,12 @@ image=localhost/lnd-ops-payment-collector:$source_hash
 base_digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["payment-collector-base"]["digest"])' "$repo_dir/ops/images.lock.json")
 base_tag=docker.io/library/python:lnd-ops-verified-${base_digest:7:16}-${platform#linux/}
 echo "Loading pinned Python base for $platform into Docker" >&2
+base_archive=$(mktemp "${TMPDIR:-/tmp}/lnd-ops-base.XXXXXXXX.tar")
+trap 'rm -f "$base_archive"' EXIT
 skopeo copy --override-os linux --override-arch "${platform#linux/}" \
-  "docker://docker.io/library/python@$base_digest" "docker-daemon:$base_tag" >&2
+  "docker://docker.io/library/python@$base_digest" "docker-archive:$base_archive:$base_tag" >&2
+docker load -i "$base_archive" >&2
+docker image inspect "$base_tag" >/dev/null
 echo "Building $image for $platform" >&2
 docker buildx build --pull=false --platform "$platform" --load \
   --build-arg "BASE_IMAGE=$base_tag" --tag "$image" "$repo_dir/collector" >&2
