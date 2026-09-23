@@ -99,18 +99,16 @@ Never include seeds, passwords, macaroons, recovery keys, raw SCBs, kubeconfig c
 
 ## Optional: Mac read-only operator access to WSL logs
 
-To let the operator Mac read WSL logs without enabling SMB, create a dedicated Ed25519 key on the Mac and copy only its `.pub` line. From elevated Windows PowerShell in the Windows checkout:
+To let the operator Mac read WSL logs without enabling SMB, create a dedicated Ed25519 key on the Mac and copy only its `.pub` line. Open Ubuntu using **Run as administrator**, pull the latest repository, and run:
 
-```powershell
+```sh
 git pull
-$PublicKey = 'ssh-ed25519 AAAA... lnd-ops-mac-access'
-.\ops\windows-enable-log-access.ps1 `
-  -PublicKey $PublicKey `
-  -AllowedClientIPv4 172.30.1.14 `
-  -LinuxUser miata
+ops/windows-enable-log-access \
+  --public-key 'ssh-ed25519 AAAA... lnd-ops-mac-access' \
+  --allowed-client-ip 172.30.1.14
 ```
 
-The script installs OpenSSH Server inside Ubuntu, disables SSH password and root login, installs the supplied public key, maps Windows TCP 2222 to WSL TCP 22, and permits that Windows port only from the supplied Mac IPv4 address on private networks. The WSL NAT address can change after `wsl --shutdown`; rerun the script to refresh the mapping when that happens.
+The Ubuntu script installs OpenSSH Server, disables SSH password and root login, installs the supplied public key, uses Windows `netsh.exe` to map TCP 2222 to WSL TCP 22, and permits that Windows port only from the supplied Mac IPv4 address on private networks. The WSL NAT address can change after `wsl --shutdown`; rerun the script to refresh the mapping when that happens.
 
 The Mac can then read the project directly:
 

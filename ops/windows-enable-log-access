@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo 'Usage: ops/windows-enable-log-access --public-key "ssh-ed25519 ..." --allowed-client-ip IPv4 [--listen-port 2222]' >&2
+  exit 2
+}
+
+public_key=''
+allowed_client_ip=''
+listen_port=2222
+while (($#)); do
+  case "$1" in
+    --public-key) [[ $# -ge 2 ]] || usage; public_key=$2; shift 2 ;;
+    --allowed-client-ip) [[ $# -ge 2 ]] || usage; allowed_client_ip=$2; shift 2 ;;
+    --listen-port) [[ $# -ge 2 ]] || usage; listen_port=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+if [[ "$(uname -s)" != Linux ]] || ! grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
+  echo 'FAIL: run this script inside WSL 2 Ubuntu' >&2
+  exit 1
+fi
+[[ "$public_key" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+={0,3}([[:space:]].*)?$ ]] || {
+  echo 'FAIL: --public-key must contain one OpenSSH Ed25519 public key' >&2
+  exit 1
+}
+python3 - "$allowed_client_ip" <<'PY'
+import ipaddress, sys
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+    assert address.version == 4
+except (ValueError, AssertionError):
+    raise SystemExit('FAIL: --allowed-client-ip must be an IPv4 address')
+PY
+if [[ ! "$listen_port" =~ ^[0-9]+$ ]] || ((listen_port < 1024 || listen_port > 65535)); then
+  echo 'FAIL: --listen-port must be between 1024 and 65535' >&2
+  exit 1
+fi
+for tool in net.exe netsh.exe; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: WSL interop tool missing: $tool" >&2; exit 1; }
+done
+if ! net.exe session >/dev/null 2>&1; then
+  echo 'FAIL: close Ubuntu, then open Ubuntu with Run as administrator and rerun this command' >&2
+  exit 1
+fi
+
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
+key_check=$(mktemp)
+trap 'rm -f "$key_check"' EXIT
+printf '%s\n' "$public_key" > "$key_check"
+ssh-keygen -l -f "$key_check" >/dev/null || { echo 'FAIL: invalid Ed25519 public key data' >&2; exit 1; }
+
+[[ ! -L "$HOME/.ssh" ]] || { echo 'FAIL: refusing a symlinked .ssh directory' >&2; exit 1; }
+install -d -m 700 "$HOME/.ssh"
+[[ ! -L "$HOME/.ssh/authorized_keys" ]] || { echo 'FAIL: refusing a symlinked authorized_keys file' >&2; exit 1; }
+touch "$HOME/.ssh/authorized_keys"
+grep -Fqx "$public_key" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$public_key" >> "$HOME/.ssh/authorized_keys"
+chmod 600 "$HOME/.ssh/authorized_keys"
+
+sudo tee /etc/ssh/sshd_config.d/00-lnd-ops.conf >/dev/null <<'EOF'
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+EOF
+sudo sshd -t
+sudo systemctl enable --now ssh
+sudo systemctl restart ssh
+sudo systemctl is-active --quiet ssh
+ss -H -ltn 'sport = :22' | grep -q . || { echo 'FAIL: sshd is not listening on TCP 22' >&2; exit 1; }
+effective=$(sudo sshd -T -C "user=$USER,host=localhost,addr=127.0.0.1")
+grep -qx 'pubkeyauthentication yes' <<<"$effective"
+grep -qx 'passwordauthentication no' <<<"$effective"
+grep -qx 'kbdinteractiveauthentication no' <<<"$effective"
+
+wsl_ip=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([^ ]*\).*/\1/p' | head -1)
+python3 - "$wsl_ip" <<'PY'
+import ipaddress, sys
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+    assert address.version == 4
+except (ValueError, AssertionError):
+    raise SystemExit('FAIL: cannot determine the default-route WSL IPv4 address')
+PY
+
+netsh.exe interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" >/dev/null 2>&1 || true
+netsh.exe interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport="$listen_port" connectaddress="$wsl_ip" connectport=22 >/dev/null
+rule_name='lnd-ops WSL SSH from operator Mac'
+netsh.exe advfirewall firewall delete rule name="$rule_name" >/dev/null 2>&1 || true
+netsh.exe advfirewall firewall add rule name="$rule_name" dir=in action=allow enable=yes \
+  profile=private protocol=TCP localport="$listen_port" remoteip="$allowed_client_ip" >/dev/null
+
+netsh.exe interface portproxy show v4tov4 | tr -d '\r'
+echo "OK: WSL SSH is available through Windows TCP $listen_port for client $allowed_client_ip"
+echo "WSL target: $wsl_ip:22; Linux user: $USER"
+echo 'Rerun this script after WSL gets a different IPv4 address.'

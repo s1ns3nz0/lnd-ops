@@ -18,8 +18,7 @@ jobs:
             'ops/windows-host-state.ps1',
             'ops/windows-encryption-status.ps1',
             'ops/windows-backup-acl.ps1',
-            'ops/windows-enable-wsl.ps1',
-            'ops/windows-enable-log-access.ps1'
+            'ops/windows-enable-wsl.ps1'
           )
           foreach ($script in $scripts) {
             $tokens = $null
@@ -48,7 +47,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Check scripts and image lock syntax
         run: |
-          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
+          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
           bash -n ops/build-collector
           python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/verify-monitoring", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts")]'
           python3 -m py_compile ops/exercise-regtest ops/verify-regtest-recovery collector/payment_metrics.py
