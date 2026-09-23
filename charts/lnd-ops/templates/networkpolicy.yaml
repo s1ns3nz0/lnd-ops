@@ -28,12 +28,12 @@ spec:
         - {protocol: TCP, port: 9093}
         {{- end }}
 {{- end }}
-{{- if eq .Values.profile "regtest" }}
+{{- if gt (int .Values.lnd.nodes) 1 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: regtest-peer-traffic
+  name: lnd-peer-traffic
 spec:
   podSelector:
     matchExpressions:
@@ -46,6 +46,8 @@ spec:
               - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
       ports:
         - {protocol: TCP, port: 9735}
+{{- end }}
+{{- if eq .Values.profile "regtest" }}
 {{- if .Values.bitcoin.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
