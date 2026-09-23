@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Read-only Phase 0 acceptance coordinator for the funded regtest slice."""
+
+import hashlib
+import json
+import os
+import pathlib
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+KUBECONFIG = pathlib.Path(os.environ.get("KUBECONFIG", STATE / "kubeconfig"))
+NAMESPACE = "lnd-regtest"
+NODES = ("lnd-0", "lnd-1")
+RECENT_SECONDS = 3600
+SCB_SOURCE = "/data/.lnd/data/chain/bitcoin/regtest/channel.backup"
+PROM_PVC = "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0"
+
+
+class ManualGate(Exception):
+    pass
+
+
+class InvariantFailure(Exception):
+    pass
+
+
+def command(args, timeout=120):
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise InvariantFailure(f"timed out: {pathlib.Path(args[0]).name}") from exc
+    if result.returncode == 10:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise ManualGate(detail[-1] if detail else f"manual gate: {pathlib.Path(args[0]).name}")
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise InvariantFailure(detail[-1] if detail else f"failed: {pathlib.Path(args[0]).name}")
+    return result.stdout
+
+
+def kubectl(*args):
+    return command(["kubectl", *args])
+
+
+def kubectl_json(*args):
+    try:
+        return json.loads(kubectl(*args))
+    except json.JSONDecodeError as exc:
+        raise InvariantFailure(f"malformed Kubernetes or LND JSON for {args[-1]}") from exc
+
+
+def lncli(node, operation, *args):
+    return kubectl_json(
+        "-n", NAMESPACE, "exec", f"{node}-0", "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", "--network=regtest", operation, *args,
+    )
+
+
+def parse_epoch(value, divisor=1):
+    try:
+        return int(value) / divisor
+    except (TypeError, ValueError):
+        return 0
+
+
+def payment_epoch(payment):
+    if payment.get("creation_time_ns"):
+        return parse_epoch(payment["creation_time_ns"], 1_000_000_000)
+    return parse_epoch(payment.get("creation_date"))
+
+
+def invoice_epoch(invoice):
+    return parse_epoch(invoice.get("settle_date"))
+
+
+def live_state(now):
+    nodes = {}
+    common_channels = None
+    for node in NODES:
+        info = lncli(node, "getinfo")
+        channels = lncli(node, "listchannels").get("channels", [])
+        active = sorted(
+            channel["channel_point"] for channel in channels
+            if channel.get("active") and int(channel.get("capacity", 0)) > 0
+        )
+        if not info.get("identity_pubkey") or not active:
+            raise ManualGate(f"{node} must be unlocked with at least one active positive-capacity channel")
+        payments = lncli(node, "listpayments", "--include_incomplete").get("payments", [])
+        invoices = lncli(node, "listinvoices").get("invoices", [])
+        recent_outgoing = [
+            item for item in payments
+            if item.get("status") == "SUCCEEDED" and 0 <= now - payment_epoch(item) <= RECENT_SECONDS
+        ]
+        recent_incoming = [
+            item for item in invoices
+            if item.get("state") == "SETTLED" and 0 <= now - invoice_epoch(item) <= RECENT_SECONDS
+        ]
+        if not recent_outgoing or not recent_incoming:
+            raise ManualGate(f"{node} needs successful outgoing and settled incoming payments from the last hour")
+        pvc = kubectl_json("-n", NAMESPACE, "get", "pvc", f"data-{node}-0", "-o", "json")
+        source_hash = kubectl("-n", NAMESPACE, "exec", f"{node}-0", "-c", "lnd", "--", "sha256sum", SCB_SOURCE).split()[0]
+        if len(source_hash) != 64:
+            raise InvariantFailure(f"{node} SCB source hash is invalid")
+        nodes[node] = {
+            "node_key": info["identity_pubkey"],
+            "channel_points": active,
+            "lnd_pvc_uid": pvc["metadata"]["uid"],
+            "scb_source_sha256": source_hash,
+            "recent_outgoing_count": len(recent_outgoing),
+            "recent_incoming_count": len(recent_incoming),
+        }
+        common_channels = set(active) if common_channels is None else common_channels.intersection(active)
+    if not common_channels:
+        raise InvariantFailure("the two regtest nodes do not report a common active channel")
+    prom = kubectl_json("-n", "lnd-monitoring", "get", "pvc", PROM_PVC, "-o", "json")
+    return {"nodes": nodes, "prometheus_pvc_uid": prom["metadata"]["uid"]}
+
+
+def latest_redeploy_evidence():
+    candidates = sorted(EVIDENCE.glob("regtest-redeploy-*.json"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+    if not candidates:
+        raise ManualGate("run ops/redeploy-check regtest to create redeploy evidence")
+    path = candidates[0]
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InvariantFailure(f"latest redeploy evidence is unreadable or malformed: {path.name}") from exc
+    if data.get("schema") != "lnd-ops/redeploy-evidence/v1" or data.get("result") != "pass" or data.get("profile") != "regtest":
+        raise InvariantFailure(f"latest redeploy evidence has an invalid contract: {path.name}")
+    before = data.get("before")
+    after = data.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict) or not before or not after:
+        raise InvariantFailure(f"latest redeploy evidence snapshots are malformed: {path.name}")
+    try:
+        before_revisions = before["helm_revisions"]
+        after_revisions = after["helm_revisions"]
+        for release in ("lnd-ops", "lnd-ops-monitoring"):
+            if int(after_revisions[release]) <= int(before_revisions[release]):
+                raise InvariantFailure(f"latest redeploy evidence did not advance {release}")
+        for field in ("profile", "nodes", "prometheus_pvc_uid", "cluster_uid_sha256", "prometheus_series_sha256", "prometheus_sample"):
+            if before[field] != after[field]:
+                raise InvariantFailure(f"latest redeploy evidence changed {field}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantFailure(f"latest redeploy evidence snapshots are malformed: {path.name}") from exc
+    return path, data
+
+
+def verify_current_matches_redeploy(current, evidence):
+    after = evidence["after"]
+    if current["prometheus_pvc_uid"] != after["prometheus_pvc_uid"]:
+        raise InvariantFailure("current Prometheus PVC differs from redeploy evidence")
+    for node in NODES:
+        live = current["nodes"][node]
+        recorded = after["nodes"][node]
+        for field in ("node_key", "channel_points", "lnd_pvc_uid", "scb_source_sha256"):
+            if live[field] != recorded[field]:
+                raise InvariantFailure(f"current {node} {field} differs from redeploy evidence")
+
+
+def verify_backups():
+    encrypted = all((pathlib.Path.home() / f"lnd-ops-backups-encrypted/regtest/{node}/channel.backup.gpg").is_file() for node in NODES)
+    script = REPO / "ops" / ("backup-status-encrypted" if encrypted else "backup-status")
+    for node in NODES:
+        command([str(script), "regtest", node])
+    return "gpg-symmetric-v1" if encrypted else "plain-on-encrypted-volume-v1"
+
+
+def write_result(payload, now):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    timestamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = EVIDENCE / f"regtest-acceptance-{timestamp}.json"
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def acceptance(now=None):
+    now = now if now is not None else datetime.now(timezone.utc).timestamp()
+    command([str(REPO / "ops/verify"), "regtest"])
+    command([str(REPO / "ops/verify-monitoring"), "--profile", "regtest"])
+    backup_format = verify_backups()
+    current = live_state(now)
+    redeploy_path, redeploy = latest_redeploy_evidence()
+    verify_current_matches_redeploy(current, redeploy)
+    payload = {
+        "schema": "lnd-ops/regtest-acceptance/v1",
+        "result": "pass",
+        "checked_at": datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "host": {"system": platform.system(), "machine": platform.machine()},
+        "profile": "regtest",
+        "freshness_seconds": RECENT_SECONDS,
+        "checks": {
+            "wallets": "pass",
+            "common_active_channel": "pass",
+            "bidirectional_recent_payments": "pass",
+            "scb_backups": "pass",
+            "monitoring": "pass",
+            "wallet_preserving_redeploy": "pass",
+        },
+        "backup_format": backup_format,
+        "redeploy_evidence": redeploy_path.name,
+        "current": current,
+    }
+    path = write_result(payload, now)
+    return path, payload
+
+
+def main(arguments):
+    if arguments != ["regtest"]:
+        print("Usage: ops/acceptance regtest", file=sys.stderr)
+        return 2
+    os.environ.setdefault("KUBECONFIG", str(KUBECONFIG))
+    try:
+        path, payload = acceptance()
+        channel_count = len(set(payload["current"]["nodes"]["lnd-0"]["channel_points"]).intersection(payload["current"]["nodes"]["lnd-1"]["channel_points"]))
+        print(f"OK regtest acceptance: 2 wallets, {channel_count} common active channel(s), recent bidirectional payments, 2 SCBs, monitoring and redeploy continuity")
+        print(f"Evidence: {path}")
+        return 0
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (InvariantFailure, OSError, KeyError, IndexError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
