@@ -67,6 +67,8 @@ def snapshot(scb_host, history_time=None, history_series=None):
     channel_points = sorted(channel["channel_point"] for channel in channels)
     if not scb_host.is_file() or scb_host.stat().st_size == 0:
         raise ManualGate("Copy the testnet SCB to the host with ops/backup-scb")
+    if scb_host.is_symlink() or scb_host.stat().st_uid != os.getuid() or scb_host.stat().st_mode & 0o777 != 0o600:
+        raise RuntimeError("Testnet SCB must be a regular operator-owned mode 0600 file")
     try:
         source_hash = kubectl("-n", namespace, "exec", pod, "--", "sha256sum", scb_source).split()[0]
     except (RuntimeError, IndexError) as exc:
@@ -74,6 +76,8 @@ def snapshot(scb_host, history_time=None, history_series=None):
     host_hash = hashlib.sha256(scb_host.read_bytes()).hexdigest()
     if scb_host.suffix == ".gpg":
         record = scb_host.parent / ".last-success"
+        if not record.is_file() or record.is_symlink() or record.stat().st_uid != os.getuid() or record.stat().st_mode & 0o777 != 0o600:
+            raise RuntimeError("Encrypted testnet SCB record must be a regular operator-owned mode 0600 file")
         try:
             _, plain_hash, cipher_hash, backup_format = record.read_text().split()
         except (OSError, ValueError) as exc:

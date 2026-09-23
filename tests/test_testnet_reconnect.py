@@ -1,6 +1,9 @@
 import importlib.machinery
 import importlib.util
+import json
 import pathlib
+import stat
+import tempfile
 import unittest
 import unittest.mock
 
@@ -13,28 +16,46 @@ loader.exec_module(reconnect)
 
 
 class TestnetReconnectTests(unittest.TestCase):
-    def test_requires_explicit_disruption_confirmation(self):
+    @staticmethod
+    def state(pod_uid="pod-before"):
+        return {
+            "node_key": "02node", "pod_uid": pod_uid,
+            "channel_points": ["tx:0"], "peer_pubkeys": ["03peer"],
+        }
+
+    def test_requires_explicit_mode(self):
         self.assertEqual(reconnect.main([]), 2)
 
-    def test_active_channel_peer_reconnects(self):
-        key = "02" + "a" * 64
-        peers = [
-            {key: {"pub_key": key, "address": "198.51.100.1:9735"}},
-            {},
-            {key: {"pub_key": key, "address": "198.51.100.1:9735"}},
-        ]
-        channels = {"channels": [{"remote_pubkey": key, "active": True, "capacity": "100000"}]}
-        with unittest.mock.patch.object(reconnect, "connected_peers", side_effect=peers), unittest.mock.patch.object(
-            reconnect, "call", return_value=channels
-        ) as call, unittest.mock.patch.object(reconnect.time, "sleep"):
-            self.assertEqual(reconnect.main(["--confirm-peer-disruption"]), 0)
-        call.assert_any_call("disconnectpeer", key, json_output=False)
+    def test_prepare_writes_private_baseline(self):
+        with tempfile.TemporaryDirectory() as directory, unittest.mock.patch.object(
+            reconnect, "PENDING", pathlib.Path(directory) / "evidence/pending.json"
+        ), unittest.mock.patch.object(reconnect, "snapshot", return_value=self.state()):
+            self.assertEqual(reconnect.main(["prepare"]), 0)
+            data = json.loads(reconnect.PENDING.read_text())
+            self.assertEqual(data["before"]["pod_uid"], "pod-before")
+            self.assertEqual(stat.S_IMODE(reconnect.PENDING.stat().st_mode), 0o600)
 
-    def test_missing_active_channel_is_manual_gate(self):
-        with unittest.mock.patch.object(reconnect, "connected_peers", return_value={}), unittest.mock.patch.object(
-            reconnect, "call", return_value={"channels": []}
-        ):
-            self.assertEqual(reconnect.main(["--confirm-peer-disruption"]), 10)
+    def test_verify_requires_changed_pod_and_preserved_channel_peer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pending = pathlib.Path(directory) / "evidence/pending.json"
+            with unittest.mock.patch.object(reconnect, "PENDING", pending), unittest.mock.patch.object(
+                reconnect, "snapshot", side_effect=[self.state(), self.state("pod-after")]
+            ):
+                self.assertEqual(reconnect.main(["prepare"]), 0)
+                self.assertEqual(reconnect.main(["verify"]), 0)
+            self.assertFalse(pending.exists())
+            evidence = list(pending.parent.glob("testnet-reconnect-*.json"))
+            self.assertEqual(len(evidence), 1)
+            self.assertEqual(json.loads(evidence[0].read_text())["result"], "pass")
+
+    def test_verify_rejects_unchanged_pod(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pending = pathlib.Path(directory) / "evidence/pending.json"
+            with unittest.mock.patch.object(reconnect, "PENDING", pending), unittest.mock.patch.object(
+                reconnect, "snapshot", return_value=self.state()
+            ):
+                self.assertEqual(reconnect.main(["prepare"]), 0)
+                self.assertEqual(reconnect.main(["verify"]), 10)
 
 
 if __name__ == "__main__":

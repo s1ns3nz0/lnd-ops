@@ -67,7 +67,7 @@ Generate a native SegWit testnet address:
 lncli_testnet newaddress p2wkh
 ```
 
-Review a currently operating Bitcoin testnet3 faucet in a browser, verify that it explicitly supports testnet3, and request at least **250,000 testnet satoshis**. Sharing the generated address is expected; do not share any wallet credential. Keep at least 50,000 satoshis outside the channel for funding fees and later on-chain operations.
+Review a currently operating Bitcoin testnet3 faucet in a browser, verify that it explicitly supports testnet3, and request at least **300,000 testnet satoshis**. Sharing the generated address is expected; do not share any wallet credential. The minimum is the 200,000 satoshi channel plus a 50,000 satoshi reserve plus funding-fee headroom. Keep at least 50,000 satoshis outside the channel for later on-chain operations.
 
 Wait for a confirmed balance:
 
@@ -93,7 +93,7 @@ Enter the selected `pubkey@host:port` without placing it in shell history:
 ```sh
 read -r -p 'Reviewed testnet peer pubkey@host:port: ' PEER
 PEER_PUBKEY=${PEER%%@*}
-lncli_testnet connect --perm "$PEER" --timeout 30s
+lncli_testnet connect "$PEER" --timeout 30s
 lncli_testnet listpeers
 ```
 
@@ -175,15 +175,20 @@ The encrypted copy is stored at `~/lnd-ops-backups-encrypted/testnet/lnd-0/chann
 
 Create a new encrypted copy after any channel open or close changes the SCB.
 
-## 8. Verify automatic peer reconnection
+## 8. Verify peer and channel recovery after a Pod restart
 
-This check briefly disconnects one active channel peer, waits up to 120 seconds for LND to reconnect automatically, and attempts an explicit restore if automatic reconnection fails.
+LND intentionally rejects the `DisconnectPeer` RPC for peers with pending or active channels. Test the real operator recovery path instead: snapshot the healthy identity, channel, peer, and Pod UID; restart only the LND Pod; unlock the existing wallet; then prove that a new Pod restored the same identity and active channel peer.
 
 ```sh
-ops/testnet-reconnect-check --confirm-peer-disruption
+ops/testnet-reconnect-check prepare
+kubectl -n lnd-testnet delete pod lnd-0-0
+kubectl -n lnd-testnet rollout status statefulset/lnd-0 --timeout=5m
+kubectl -n lnd-testnet exec -it lnd-0-0 -c lnd -- \
+  lncli --lnddir=/data/.lnd --network=testnet unlock
+ops/testnet-reconnect-check verify
 ```
 
-Run it only after the channel is active. Do not run it while a payment is in flight.
+Run this only after the channel is active and no payment is in flight. Do not run `lncli connect`, change channels, or reconfigure peers between `prepare` and `verify`; the proof requires LND to restore the existing channel peer after restart. Exit `10` from `verify` means the wallet, peer, or channel is not ready yet and can be retried without creating a new baseline.
 
 ## 9. Prove state-preserving redeployment
 
