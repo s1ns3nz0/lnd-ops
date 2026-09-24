@@ -68,6 +68,7 @@ def main(arguments):
         print("Usage: ops/verify-security", file=sys.stderr)
         return 2
     image = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+    falco_probe_created = False
     try:
         for namespace in ("kyverno", "falco"):
             workloads = json.loads(kubectl("-n", namespace, "get", "deployments,daemonsets", "-o", "json").stdout)
@@ -102,6 +103,7 @@ def main(arguments):
         applied = subprocess.run(["kubectl", "apply", "-f", "-"], input=json.dumps(probe), text=True, capture_output=True, timeout=60)
         if applied.returncode:
             raise Failure((applied.stderr or applied.stdout).strip().splitlines()[-1])
+        falco_probe_created = True
         try:
             kubectl("-n", "lnd-testnet", "wait", "--for=condition=Ready", "pod/lnd-ops-network-probe", "--timeout=3m")
             script = "import socket; socket.setdefaulttimeout(3); socket.create_connection(('lnd-0',10009)); raise SystemExit(9)"
@@ -120,7 +122,12 @@ def main(arguments):
 
         before = prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
         baseline = float(before[0]["value"][1]) if before else 0
-        kubectl("-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "payment-metrics", "--", "python3", "-c", "print('lnd-ops-falco-test')")
+        falco_probe = manifest("lnd-ops-falco-probe", image)
+        applied = subprocess.run(["kubectl", "apply", "-f", "-"], input=json.dumps(falco_probe), text=True, capture_output=True, timeout=60)
+        if applied.returncode:
+            raise Failure((applied.stderr or applied.stdout).strip().splitlines()[-1])
+        kubectl("-n", "lnd-testnet", "wait", "--for=condition=Ready", "pod/lnd-ops-falco-probe", "--timeout=3m")
+        kubectl("-n", "lnd-testnet", "exec", "lnd-ops-falco-probe", "--", "python3", "-c", "print('lnd-ops-falco-test')")
         observed = False
         for _ in range(18):
             time.sleep(5)
@@ -147,6 +154,9 @@ def main(arguments):
     except (Failure, OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if falco_probe_created:
+            kubectl("-n", "lnd-testnet", "delete", "pod", "lnd-ops-falco-probe", "--ignore-not-found", "--wait=true", check=False)
 
 
 if __name__ == "__main__":
