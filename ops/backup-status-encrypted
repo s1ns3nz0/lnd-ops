@@ -30,4 +30,8 @@ source_hash=$(kubectl -n "lnd-$profile" exec "$node-0" -- sha256sum "$source_fil
 [[ "$plain_hash" == "$source_hash" ]] || { echo 'SCB source and recorded encrypted backup differ' >&2; exit 1; }
 age_seconds=$(( $(date +%s) - epoch ))
 (( age_seconds >= 0 )) || { echo 'SCB transfer record is dated in the future' >&2; exit 1; }
+if kubectl -n "lnd-$profile" get configmap lnd-backup-status >/dev/null 2>&1; then
+  patch=$(python3 -c 'import json,sys; print(json.dumps({"data": {sys.argv[1] + ".status": sys.argv[2]}}))' "$node" "$(cat "$record")")
+  kubectl -n "lnd-$profile" patch configmap lnd-backup-status --type=merge --patch "$patch" >/dev/null
+fi
 printf 'Encrypted SCB verified: %s seconds old; plaintext-sha256:%s ciphertext-sha256:%s\n' "$age_seconds" "$plain_hash" "$cipher_hash"

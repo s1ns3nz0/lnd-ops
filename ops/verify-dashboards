@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Verify every Phase 3 dashboard query and alert/runbook link against live data."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import urllib.parse
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+DASHBOARDS = REPO / "charts/dashboards"
+REQUIRED = {
+    "lnd-ops-overview.json",
+    "lnd-ops-node-channel.json",
+    "lnd-ops-payments-liquidity.json",
+    "kubernetes.json",
+    "lnd-ops-security.json",
+    "lnd-ops-backup-recovery.json",
+}
+REQUIRED_ALERTS = {
+    "LndOpsPodNotReady", "LndOpsGuestDiskLow", "LndOpsPVCStorageLow", "LndOpsNodePressure",
+    "LndOpsWalletLocked", "LndOpsWalletStateUnavailable", "LndOpsChainSyncStalled",
+    "LndOpsChannelInactive", "LndOpsLndmonUnavailable", "LndOpsPaymentCollectorUnavailable",
+    "LndOpsOutgoingLiquidityLow", "LndOpsIncomingLiquidityLow", "LndOpsRepeatedPaymentFailures",
+    "LndOpsSCBBackupStale",
+}
+os.environ.setdefault(
+    "KUBECONFIG",
+    str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
+)
+
+
+class Failure(Exception):
+    pass
+
+
+def kubectl(*args):
+    result = subprocess.run(["kubectl", *args], text=True, capture_output=True, timeout=120)
+    if result.returncode:
+        raise Failure((result.stderr or result.stdout).strip().splitlines()[-1])
+    return result.stdout
+
+
+def service_json(path):
+    prefix = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy"
+    try:
+        return json.loads(kubectl("get", "--raw", prefix + path))
+    except json.JSONDecodeError as exc:
+        raise Failure(f"malformed Prometheus response for {path}") from exc
+
+
+def query(expression):
+    response = service_json("/api/v1/query?" + urllib.parse.urlencode({"query": expression}))
+    if response.get("status") != "success":
+        error = response.get("error", "unknown Prometheus error")
+        raise Failure(f"PromQL rejected: {expression}: {error}")
+    result = response.get("data", {}).get("result", [])
+    if not result:
+        raise Failure(f"dashboard query has no live series: {expression}")
+
+
+def load_dashboards():
+    files = {path.name: path for path in DASHBOARDS.glob("*.json")}
+    missing = REQUIRED - files.keys()
+    if missing:
+        raise Failure("required dashboards missing: " + ", ".join(sorted(missing)))
+    configmap = json.loads(kubectl("-n", "lnd-monitoring", "get", "configmap", "lnd-ops-dashboards", "-o", "json"))
+    live = configmap.get("data", {})
+    uids = set()
+    query_count = 0
+    panel_count = 0
+    for name in sorted(REQUIRED):
+        raw = files[name].read_text()
+        if live.get(name) != raw:
+            raise Failure(f"Grafana ConfigMap differs from Git dashboard: {name}")
+        try:
+            dashboard = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise Failure(f"dashboard JSON invalid: {name}") from exc
+        uid = dashboard.get("uid")
+        if not uid or uid in uids:
+            raise Failure(f"dashboard UID missing or duplicated: {name}")
+        uids.add(uid)
+        panels = dashboard.get("panels", [])
+        ids = [panel.get("id") for panel in panels]
+        if not panels or len(ids) != len(set(ids)) or None in ids:
+            raise Failure(f"dashboard panel IDs missing or duplicated: {name}")
+        panel_count += len(panels)
+        for panel in panels:
+            expressions = [target.get("expr") for target in panel.get("targets", []) if target.get("expr")]
+            if not expressions:
+                raise Failure(f"dashboard panel has no PromQL: {name}: {panel.get('title')}")
+            for expression in expressions:
+                query(expression)
+                query_count += 1
+    return len(REQUIRED), panel_count, query_count
+
+
+def verify_alerts():
+    response = service_json("/api/v1/rules")
+    rules = [
+        rule for group in response.get("data", {}).get("groups", [])
+        for rule in group.get("rules", []) if rule.get("type") == "alerting" and rule.get("name", "").startswith("LndOps")
+    ]
+    if not rules:
+        raise Failure("no LndOps alert rules loaded")
+    names = {rule["name"] for rule in rules}
+    missing = REQUIRED_ALERTS - names
+    if missing:
+        raise Failure("required alert rules missing: " + ", ".join(sorted(missing)))
+    for rule in rules:
+        if rule.get("health") == "err":
+            raise Failure(f"alert rule unhealthy: {rule['name']}")
+        runbook = rule.get("annotations", {}).get("runbook", "")
+        if not runbook.startswith("docs/runbooks/") or not (REPO / runbook).is_file():
+            raise Failure(f"alert runbook missing: {rule['name']}: {runbook}")
+    return len(rules)
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/verify-dashboards", file=sys.stderr)
+        return 2
+    try:
+        dashboards, panels, queries = load_dashboards()
+        alerts = verify_alerts()
+        print(f"OK Phase 3 dashboards: {dashboards} dashboards, {panels} panels, {queries} live PromQL queries, {alerts} healthy alerts with runbooks")
+        return 0
+    except (Failure, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

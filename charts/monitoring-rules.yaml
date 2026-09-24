@@ -25,6 +25,22 @@ spec:
           annotations:
             summary: "K3s guest root filesystem has less than 10% free space"
             runbook: docs/runbooks/guest-disk-low.md
+        - alert: LndOpsPVCStorageLow
+          expr: kubelet_volume_stats_available_bytes{namespace=~"lnd-regtest|lnd-testnet"} / kubelet_volume_stats_capacity_bytes{namespace=~"lnd-regtest|lnd-testnet"} < 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has less than 10% free space"
+            runbook: docs/runbooks/pvc-storage-low.md
+        - alert: LndOpsNodePressure
+          expr: kube_node_status_condition{condition=~"DiskPressure|MemoryPressure|PIDPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "K3s node {{ $labels.node }} reports {{ $labels.condition }}"
+            runbook: docs/runbooks/node-pressure.md
     - name: lnd-ops-node
       rules:
         - alert: LndOpsWalletLocked
@@ -75,3 +91,35 @@ spec:
           annotations:
             summary: "Payment collector is unavailable for {{ $labels.namespace }}/{{ $labels.service }}"
             runbook: docs/runbooks/lnd-monitoring-unavailable.md
+        - alert: LndOpsOutgoingLiquidityLow
+          expr: (sum by (namespace, service) (lnd_channels_bandwidth_outgoing_sat{status="active"}) < 10000) and on (namespace, service) (lnd_channels_active_total > 0)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND outbound liquidity is below the 10,000 sat demo target for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/liquidity-low.md
+        - alert: LndOpsIncomingLiquidityLow
+          expr: (sum by (namespace, service) (lnd_channels_bandwidth_incoming_sat{status="active"}) < 10000) and on (namespace, service) (lnd_channels_active_total > 0)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND inbound liquidity is below the 10,000 sat demo target for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/liquidity-low.md
+        - alert: LndOpsRepeatedPaymentFailures
+          expr: sum by (namespace, service) (lnd_ops_outgoing_payments_1h{status="FAILED"}) >= 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND observed at least three failed outgoing payments in the trailing hour for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/payment-failures.md
+        - alert: LndOpsSCBBackupStale
+          expr: (lnd_ops_scb_source_present == 1) and on (namespace, service) ((lnd_ops_scb_backup_current == 0) or (lnd_ops_scb_backup_age_seconds > 86400))
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Encrypted SCB is missing, stale, or differs from live LND state for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/scb-backup-stale.md

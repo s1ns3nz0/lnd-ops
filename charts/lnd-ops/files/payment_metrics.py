@@ -4,6 +4,7 @@ LND's paginated REST responses are processed in memory; no payment request,
 hash, preimage, or peer identifier is exported as a metric label.
 """
 
+import hashlib
 import json
 import os
 import ssl
@@ -17,6 +18,48 @@ from urllib.request import Request, urlopen
 PAGE_SIZE = 1000
 WINDOW_SECONDS = 3600
 WALLET_STATES = ("NON_EXISTING", "LOCKED", "UNLOCKED", "RPC_ACTIVE", "SERVER_ACTIVE", "WAITING_TO_START")
+
+
+def backup_metrics(source_path, status_path, now):
+    """Describe live SCB and latest verified host-backup record without hashes."""
+    source_present = os.path.isfile(source_path) and os.path.getsize(source_path) > 0
+    source_size = os.path.getsize(source_path) if source_present else 0
+    recorded = False
+    current = False
+    age = 0
+    try:
+        with open(status_path, encoding="utf-8") as status_file:
+            epoch, plain_hash, cipher_hash, backup_format = status_file.read().split()
+        epoch = int(epoch)
+        valid_record = (
+            epoch > 0 and len(plain_hash) == 64 and len(cipher_hash) == 64
+            and backup_format == "gpg-symmetric-v1"
+        )
+        recorded = valid_record
+        age = max(0, now - epoch) if valid_record else 0
+        if source_present and valid_record:
+            with open(source_path, "rb") as source_file:
+                current = hashlib.sha256(source_file.read()).hexdigest() == plain_hash
+    except (OSError, ValueError):
+        pass
+    lines = [
+        "# HELP lnd_ops_scb_source_present Static channel backup exists in the LND data volume.",
+        "# TYPE lnd_ops_scb_source_present gauge",
+        f"lnd_ops_scb_source_present {int(source_present)}",
+        "# HELP lnd_ops_scb_source_size_bytes Static channel backup size in bytes.",
+        "# TYPE lnd_ops_scb_source_size_bytes gauge",
+        f"lnd_ops_scb_source_size_bytes {source_size}",
+        "# HELP lnd_ops_scb_backup_recorded Latest encrypted host-backup success record is present.",
+        "# TYPE lnd_ops_scb_backup_recorded gauge",
+        f"lnd_ops_scb_backup_recorded {int(recorded)}",
+        "# HELP lnd_ops_scb_backup_current Latest encrypted host-backup plaintext hash matches the live SCB.",
+        "# TYPE lnd_ops_scb_backup_current gauge",
+        f"lnd_ops_scb_backup_current {int(current)}",
+        "# HELP lnd_ops_scb_backup_age_seconds Age of the latest encrypted host-backup success record.",
+        "# TYPE lnd_ops_scb_backup_age_seconds gauge",
+        f"lnd_ops_scb_backup_age_seconds {age}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def read_wallet_state(base_url, context):
@@ -103,6 +146,8 @@ def aggregate(payments, invoices, now):
 def main():
     cert = os.environ["LND_TLS_CERT"]
     macaroon_path = os.environ["LND_READONLY_MACAROON"]
+    scb_source = os.environ["LND_SCB_SOURCE"]
+    backup_status = os.environ["LND_BACKUP_STATUS"]
     base_url = os.environ.get("LND_REST_URL", "https://127.0.0.1:8080")
     context = ssl.create_default_context(cafile=cert)
 
@@ -120,7 +165,7 @@ def main():
                     now = int(time.time())
                     payments = read_pages(base_url, "/v1/payments", "payments", "last_index_offset", macaroon, context)
                     invoices = read_pages(base_url, "/v1/invoices", "invoices", "last_index_offset", macaroon, context)
-                    body = aggregate(payments, invoices, now).encode()
+                    body = (aggregate(payments, invoices, now) + backup_metrics(scb_source, backup_status, now)).encode()
             except (OSError, ValueError, KeyError, TimeoutError, URLError) as error:
                 self.log_error("collection failed: %s", error)
                 self.send_error(503)

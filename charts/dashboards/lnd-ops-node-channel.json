@@ -263,6 +263,11 @@
         },
         "overrides": []
       }
-    }
+    },
+    {"id": 9, "title": "Pending channels", "type": "timeseries", "gridPos": {"x": 0, "y": 22, "w": 8, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_channels_pending_total", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"min": 0}, "overrides": []}},
+    {"id": 10, "title": "Pending HTLCs", "type": "timeseries", "gridPos": {"x": 8, "y": 22, "w": 8, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (namespace, service) (lnd_channels_pending_htlc_count)", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"min": 0}, "overrides": []}},
+    {"id": 11, "title": "Open channel balance", "type": "timeseries", "gridPos": {"x": 16, "y": 22, "w": 8, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (namespace, service) (lnd_channels_open_balance_sat)", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}},
+    {"id": 12, "title": "Confirmed on-chain wallet balance", "type": "timeseries", "gridPos": {"x": 0, "y": 30, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_wallet_balance_confirmed_sat", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}},
+    {"id": 13, "title": "LND and lndmon scrape health", "type": "timeseries", "gridPos": {"x": 12, "y": 30, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "up{job=~\"lnd-grpc|lndmon\"}", "legendFormat": "{{job}} {{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"min": 0, "max": 1}, "overrides": []}}
   ]
 }

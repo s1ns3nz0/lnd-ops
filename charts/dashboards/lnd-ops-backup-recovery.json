@@ -1,0 +1,18 @@
+{
+  "uid": "lnd-ops-backup-recovery",
+  "title": "LND Ops / Backup and Recovery",
+  "tags": ["lnd-ops", "backup", "recovery"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Live SCB present", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_ops_scb_source_present", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 2, "title": "Encrypted backup recorded", "type": "stat", "gridPos": {"x": 6, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_ops_scb_backup_recorded", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 3, "title": "Encrypted backup matches live SCB", "type": "stat", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_ops_scb_backup_current", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 4, "title": "Encrypted backup age", "type": "stat", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_ops_scb_backup_age_seconds", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 5, "title": "Live SCB size", "type": "timeseries", "gridPos": {"x": 0, "y": 6, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "lnd_ops_scb_source_size_bytes", "legendFormat": "{{namespace}}/{{service}}", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}},
+    {"id": 6, "title": "LND PVC capacity", "type": "timeseries", "gridPos": {"x": 12, "y": 6, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "kubelet_volume_stats_capacity_bytes{namespace=~\"lnd-regtest|lnd-testnet\"}", "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}}
+  ]
+}

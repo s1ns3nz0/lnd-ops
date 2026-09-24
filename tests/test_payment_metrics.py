@@ -1,10 +1,13 @@
 import unittest
 import io
+import hashlib
 import json
+import pathlib
+import tempfile
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from collector.payment_metrics import PAGE_SIZE, aggregate, read_pages, read_wallet_state, wallet_state_metrics
+from collector.payment_metrics import PAGE_SIZE, aggregate, backup_metrics, read_pages, read_wallet_state, wallet_state_metrics
 
 
 class PaymentMetricsTest(unittest.TestCase):
@@ -77,6 +80,33 @@ class PaymentMetricsTest(unittest.TestCase):
         self.assertIn('lnd_ops_received_invoices_1h{state="SETTLED"} 1', output)
         self.assertNotIn("private-", output)
         self.assertNotIn("CANCELED", output)
+
+    def test_backup_metrics_compare_record_without_exporting_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / "channel.backup"
+            status = pathlib.Path(directory) / "lnd-0.status"
+            source.write_bytes(b"static-channel-backup")
+            plain_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            cipher_hash = "b" * 64
+            status.write_text(f"9000 {plain_hash} {cipher_hash} gpg-symmetric-v1\n")
+            output = backup_metrics(source, status, 10000)
+        self.assertIn("lnd_ops_scb_source_present 1", output)
+        self.assertIn("lnd_ops_scb_backup_recorded 1", output)
+        self.assertIn("lnd_ops_scb_backup_current 1", output)
+        self.assertIn("lnd_ops_scb_backup_age_seconds 1000", output)
+        self.assertNotIn(plain_hash, output)
+        self.assertNotIn(cipher_hash, output)
+
+    def test_backup_metrics_fail_closed_for_stale_or_missing_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / "channel.backup"
+            status = pathlib.Path(directory) / "lnd-0.status"
+            source.write_bytes(b"changed")
+            status.write_text(f"9000 {'a' * 64} {'b' * 64} gpg-symmetric-v1\n")
+            stale = backup_metrics(source, status, 10000)
+            missing = backup_metrics(source, pathlib.Path(directory) / "missing", 10000)
+        self.assertIn("lnd_ops_scb_backup_current 0", stale)
+        self.assertIn("lnd_ops_scb_backup_recorded 0", missing)
 
 
 if __name__ == "__main__":

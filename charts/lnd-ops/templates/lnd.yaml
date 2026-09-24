@@ -98,6 +98,8 @@ spec:
           env:
             - {name: LND_TLS_CERT, value: /data/.lnd/tls.cert}
             - {name: LND_READONLY_MACAROON, value: /data/.lnd/data/chain/bitcoin/{{ $root.Values.profile }}/readonly.macaroon}
+            - {name: LND_SCB_SOURCE, value: /data/.lnd/data/chain/bitcoin/{{ $root.Values.profile }}/channel.backup}
+            - {name: LND_BACKUP_STATUS, value: /backup-status/lnd-{{ $i }}.status}
           ports:
             - {name: payment-metrics, containerPort: 9093}
           resources:
@@ -106,6 +108,7 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data, readOnly: true}
             - {name: payment-collector-source, mountPath: /app/payment_metrics.py, subPath: payment_metrics.py, readOnly: true}
+            - {name: backup-status, mountPath: /backup-status, readOnly: true}
         {{- end }}
         {{- end }}
       {{- if and $root.Values.monitoring.enabled $root.Values.monitoring.paymentCollectorImage }}
@@ -113,6 +116,10 @@ spec:
         - name: payment-collector-source
           configMap:
             name: lnd-payment-collector
+            defaultMode: 0444
+        - name: backup-status
+          configMap:
+            name: lnd-backup-status
             defaultMode: 0444
       {{- end }}
   volumeClaimTemplates:

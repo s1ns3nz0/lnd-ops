@@ -61,6 +61,10 @@ printf '%s %s %s gpg-symmetric-v1\n' "$(date +%s)" "$verified" "$cipher_hash" > 
 chmod 600 "$record_tmp"
 mv -f "$record_tmp" "$record"
 record_tmp=
+if kubectl -n "$namespace" get configmap lnd-backup-status >/dev/null 2>&1; then
+  patch=$(python3 -c 'import json,sys; print(json.dumps({"data": {sys.argv[1] + ".status": sys.argv[2]}}))' "$node" "$(cat "$record")")
+  kubectl -n "$namespace" patch configmap lnd-backup-status --type=merge --patch "$patch" >/dev/null
+fi
 passphrase=
 printf 'Encrypted SCB verified: plaintext-sha256:%s ciphertext-sha256:%s\n' "$verified" "$cipher_hash"
 echo 'Store this passphrase outside the PC; it is required for recovery'

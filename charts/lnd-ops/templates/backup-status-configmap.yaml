@@ -1,0 +1,17 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.paymentCollectorImage }}
+{{- $default := "0 missing missing none" -}}
+{{- $existing := lookup "v1" "ConfigMap" .Release.Namespace "lnd-backup-status" -}}
+{{- $lnd0 := $default -}}
+{{- $lnd1 := $default -}}
+{{- if $existing }}
+{{- $lnd0 = (get $existing.data "lnd-0.status" | default $default) -}}
+{{- $lnd1 = (get $existing.data "lnd-1.status" | default $default) -}}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lnd-backup-status
+data:
+  lnd-0.status: {{ $lnd0 | quote }}
+  lnd-1.status: {{ $lnd1 | quote }}
+{{- end }}

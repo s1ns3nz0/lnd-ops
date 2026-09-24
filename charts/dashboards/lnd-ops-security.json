@@ -1,0 +1,19 @@
+{
+  "uid": "lnd-ops-security",
+  "title": "LND Ops / Security",
+  "tags": ["lnd-ops", "security"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "NetworkPolicies", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "count(kube_networkpolicy_created)", "refId": "A"}], "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 2, "title": "NetworkPolicy ingress rules", "type": "stat", "gridPos": {"x": 6, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(kube_networkpolicy_spec_ingress_rules)", "refId": "A"}], "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 3, "title": "NetworkPolicy egress rules", "type": "stat", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(kube_networkpolicy_spec_egress_rules)", "refId": "A"}], "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 4, "title": "LND service accounts", "type": "stat", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "count(kube_serviceaccount_created{namespace=~\"lnd-regtest|lnd-testnet|lnd-monitoring\"})", "refId": "A"}], "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 5, "title": "Firing LND Ops alerts", "type": "stat", "gridPos": {"x": 0, "y": 6, "w": 8, "h": 7}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(ALERTS{alertstate=\"firing\",alertname=~\"LndOps.*\"}) or vector(0)", "refId": "A"}], "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 6, "title": "Active LND namespaces", "type": "stat", "gridPos": {"x": 8, "y": 6, "w": 8, "h": 7}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "count(kube_namespace_status_phase{namespace=~\"lnd-regtest|lnd-testnet|lnd-monitoring\",phase=\"Active\"} == 1)", "refId": "A"}], "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}}},
+    {"id": 7, "title": "Security telemetry targets", "type": "timeseries", "gridPos": {"x": 16, "y": 6, "w": 8, "h": 7}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (job) (up{job=~\"kube-state-metrics|lnd-wallet-state|lnd-payments\"})", "legendFormat": "{{job}}", "refId": "A"}], "fieldConfig": {"defaults": {"min": 0}, "overrides": []}}
+  ]
+}
