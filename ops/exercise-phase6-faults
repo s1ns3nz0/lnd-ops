@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Exercise one Lightning, Kubernetes, and security fault end to end."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.parse
+from datetime import datetime, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+PYTHON_IMAGE = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+
+
+class Failure(Exception):
+    pass
+
+
+def command(args, *, check=True, input_text=None, timeout=180):
+    result = subprocess.run(args, input=input_text, text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise Failure(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def kubectl(*args, check=True, input_text=None, timeout=180):
+    return command(["kubectl", *args], check=check, input_text=input_text, timeout=timeout)
+
+
+def kubectl_json(*args):
+    return json.loads(kubectl(*args, "-o", "json").stdout)
+
+
+def lncli(namespace, pod, *args, check=True):
+    return command([
+        "kubectl", "-n", namespace, "exec", pod, "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", f"--network={namespace.removeprefix('lnd-')}", *args,
+    ], check=check, timeout=120)
+
+
+def prometheus(query):
+    encoded = urllib.parse.urlencode({"query": query})
+    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
+    payload = json.loads(kubectl("get", "--raw", path).stdout)
+    if payload.get("status") != "success":
+        raise Failure("Prometheus query failed")
+    return payload.get("data", {}).get("result", [])
+
+
+def alertmanager_has(name, expected=None):
+    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
+    alerts = json.loads(kubectl("get", "--raw", path).stdout)
+    expected = expected or {}
+    return any(
+        alert.get("labels", {}).get("alertname") == name
+        and all(alert.get("labels", {}).get(key) == value for key, value in expected.items())
+        for alert in alerts
+    )
+
+
+def wait_for(description, predicate, timeout, interval=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        time.sleep(interval)
+    raise Failure(f"timed out waiting for {description}")
+
+
+def alert_firing(name, labels=""):
+    selector = f'alertname="{name}",alertstate="firing"'
+    if labels:
+        selector += "," + labels
+    return bool(prometheus(f"ALERTS{{{selector}}}"))
+
+
+def require_runbook(alert, expected):
+    rules = (REPO / "charts/monitoring-rules.yaml").read_text()
+    marker = f"- alert: {alert}"
+    start = rules.find(marker)
+    if start < 0:
+        raise Failure(f"alert rule missing: {alert}")
+    block = rules[start:rules.find("        - alert:", start + len(marker)) if rules.find("        - alert:", start + len(marker)) >= 0 else len(rules)]
+    if f"runbook: {expected}" not in block or not (REPO / expected).is_file():
+        raise Failure(f"alert/runbook mapping missing: {alert}")
+
+
+def wait_alert(name, labels="", expected=None, timeout=540):
+    fired = wait_for(
+        f"{name} firing in Prometheus and Alertmanager",
+        lambda: alert_firing(name, labels) and alertmanager_has(name, expected),
+        timeout,
+    )
+    return fired
+
+
+def wait_alert_clear(name, labels="", expected=None, timeout=540):
+    return wait_for(
+        f"{name} recovery",
+        lambda: not alert_firing(name, labels) and not alertmanager_has(name, expected),
+        timeout,
+    )
+
+
+def lightning_fault():
+    alert = "LndOpsChannelInactive"
+    runbook = "docs/runbooks/channel-inactive.md"
+    require_runbook(alert, runbook)
+    channels = json.loads(lncli("lnd-regtest", "lnd-0-0", "listchannels").stdout).get("channels", [])
+    active = [channel for channel in channels if channel.get("active")]
+    if len(active) != 1:
+        raise Failure("Lightning fault requires exactly one active regtest channel")
+    peer = active[0]["remote_pubkey"]
+    policy = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")
+    original_spec = policy["spec"]
+    injected = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    restored = False
+    try:
+        patch = json.dumps({"spec": {"podSelector": original_spec["podSelector"], "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}})
+        kubectl("-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", patch)
+        lncli("lnd-regtest", "lnd-0-0", "disconnect", peer, check=False)
+        signal = wait_for(
+            "inactive regtest channel metric",
+            lambda: bool(prometheus('lnd_channels_inactive_total{namespace="lnd-regtest"} > 0')),
+            180,
+        )
+        fired = wait_alert(alert, 'namespace="lnd-regtest"', {"namespace": "lnd-regtest"})
+    finally:
+        patch = json.dumps({"spec": original_spec})
+        kubectl("-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", patch, check=False)
+        restored = True
+    peer_info = json.loads(lncli("lnd-regtest", "lnd-1-0", "getinfo").stdout)
+    lncli("lnd-regtest", "lnd-0-0", "connect", f'{peer_info["identity_pubkey"]}@lnd-1:9735', check=False)
+    healthy = wait_for(
+        "regtest channel active",
+        lambda: (lambda current: bool(current) and all(channel.get("active") for channel in current))(
+            json.loads(lncli("lnd-regtest", "lnd-0-0", "listchannels").stdout).get("channels", [])
+        ),
+        180,
+    )
+    cleared = wait_alert_clear(alert, 'namespace="lnd-regtest"', {"namespace": "lnd-regtest"})
+    return {"fault": "deny internal LND peer traffic", "injected_at": injected, "signal_at": signal,
+            "alert_at": fired, "runbook": runbook, "restored": restored, "healthy_at": healthy,
+            "alert_cleared_at": cleared}
+
+
+def kubernetes_fault():
+    alert = "LndOpsPodNotReady"
+    runbook = "docs/runbooks/pod-not-ready.md"
+    require_runbook(alert, runbook)
+    pod = "phase6-crashloop"
+    manifest = {
+        "apiVersion": "v1", "kind": "Pod", "metadata": {"name": pod, "namespace": "lnd-regtest", "labels": {"app.kubernetes.io/name": "phase6-crashloop"}},
+        "spec": {"automountServiceAccountToken": False, "restartPolicy": "Always", "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
+                 "containers": [{"name": "fault", "image": PYTHON_IMAGE, "command": ["python3", "-c", "raise SystemExit(23)"],
+                                 "resources": {"requests": {"cpu": "5m", "memory": "16Mi"}, "limits": {"cpu": "50m", "memory": "64Mi"}},
+                                 "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}}}]},
+    }
+    injected = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        kubectl("apply", "-f", "-", input_text=json.dumps(manifest))
+        signal = wait_for(
+            "CrashLoop Pod not-ready metric",
+            lambda: bool(prometheus(f'kube_pod_status_ready{{namespace="lnd-regtest",pod="{pod}",condition="false"}} == 1')),
+            180,
+        )
+        fired = wait_alert(alert, f'namespace="lnd-regtest",pod="{pod}"',
+                           {"namespace": "lnd-regtest", "pod": pod}, timeout=240)
+    finally:
+        kubectl("-n", "lnd-regtest", "delete", "pod", pod, "--ignore-not-found", "--wait=true", check=False)
+    healthy = wait_for(
+        "CrashLoop Pod removal",
+        lambda: kubectl("-n", "lnd-regtest", "get", "pod", pod, check=False).returncode != 0,
+        120,
+    )
+    cleared = wait_alert_clear(alert, f'namespace="lnd-regtest",pod="{pod}"',
+                               {"namespace": "lnd-regtest", "pod": pod}, timeout=300)
+    return {"fault": "disposable compliant CrashLoop Pod", "injected_at": injected, "signal_at": signal,
+            "alert_at": fired, "runbook": runbook, "recovery": "deleted disposable Pod",
+            "healthy_at": healthy, "alert_cleared_at": cleared}
+
+
+def security_fault():
+    alert = "LndOpsFalcoRuntimeEvent"
+    runbook = "docs/runbooks/falco-runtime-event.md"
+    require_runbook(alert, runbook)
+    before = prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
+    baseline = float(before[0]["value"][1]) if before else 0
+    injected = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    kubectl("-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "payment-metrics", "--", "python3", "-c", "print('lnd-ops-falco-test')")
+    signal = wait_for(
+        "Falco event counter increment",
+        lambda: (lambda result: bool(result) and float(result[0]["value"][1]) > baseline)(
+            prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
+        ),
+        180,
+    )
+    fired = wait_alert(alert, timeout=180)
+    daemonset = kubectl_json("-n", "falco", "get", "daemonset", "falco")
+    if daemonset["status"].get("numberReady", 0) != daemonset["status"].get("desiredNumberScheduled", -1):
+        raise Failure("Falco is not healthy after the event")
+    cleared = wait_alert_clear(alert, timeout=540)
+    return {"fault": "authorized Falco runtime marker", "injected_at": injected, "signal_at": signal,
+            "alert_at": fired, "runbook": runbook, "recovery": "event window expired; no workload mutation required",
+            "healthy_at": cleared, "alert_cleared_at": cleared}
+
+
+def write_evidence(scenarios):
+    now = datetime.now(timezone.utc)
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    path = EVIDENCE / f"phase6-faults-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    payload = {"schema": "lnd-ops/phase6-faults/v1", "result": "pass",
+               "checked_at": now.isoformat().replace("+00:00", "Z"),
+               "git_commit": command(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip(),
+               "scenarios": scenarios}
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/exercise-phase6-faults", file=sys.stderr)
+        return 2
+    try:
+        scenarios = {"lightning": lightning_fault(), "kubernetes": kubernetes_fault(), "security": security_fault()}
+        path = write_evidence(scenarios)
+        print("OK Phase 6 faults: Lightning channel, Kubernetes CrashLoop, and Falco event traversed alert and recovery")
+        print(f"Evidence: {path}")
+        return 0
+    except (Failure, OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

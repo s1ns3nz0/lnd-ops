@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Accept Phase 6 fault-to-runbook evidence and prior-phase continuity."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from datetime import datetime, timezone, timedelta
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+def run(args, check=True, timeout=900):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def main(arguments):
+    defer = arguments == ["--acknowledge-host-encryption-deferred"]
+    if arguments and not defer:
+        print("Usage: ops/phase6-acceptance [--acknowledge-host-encryption-deferred]", file=sys.stderr)
+        return 2
+    try:
+        if run(["git", "-C", str(REPO), "status", "--porcelain"]).stdout:
+            raise RuntimeError("repository worktree must be clean before Phase 6 acceptance")
+        candidates = sorted(EVIDENCE.glob("phase6-faults-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not candidates:
+            print("ACTION: run ops/exercise-phase6-faults", file=sys.stderr)
+            return 10
+        path = candidates[0]
+        if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o777 != 0o600:
+            raise RuntimeError("Phase 6 fault evidence permissions are unsafe")
+        evidence = json.loads(path.read_text())
+        if evidence.get("schema") != "lnd-ops/phase6-faults/v1" or evidence.get("result") != "pass":
+            raise RuntimeError("Phase 6 fault evidence contract is invalid")
+        checked = datetime.fromisoformat(evidence["checked_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - checked > timedelta(hours=24):
+            print("ACTION: Phase 6 fault evidence is older than 24 hours", file=sys.stderr)
+            return 10
+        for kind in ("lightning", "kubernetes", "security"):
+            scenario = evidence.get("scenarios", {}).get(kind, {})
+            for field in ("fault", "signal_at", "alert_at", "runbook", "healthy_at", "alert_cleared_at"):
+                if not scenario.get(field):
+                    raise RuntimeError(f"{kind} fault evidence lacks {field}")
+            if not (REPO / scenario["runbook"]).is_file():
+                raise RuntimeError(f"{kind} runbook is absent")
+        phase5 = [str(REPO / "ops/phase5-acceptance")]
+        if defer:
+            phase5.append("--acknowledge-host-encryption-deferred")
+        prior = run(phase5, check=False)
+        if prior.returncode == 10:
+            print((prior.stderr or prior.stdout).strip().splitlines()[-1], file=sys.stderr)
+            return 10
+        if prior.returncode:
+            raise RuntimeError((prior.stderr or prior.stdout).strip().splitlines()[-1])
+        result = {
+            "schema": "lnd-ops/phase6-acceptance/v1", "result": "pass",
+            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "git_commit": run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip(),
+            "fault_evidence": path.name, "phase5_continuity": "pass",
+            "host_encryption": "deferred-by-operator" if defer else "pass",
+        }
+        EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        output = EVIDENCE / f"phase6-acceptance-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(result, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        print("OK Phase 6 acceptance: Lightning, Kubernetes, and security faults traversed signal, alert, runbook, recovery, and healthy post-check")
+        if defer:
+            print("LIMITATION: Windows host encryption remains explicitly deferred by the operator")
+        print(f"Evidence: {output}")
+        return 0
+    except (RuntimeError, OSError, KeyError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
