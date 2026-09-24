@@ -65,7 +65,11 @@ def main(arguments):
     image = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
     try:
         policy = json.loads(kubectl("get", "clusterpolicy", "lnd-ops-workload-baseline", "-o", "json").stdout)
-        if policy.get("status", {}).get("ready") is not True:
+        ready = any(
+            item.get("type") == "Ready" and item.get("status") == "True"
+            for item in policy.get("status", {}).get("conditions", [])
+        )
+        if not ready:
             raise Failure("Kyverno policy is not Ready")
         server_dry_run(manifest("security-positive", image), True)
         server_dry_run(manifest("security-unpinned", "docker.io/library/python:3.13"), False)
