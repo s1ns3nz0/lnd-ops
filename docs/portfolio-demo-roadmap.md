@@ -341,7 +341,12 @@ seed-plus-SCB recovery, DLP force close, confirmed on-chain fund recovery,
 backup-alert delivery and restoration, duplicate-identity prevention, and
 Phase 4 continuity. See
 [windows-phase5-recovery-2026-09-24.md](evidence/windows-phase5-recovery-2026-09-24.md).
+Phase 6 is also complete on Windows: real Lightning channel isolation, a
+Kubernetes CrashLoop, and a Falco runtime event traversed live signals,
+Prometheus, Alertmanager, their versioned runbooks, recovery, alert clearing,
+and healthy post-checks. See
+[windows-phase6-faults-2026-09-24.md](evidence/windows-phase6-faults-2026-09-24.md).
 Windows full-volume encryption remains explicitly deferred. The immediate next
-implementation slice is Phase 6: exercise representative operational faults
-through their alerts and runbooks. The working sequence is maintained in
+implementation slice is Phase 7: constrained kagent diagnosis and allowlisted
+response. The working sequence is maintained in
 [demo-execution-plan.md](demo-execution-plan.md).

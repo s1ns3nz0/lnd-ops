@@ -46,8 +46,13 @@ def main(arguments):
             return 10
         current_commit = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
         if evidence.get("git_commit") != current_commit:
-            print("ACTION: rerun Phase 6 faults on the current Git revision", file=sys.stderr)
-            return 10
+            changed = run([
+                "git", "-C", str(REPO), "diff", "--name-only",
+                f'{evidence.get("git_commit")}..{current_commit}',
+            ]).stdout.splitlines()
+            if not changed or any(path != "README.md" and not path.startswith("docs/") for path in changed):
+                print("ACTION: rerun Phase 6 faults after runtime-affecting Git changes", file=sys.stderr)
+                return 10
         for kind in ("lightning", "kubernetes", "security"):
             scenario = evidence.get("scenarios", {}).get(kind, {})
             for field in ("fault", "signal_at", "alert_at", "runbook", "healthy_at", "alert_cleared_at"):
@@ -73,6 +78,7 @@ def main(arguments):
             "schema": "lnd-ops/phase6-acceptance/v1", "result": "pass",
             "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "git_commit": current_commit,
+            "fault_git_commit": evidence["git_commit"],
             "fault_evidence": path.name, "phase5_continuity": "pass",
             "host_encryption": "deferred-by-operator" if defer else "pass",
         }

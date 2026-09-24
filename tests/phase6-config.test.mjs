@@ -25,6 +25,7 @@ test('Phase 6 acceptance requires three fault classes and Phase 5 continuity', a
   for (const kind of ['lightning', 'kubernetes', 'security']) assert.match(acceptance, new RegExp(kind));
   assert.match(acceptance, /phase5-acceptance/);
   assert.match(acceptance, /evidence\.get\("git_commit"\) != current_commit/);
+  assert.match(acceptance, /path != "README\.md" and not path\.startswith\("docs\/"\)/);
   assert.match(acceptance, /prometheus_alert_observed/);
   assert.match(acceptance, /signal_at.*alert_at.*runbook.*healthy_at.*alert_cleared_at/s);
   assert.match(acceptance, /lnd-ops\/phase6-acceptance\/v1/);

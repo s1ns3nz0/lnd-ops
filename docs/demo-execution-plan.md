@@ -124,10 +124,11 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Proceed to Phase 6 fault-to-runbook exercises. Keep `ops/phase5-acceptance`
-passing after changes that affect LND, monitoring, storage, networking,
-recovery, or security, and repeat the host-specific testnet, operations,
-security, and recovery proof on Mac during the cross-platform phase.
+Proceed to Phase 7 constrained kagent diagnosis and allowlisted response. Keep
+`ops/phase6-acceptance` passing after changes that affect LND, monitoring,
+storage, networking, recovery, fault handling, or security, and repeat the
+host-specific testnet, operations, security, recovery, and fault proof on Mac
+during the cross-platform phase.
 
 The Windows Phase 6 rehearsal command is `ops/exercise-phase6-faults`. It uses
 one active disposable regtest channel and the live monitoring/security stack.
