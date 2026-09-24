@@ -14,7 +14,7 @@ Status updated on 2026-09-24. Every evidence record pins the exact Git commit us
 
 - **Complete:** scripted K3s and Helm deployment on Windows WSL 2; disposable two-node regtest; wallets, channel, bidirectional payments, monitoring, encrypted SCBs, and state-preserving chart reapplication.
 - **Complete:** `ops/acceptance regtest` and secret-free Windows Phase 0 evidence.
-- **In progress:** persistent Windows testnet node. The wallet is funded and synchronized, its external peer and public channel are active, real outgoing and incoming payments have succeeded, monitoring has observed both directions, and a Pod restart preserved the node identity and restored the public channel peer. The remaining Phase 1 gates are a current encrypted SCB after the latest restart, wallet-preserving chart reapplication, final testnet acceptance, and the secret-free evidence record.
+- **Complete:** persistent Windows testnet node. The wallet is funded and synchronized, its external peer and public channel are active, real outgoing and incoming payments succeeded, monitoring observed both directions, a Pod restart preserved the node identity and restored the public channel peer, and chart reapplication preserved the wallet, channels, SCB, PVCs, and Prometheus history. `ops/acceptance testnet` passed on runtime revision `c1312c94c1ba1d3b098d7582b4d872f5324aa2ae`; the secret-free Phase 1 record documents that run.
 - **Deferred hardening:** Windows Secure Boot and Device Encryption. Until those are enabled, testnet SCBs use independent GPG encryption and the limitation must appear in demo evidence.
 
 ## Delivery order
@@ -120,4 +120,4 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Create fresh bidirectional testnet payment samples, update and verify the encrypted `lnd-0` SCB, run `ops/redeploy-check`, and pass `ops/acceptance testnet` within its one-hour payment window. Commit a redacted Windows Phase 1 record under `docs/evidence/`, then proceed to the integrated dashboard phase without recreating the funded wallet.
+Proceed to the integrated dashboard and alert slice without recreating the funded wallet. Keep `ops/acceptance testnet` passing after changes that affect LND, monitoring, storage, or networking, and repeat the host-specific testnet proof on Mac during the cross-platform phase.

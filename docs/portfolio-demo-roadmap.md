@@ -27,7 +27,7 @@ This file owns phase order, portfolio scope, and final demo acceptance. The link
 | --- | --- | --- |
 | Windows regtest functional baseline | Complete | Keep passing during later changes |
 | Phase 0 acceptance command | Complete on Windows | Keep the read-only gate passing; repeat on Mac before the final demo |
-| Windows testnet | Pending | External peer, channel, payment, backup, and redeploy evidence |
+| Windows testnet | Complete | Keep acceptance evidence current during later changes; repeat the host-specific proof on Mac in Phase 8 |
 | Mac runtime equivalence | Pending | Host-specific clean and functional evidence |
 | Security enforcement | Pending | Positive and negative policy tests |
 | Recovery exercise | Pending | Isolated seed-plus-SCB recovery evidence |
@@ -330,4 +330,4 @@ The demo passes only when it can be repeated from the documented repository revi
 | 9 | Phase 8 | Both-host reproducibility and CI |
 | 10 | Phase 9 | Rehearsed public portfolio demo |
 
-The immediate next implementation slice is Phase 1: finish the Windows testnet runbook and verification tools, then pass the external peer, public channel, payment, encrypted backup, monitoring, and state-preserving redeployment gates. The working sequence is maintained in [demo-execution-plan.md](demo-execution-plan.md).
+Phase 1 is complete on Windows. The immediate next implementation slice is Phase 3: finish the integrated operations dashboards and alerts while keeping the funded testnet wallet, channels, SCB, PVCs, and Phase 1 acceptance path intact. The working sequence is maintained in [demo-execution-plan.md](demo-execution-plan.md).
