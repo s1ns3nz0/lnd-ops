@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 && ( "$1" == lnd-0 || "$1" == lnd-1 ) ]] || {
+  echo 'Usage: ops/create-regtest-wallet lnd-0|lnd-1' >&2
+  exit 2
+}
+[[ -t 0 && -t 1 ]] || {
+  echo 'Run in an interactive terminal; wallet credentials are never accepted through arguments or pipes' >&2
+  exit 2
+}
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+node=$1
+state=$(kubectl -n lnd-regtest exec "$node-0" -- \
+  lncli --lnddir=/data/.lnd --network=regtest state | \
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+[[ "$state" == NON_EXISTING ]] || {
+  echo "FAIL: $node wallet state is $state; refusing to replace an existing wallet" >&2
+  exit 1
+}
+
+cat <<EOF
+Creating disposable regtest wallet: $node
+
+1. Wallet password: choose the password used only by 'lncli unlock'.
+2. Existing cipher seed: answer 'n' because this is a new wallet.
+3. Aezeed cipher passphrase: press Enter to leave it empty for this disposable fixture.
+4. AEZEED: LND will print 24 words. Record them offline with this exact label:
+
+   REGTEST ${node^^} AEZEED
+
+This command does not ask for the SCB GPG passphrase.
+EOF
+
+kubectl -n lnd-regtest exec -it "$node-0" -- \
+  lncli --lnddir=/data/.lnd --network=regtest create
+
+echo "OK: $node wallet created; keep the record labeled 'REGTEST ${node^^} AEZEED'"

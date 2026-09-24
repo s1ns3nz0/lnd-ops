@@ -7,10 +7,13 @@ Set `KUBECONFIG` to the path printed by `ops/bootstrap` in your shell. The comma
 ## Create wallets
 
 ```sh
-kubectl -n lnd-regtest exec -it lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest create
-kubectl -n lnd-regtest exec -it lnd-1-0 -- lncli --lnddir=/data/.lnd --network=regtest create
+ops/create-regtest-wallet lnd-0
+ops/create-regtest-wallet lnd-1
 ops/verify regtest
 ```
+
+The wrapper refuses to replace an existing wallet and labels the AEZEED record
+for the selected node before invoking LND's interactive wallet creation.
 
 If the Pods restart later, use `lncli ... unlock` interactively. Do not pass wallet passwords as command arguments.
 

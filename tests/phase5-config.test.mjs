@@ -46,3 +46,11 @@ test('failed recovery can resume only the recorded original PVC', async () => {
   assert.match(abort, /scale statefulset\/lnd-0 --replicas=1/);
   assert.doesNotMatch(abort, /delete pvc/);
 });
+
+test('regtest wallet creation labels recovery material and refuses replacement', async () => {
+  const create = await readFile(resolve(repo, 'ops/create-regtest-wallet'), 'utf8');
+  assert.match(create, /lnd-0\|lnd-1/);
+  assert.match(create, /state.*NON_EXISTING/s);
+  assert.match(create, /REGTEST \$\{node\^\^\} AEZEED/);
+  assert.match(create, /does not ask for the SCB GPG passphrase/);
+});
