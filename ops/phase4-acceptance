@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Coordinate the read-only Phase 4 security and continuity gates."""
+
+import json
+import os
+import pathlib
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+
+
+class ManualGate(Exception):
+    pass
+
+
+class Failure(Exception):
+    pass
+
+
+def run(name, arguments):
+    result = subprocess.run([str(REPO / "ops" / name), *arguments], text=True, capture_output=True, timeout=900)
+    lines = (result.stderr or result.stdout).strip().splitlines()
+    detail = lines[-1] if lines else f"{name} returned no summary"
+    while detail.startswith(("ACTION: ", "FAIL: ")):
+        detail = detail.split(": ", 1)[1]
+    if result.returncode == 10:
+        raise ManualGate(detail)
+    if result.returncode:
+        raise Failure(detail)
+    if not result.stdout.strip():
+        raise Failure(f"{name} returned success without a summary")
+    return result.stdout.strip().splitlines()[-1]
+
+
+def write_result(payload, now):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    path = EVIDENCE / f"phase4-acceptance-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/phase4-acceptance", file=sys.stderr)
+        return 2
+    os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(REPO), "status", "--porcelain"], text=True, capture_output=True, check=True, timeout=30
+        ).stdout
+        if status:
+            raise Failure("repository worktree must be clean before Phase 4 acceptance")
+        summaries = {
+            "testnet": run("verify", ["testnet"]),
+            "security": run("verify-security", []),
+            "phase3": run("phase3-acceptance", []),
+        }
+        commit = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True, capture_output=True, check=True, timeout=30
+        ).stdout.strip()
+        context = subprocess.run(
+            ["kubectl", "config", "current-context"], text=True, capture_output=True, check=True, timeout=30
+        ).stdout.strip()
+        now = datetime.now(timezone.utc)
+        payload = {
+            "schema": "lnd-ops/phase4-acceptance/v1",
+            "result": "pass",
+            "checked_at": now.isoformat().replace("+00:00", "Z"),
+            "host": {"system": platform.system(), "machine": platform.machine()},
+            "profile": "testnet",
+            "git_commit": commit,
+            "kubernetes_context": context,
+            "checks": {
+                "kyverno_positive_and_negative": "pass",
+                "rbac_and_token_isolation": "pass",
+                "networkpolicy_negative": "pass",
+                "falco_modern_ebpf_event_to_alertmanager": "pass",
+                "tls_expiry": "pass",
+                "phase3_continuity": "pass",
+            },
+            "summaries": summaries,
+        }
+        path = write_result(payload, now)
+        print("OK Phase 4 acceptance: enforced admission, RBAC, network isolation, Falco event delivery, TLS expiry, and Phase 3 continuity")
+        print(f"Evidence: {path}")
+        return 0
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (Failure, OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

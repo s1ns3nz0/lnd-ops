@@ -58,6 +58,11 @@ def prometheus(query):
     return data.get("data", {}).get("result", [])
 
 
+def alertmanager():
+    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
+    return json.loads(kubectl("get", "--raw", path).stdout)
+
+
 def main(arguments):
     if arguments:
         print("Usage: ops/verify-security", file=sys.stderr)
@@ -119,6 +124,16 @@ def main(arguments):
                 break
         if not observed:
             raise Failure("Falco test event did not reach Prometheus through Falcosidekick")
+        delivered = False
+        for _ in range(12):
+            if prometheus('ALERTS{alertname="LndOpsFalcoRuntimeEvent",alertstate="firing"}') and any(
+                alert.get("labels", {}).get("alertname") == "LndOpsFalcoRuntimeEvent" for alert in alertmanager()
+            ):
+                delivered = True
+                break
+            time.sleep(5)
+        if not delivered:
+            raise Failure("Falco runtime event did not reach Alertmanager")
         if not prometheus("lnd_ops_tls_certificate_expiry_timestamp_seconds > time()"):
             raise Failure("live LND certificate expiry metric is absent or expired")
         print("OK Phase 4 security: Kyverno allow/deny, RBAC, NetworkPolicy, modern eBPF Falco event, and TLS expiry")
