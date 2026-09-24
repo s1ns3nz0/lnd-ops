@@ -94,8 +94,10 @@ test('encrypted SCB status verifies ciphertext and current source hashes without
     await writeFile(join(bin, 'kubectl'), `#!/bin/sh\nprintf '${hash(plaintext)}  /data/channel.backup\\n'\n`, { mode: 0o755 });
     await writeFile(join(bin, 'stat'), `#!/usr/bin/env python3
 import os, sys
-assert sys.argv[1] == '-c' and sys.argv[2] == '%a'
-print(oct(os.stat(sys.argv[3]).st_mode & 0o777)[2:])
+if sys.argv[1:3] == ['-c', '%a'] or sys.argv[1:3] == ['-f', '%Lp']:
+    print(oct(os.stat(sys.argv[3]).st_mode & 0o777)[2:])
+else:
+    raise SystemExit(2)
 `, { mode: 0o755 });
     const run = () => spawnSync(join(repo, 'ops/backup-status-encrypted'), ['regtest', 'lnd-0'], {
       cwd: repo,

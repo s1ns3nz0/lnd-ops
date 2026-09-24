@@ -16,11 +16,12 @@ source_file=/data/.lnd/data/chain/bitcoin/$profile/channel.backup
 target=$HOME/lnd-ops-backups-encrypted/$profile/$node/channel.backup.gpg
 record=$(dirname "$target")/.last-success
 [[ -s "$target" && -s "$record" ]] || { echo 'Encrypted SCB or transfer record missing'; exit 10; }
+file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 for dir in "$(dirname "$target")" "$(dirname "$(dirname "$target")")" "$(dirname "$(dirname "$(dirname "$target")")")"; do
-  [[ "$(stat -c %a "$dir")" == 700 ]] || { echo 'Encrypted SCB directory permissions are not 700' >&2; exit 1; }
+  [[ "$(file_mode "$dir")" == 700 ]] || { echo 'Encrypted SCB directory permissions are not 700' >&2; exit 1; }
 done
 for file in "$target" "$record"; do
-  [[ "$(stat -c %a "$file")" == 600 ]] || { echo 'Encrypted SCB file permissions are not 600' >&2; exit 1; }
+  [[ "$(file_mode "$file")" == 600 ]] || { echo 'Encrypted SCB file permissions are not 600' >&2; exit 1; }
 done
 read -r epoch plain_hash cipher_hash format < "$record"
 [[ "$epoch" =~ ^[0-9]+$ && "$plain_hash" =~ ^[0-9a-f]{64}$ && "$cipher_hash" =~ ^[0-9a-f]{64}$ && "$format" == gpg-symmetric-v1 ]] || {
