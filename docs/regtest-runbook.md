@@ -76,7 +76,7 @@ Each file goes to `~/lnd-ops-backups/regtest/<node>/channel.backup` on Mac or `<
 
 ## Isolated seed and SCB recovery exercise
 
-Use only the disposable regtest channel from this runbook. `ops/prepare-regtest-recovery` requires a verified host SCB and one channel from `lnd-0` to `lnd-1`. It creates `lnd-regtest-recovery` with a fresh PVC, stops original `lnd-0`, and copies the host SCB into the new Pod. It leaves the original PVC intact and marks the original namespace so `ops/deploy regtest` refuses to restart that identity. This procedure deliberately causes the channel to close; do not use it for an ordinary redeploy.
+Use only the disposable regtest channel from this runbook. `ops/prepare-regtest-recovery` requires a verified host SCB and one channel from `lnd-0` to `lnd-1`. It prefers the encrypted GPG backup, verifies its transfer record, asks for its passphrase interactively, and streams the decrypted SCB directly into the recovery Pod without writing plaintext on the host. It creates `lnd-regtest-recovery` with a fresh PVC, stops original `lnd-0`, and copies the SCB into the new Pod. It leaves the original PVC intact and marks the original namespace so `ops/deploy regtest` refuses to restart that identity. This procedure deliberately causes the channel to close; do not use it for an ordinary redeploy.
 
 ```sh
 ops/prepare-regtest-recovery --confirm-disposable
@@ -106,6 +106,31 @@ ops/verify regtest
 ```
 
 The finish command refuses to proceed until recovery verification passes, stops and deletes the recovered copy before starting the original identity, and checks that the original PVC UID is unchanged. The original database will observe the already-confirmed channel closure when it synchronizes.
+
+## Phase 5 backup alert and acceptance
+
+After the recovery copy has been retired and the preserved original wallet is
+unlocked, exercise the live backup alert path. The command temporarily changes
+only the backup status ConfigMap, waits for the five-minute production alert to
+reach Alertmanager, and restores the exact original record in a `finally`
+handler. It never edits the encrypted SCB or its host transfer record.
+
+```sh
+ops/exercise-backup-alert
+ops/phase5-acceptance
+```
+
+When Windows host encryption is unavailable under the previously approved
+temporary exception, record that limitation explicitly:
+
+```sh
+ops/phase5-acceptance --acknowledge-host-encryption-deferred
+```
+
+The coordinator requires private owner-only recovery and alert-exercise
+evidence, the original recovery namespace to be absent, the original regtest
+PVC UID to match, the current encrypted testnet SCB, and continued Phase 4
+testnet acceptance.
 
 ```sh
 ops/reset-recovered-regtest --confirm-disposable

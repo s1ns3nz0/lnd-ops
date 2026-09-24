@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Coordinate Phase 5 backup, alert, recovery, and continuity evidence."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+class ManualGate(Exception):
+    pass
+
+
+class Failure(Exception):
+    pass
+
+
+def command(args, check=True, timeout=900):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise Failure(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def kubectl(*args, check=True):
+    return command(["kubectl", *args], check=check, timeout=180)
+
+
+def latest(pattern, schema):
+    candidates = sorted(EVIDENCE.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise ManualGate(f"required evidence is absent: {pattern}")
+    path = candidates[0]
+    if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o777 != 0o600:
+        raise Failure(f"evidence permissions are unsafe: {path.name}")
+    data = json.loads(path.read_text())
+    if data.get("schema") != schema or data.get("result") != "pass":
+        raise Failure(f"evidence is invalid: {path.name}")
+    return path, data
+
+
+def run_gate(name, arguments=()):
+    result = command([str(REPO / "ops" / name), *arguments], check=False)
+    lines = (result.stderr or result.stdout).strip().splitlines()
+    summary = lines[-1] if lines else f"{name} returned no summary"
+    if result.returncode == 10:
+        raise ManualGate(summary.removeprefix("ACTION: "))
+    if result.returncode:
+        raise Failure(summary.removeprefix("FAIL: "))
+    return result.stdout.strip().splitlines()[0]
+
+
+def write_result(payload, now):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    path = EVIDENCE / f"phase5-acceptance-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def main(arguments):
+    defer_host_encryption = arguments == ["--acknowledge-host-encryption-deferred"]
+    if arguments and not defer_host_encryption:
+        print("Usage: ops/phase5-acceptance [--acknowledge-host-encryption-deferred]", file=sys.stderr)
+        return 2
+    try:
+        if command(["git", "-C", str(REPO), "status", "--porcelain"]).stdout:
+            raise Failure("repository worktree must be clean before Phase 5 acceptance")
+
+        recovery_path, recovery = latest("regtest-recovery-*.json", "lnd-ops/regtest-recovery/v1")
+        alert_path, alert = latest("backup-alert-exercise-*.json", "lnd-ops/backup-alert-exercise/v1")
+        if not alert.get("alertmanager_observed") or not alert.get("restored_current_metric"):
+            raise Failure("backup alert exercise does not prove alert delivery and recovery")
+
+        if kubectl("get", "namespace", "lnd-regtest-recovery", check=False).returncode == 0:
+            raise ManualGate("retire the verified recovery copy before Phase 5 acceptance")
+        namespace = json.loads(kubectl("get", "namespace", "lnd-regtest", "-o", "json").stdout)
+        if namespace.get("metadata", {}).get("labels", {}).get("lnd-ops-recovery") == "started":
+            raise Failure("original regtest namespace is still marked as recovery in progress")
+        statefulset = json.loads(kubectl("-n", "lnd-regtest", "get", "statefulset", "lnd-0", "-o", "json").stdout)
+        if statefulset["spec"].get("replicas") != 1:
+            raise Failure("preserved original regtest identity is not the sole configured copy")
+        pvc_uid = kubectl("-n", "lnd-regtest", "get", "pvc", "data-lnd-0-0", "-o", "jsonpath={.metadata.uid}").stdout
+        if pvc_uid != recovery.get("original_pvc_uid"):
+            raise Failure("preserved original regtest PVC differs from recovery evidence")
+        run_gate("verify", ["regtest"])
+        backup = run_gate("backup-status-encrypted", ["testnet", "lnd-0"])
+        phase4 = run_gate("phase4-acceptance")
+
+        encryption = command([str(REPO / "ops" / "check-host-encryption"), "--check-only"], check=False, timeout=180)
+        if encryption.returncode == 0:
+            host_encryption = "pass"
+        elif defer_host_encryption:
+            host_encryption = "deferred-by-operator"
+        else:
+            raise ManualGate("complete host encryption or rerun with --acknowledge-host-encryption-deferred")
+
+        now = datetime.now(timezone.utc)
+        commit = command(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
+        payload = {
+            "schema": "lnd-ops/phase5-acceptance/v1",
+            "result": "pass",
+            "checked_at": now.isoformat().replace("+00:00", "Z"),
+            "git_commit": commit,
+            "host_encryption": host_encryption,
+            "checks": {
+                "encrypted_testnet_scb_current": "pass",
+                "backup_freshness_alert_delivery_and_recovery": "pass",
+                "isolated_seed_and_scb_recovery": "pass",
+                "duplicate_identity_prevention": "pass",
+                "original_regtest_pvc_preserved": "pass",
+                "phase4_testnet_continuity": "pass",
+            },
+            "source_evidence": {
+                "recovery": recovery_path.name,
+                "backup_alert": alert_path.name,
+            },
+            "summaries": {"backup": backup, "phase4": phase4},
+        }
+        path = write_result(payload, now)
+        print("OK Phase 5 acceptance: encrypted backup, stale alert recovery, isolated seed+SCB recovery, duplicate prevention, and Phase 4 continuity")
+        if host_encryption != "pass":
+            print("LIMITATION: Windows host encryption remains explicitly deferred by the operator")
+        print(f"Evidence: {path}")
+        return 0
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (Failure, OSError, KeyError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

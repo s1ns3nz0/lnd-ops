@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Prove the live SCB freshness metric, alert, runbook, and recovery path."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.parse
+from datetime import datetime, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+NAMESPACE = "lnd-testnet"
+CONFIGMAP = "lnd-backup-status"
+KEY = "lnd-0.status"
+ALERT = "LndOpsSCBBackupStale"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+class Failure(Exception):
+    pass
+
+
+def kubectl(*args, check=True, timeout=60):
+    result = subprocess.run(["kubectl", *args], text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise Failure(lines[-1] if lines else "kubectl failed")
+    return result
+
+
+def prometheus(query):
+    encoded = urllib.parse.urlencode({"query": query})
+    path = (
+        "/api/v1/namespaces/lnd-monitoring/services/"
+        "http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
+    )
+    return json.loads(kubectl("get", "--raw", path).stdout).get("data", {}).get("result", [])
+
+
+def alertmanager_has_alert():
+    path = (
+        "/api/v1/namespaces/lnd-monitoring/services/"
+        "http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
+    )
+    alerts = json.loads(kubectl("get", "--raw", path).stdout)
+    return any(item.get("labels", {}).get("alertname") == ALERT for item in alerts)
+
+
+def patch_status(value):
+    patch = json.dumps({"data": {KEY: value}})
+    kubectl("-n", NAMESPACE, "patch", "configmap", CONFIGMAP, "--type=merge", "--patch", patch)
+
+
+def wait_for(description, predicate, attempts, interval=5):
+    for _ in range(attempts):
+        if predicate():
+            return
+        time.sleep(interval)
+    raise Failure(f"timed out waiting for {description}")
+
+
+def query_is_one(query):
+    result = prometheus(query)
+    return bool(result) and float(result[0]["value"][1]) == 1
+
+
+def query_has_result(query):
+    return bool(prometheus(query))
+
+
+def write_evidence(started, fired, recovered):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    now = datetime.now(timezone.utc)
+    path = EVIDENCE / f"backup-alert-exercise-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    payload = {
+        "schema": "lnd-ops/backup-alert-exercise/v1",
+        "result": "pass",
+        "started_at": started.isoformat().replace("+00:00", "Z"),
+        "completed_at": now.isoformat().replace("+00:00", "Z"),
+        "profile": "testnet",
+        "node": "lnd-0",
+        "fault": "backup status record temporarily marked missing",
+        "metric_observed": "lnd_ops_scb_backup_current == 0",
+        "alert": ALERT,
+        "alertmanager_observed": fired,
+        "restored_current_metric": recovered,
+        "runbook": "docs/runbooks/scb-backup-stale.md",
+        "git_commit": subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip(),
+    }
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/exercise-backup-alert", file=sys.stderr)
+        return 2
+    started = datetime.now(timezone.utc)
+    original = None
+    restored = False
+    try:
+        status = json.loads(kubectl("-n", NAMESPACE, "get", "configmap", CONFIGMAP, "-o", "json").stdout)
+        original = status.get("data", {}).get(KEY)
+        if not original or len(original.split()) != 4:
+            raise Failure("current backup status record is absent or malformed")
+        if not query_is_one('lnd_ops_scb_backup_current{namespace="lnd-testnet",service="lnd-0"}'):
+            raise Failure("live backup-current metric must be healthy before the exercise")
+
+        patch_status("0 missing missing none")
+        wait_for(
+            "stale backup metric",
+            lambda: query_has_result('lnd_ops_scb_backup_current{namespace="lnd-testnet",service="lnd-0"} == 0'),
+            36,
+        )
+        wait_for(
+            "backup alert delivery to Alertmanager",
+            lambda: bool(prometheus(f'ALERTS{{alertname="{ALERT}",alertstate="firing"}}')) and alertmanager_has_alert(),
+            84,
+        )
+        fired = True
+    except (Failure, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if original is not None:
+            try:
+                patch_status(original)
+                wait_for(
+                    "restored current backup metric",
+                    lambda: query_is_one('lnd_ops_scb_backup_current{namespace="lnd-testnet",service="lnd-0"}'),
+                    36,
+                )
+                restored = True
+            except Exception as exc:  # restoration failure must remain visible
+                print(f"FAIL: unable to restore backup telemetry: {exc}", file=sys.stderr)
+
+    if not restored:
+        return 1
+    try:
+        path = write_evidence(started, fired, restored)
+        print("OK backup alert exercise: stale metric -> firing alert -> Alertmanager -> restored current metric")
+        print(f"Evidence: {path}")
+        return 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: unable to write evidence: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

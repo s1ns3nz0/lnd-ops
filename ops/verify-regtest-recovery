@@ -7,9 +7,12 @@ import os
 import pathlib
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
 
 os.environ.setdefault(
     "KUBECONFIG",
@@ -23,6 +26,42 @@ def kubectl_json(*args):
 
 def lncli(namespace, pod, *args):
     return kubectl_json("-n", namespace, "exec", pod, "--", "lncli", "--lnddir=/data/.lnd", "--network=regtest", *args)
+
+
+def write_evidence(pubkey, channel_point, original_pvc_uid, confirmed_before, confirmed_after, scb_format):
+    now = datetime.now(timezone.utc)
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    path = EVIDENCE / f"regtest-recovery-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    payload = {
+        "schema": "lnd-ops/regtest-recovery/v1",
+        "result": "pass",
+        "checked_at": now.isoformat().replace("+00:00", "Z"),
+        "git_commit": subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip(),
+        "recovered_identity_pubkey": pubkey,
+        "closed_channel_point": channel_point,
+        "original_pvc_uid": original_pvc_uid,
+        "original_identity_stopped": True,
+        "scb_format": scb_format,
+        "scb_integrity": "pass",
+        "peer_recorded_close": True,
+        "confirmed_balance_before_sat": confirmed_before,
+        "confirmed_balance_after_sat": confirmed_after,
+        "recovered_funds_increased": confirmed_after > confirmed_before,
+    }
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
 
 
 def main():
@@ -91,7 +130,9 @@ def main():
     if confirmed_after <= confirmed_before + local_before // 2:
         print("PENDING: recovered channel funds have not appeared in confirmed on-chain balance", file=sys.stderr)
         return 10
+    evidence = write_evidence(pubkey, channel_point, original_pvc_uid, confirmed_before, confirmed_after, scb_format)
     print(f"OK recovered pubkey={pubkey}; closed channel={channel_point}; confirmed balance {confirmed_before}->{confirmed_after} sat")
+    print(f"Evidence: {evidence}")
     return 0
 
 
