@@ -7,7 +7,19 @@ export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/ku
 namespace=lnd-testnet
 release=lnd-ops
 main_pod=lnd-0-0
-payer_pod=lnd-1-0
+payer_index=${LND_OPS_PAYER_INDEX:-1}
+[[ $payer_index =~ ^[1-9][0-9]*$ ]] || {
+  echo 'LND_OPS_PAYER_INDEX must be a positive integer' >&2
+  exit 2
+}
+payer_node=lnd-$payer_index
+payer_pod=$payer_node-0
+payer_nodes=$((payer_index + 1))
+payer_sat_per_vbyte=${LND_OPS_PAYER_SAT_PER_VBYTE:-1}
+[[ $payer_sat_per_vbyte =~ ^[1-9][0-9]*$ ]] || {
+  echo 'LND_OPS_PAYER_SAT_PER_VBYTE must be a positive integer' >&2
+  exit 2
+}
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/testnet-payer
 
 usage() {
@@ -42,22 +54,21 @@ case "$command" in
       exit 10
     }
     helm upgrade "$release" "$repo_dir/charts/lnd-ops" \
-      --namespace "$namespace" --reuse-values --set lnd.nodes=2
-    kubectl -n "$namespace" rollout status statefulset/lnd-1 --timeout=5m >/dev/null || true
+      --namespace "$namespace" --reuse-values --set lnd.nodes="$payer_nodes"
+    kubectl -n "$namespace" rollout status "statefulset/$payer_node" --timeout=5m >/dev/null || true
     echo 'OK testnet payer workload enabled; the existing lnd-0 StatefulSet and PVC were retained'
     if ! wallet_ready "$payer_pod"; then
-      cat <<'EOF'
-ACTION: create or unlock the test-only payer wallet interactively:
-  kubectl -n lnd-testnet exec -it lnd-1-0 -c lnd -- \
-    lncli --lnddir=/data/.lnd --network=testnet create
-EOF
+      printf '%s\n' \
+        "ACTION: create or unlock the test-only payer wallet interactively:" \
+        "  kubectl -n lnd-testnet exec -it $payer_pod -c lnd -- \\" \
+        '    lncli --lnddir=/data/.lnd --network=testnet create'
       exit 10
     fi
     ;;
   status)
     [[ $# -eq 0 ]] || usage
     wallet_ready "$main_pod" || { echo 'ACTION: unlock lnd-0' >&2; exit 10; }
-    wallet_ready "$payer_pod" || { echo 'ACTION: create or unlock lnd-1' >&2; exit 10; }
+    wallet_ready "$payer_pod" || { echo "ACTION: create or unlock $payer_node" >&2; exit 10; }
     main_key=$(lncli "$main_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
     payer_key=$(lncli "$payer_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
     lncli "$main_pod" listchannels | python3 -c '
@@ -71,9 +82,9 @@ print(f"OK payer wallets ready: distinct_identities={sys.argv[2] != peer} channe
   open-channel)
     [[ $# -eq 0 ]] || usage
     wallet_ready "$main_pod" || { echo 'ACTION: unlock lnd-0' >&2; exit 10; }
-    wallet_ready "$payer_pod" || { echo 'ACTION: create or unlock lnd-1' >&2; exit 10; }
+    wallet_ready "$payer_pod" || { echo "ACTION: create or unlock $payer_node" >&2; exit 10; }
     payer_key=$(lncli "$payer_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
-    lncli "$main_pod" connect "${payer_key}@lnd-1:9735" >/dev/null 2>&1 || true
+    lncli "$main_pod" connect "${payer_key}@${payer_node}:9735" >/dev/null 2>&1 || true
     counts=$(lncli "$main_pod" listchannels | python3 -c '
 import json,sys
 peer=sys.argv[1]
@@ -93,7 +104,8 @@ d=json.load(sys.stdin)
 print(sum(1 for x in d.get("pending_open_channels",[]) if x.get("channel",{}).get("remote_node_pub")==peer))
 ' "$payer_key")
     if (( pending == 0 )); then
-      lncli "$main_pod" openchannel --node_key="$payer_key" --local_amt=30000 --push_amt=15000 --private >/dev/null
+      lncli "$main_pod" openchannel --node_key="$payer_key" --local_amt=30000 --push_amt=15000 \
+        --private --sat_per_vbyte="$payer_sat_per_vbyte" >/dev/null
       echo 'OK payer channel funding transaction broadcast'
     else
       echo 'OK payer channel funding transaction is already pending'
@@ -110,7 +122,7 @@ print(sum(1 for x in d.get("pending_open_channels",[]) if x.get("channel",{}).ge
       exit 1
     }
     wallet_ready "$main_pod" || { echo 'ACTION: unlock lnd-0' >&2; exit 10; }
-    wallet_ready "$payer_pod" || { echo 'ACTION: create or unlock lnd-1' >&2; exit 10; }
+    wallet_ready "$payer_pod" || { echo "ACTION: create or unlock $payer_node" >&2; exit 10; }
     payment_request=$(cat "$invoice_file")
     main_key=$(lncli "$main_pod" getinfo | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity_pubkey"])')
     decoded=$(lncli "$payer_pod" decodepayreq "$payment_request")

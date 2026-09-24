@@ -169,6 +169,18 @@ Enable the payer workload without replacing the `lnd-0` StatefulSet or PVC:
 ops/testnet-payer enable
 ```
 
+The default payer is `lnd-1`. If that wallet is being preserved for recovery,
+select another positive index consistently for every payer command, for example:
+
+```sh
+export LND_OPS_PAYER_INDEX=2
+ops/testnet-payer enable
+```
+
+The chart creates all node indexes through the selected payer. Scale an unused,
+locked intermediate StatefulSet to zero after each Helm upgrade while retaining
+its PVC for recovery.
+
 On its first use, create the payer wallet with the interactive command printed by `enable`. This is a test-only identity. Store its seed and password as secret recovery material and never reuse it for mainnet funds. After it synchronizes:
 
 ```sh
