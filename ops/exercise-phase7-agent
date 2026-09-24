@@ -130,7 +130,7 @@ def main():
         pod_mcp("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
         EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        response_path = EVIDENCE / f"phase7-kagent-response-{stamp}.txt"
+        response_path = None
         channels = json.loads(lncli("lnd-0-0", "listchannels").stdout).get("channels", [])
         active = [channel for channel in channels if channel.get("active")]
         if len(active) != 1:
@@ -162,30 +162,38 @@ def main():
                 raise RuntimeError("injected fault cleared before kagent invocation")
             signal_before_agent_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-            descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             task = (
                 "A channel fault is active now. Diagnose it. Call diagnose_incident with the exact "
                 "argument scenario=channel_inactive, then call get_versioned_runbook with the exact "
                 "argument name=channel-inactive.md. Use live tool results only. Return the six "
                 "required headings exactly and do not perform an action."
             )
-            with os.fdopen(descriptor, "w") as stream:
-                invoked = run([
-                    str(REPO / "ops/kagent-cli"), "--kagent-url", "http://127.0.0.1:18083",
-                    "--namespace", "kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
-                    "--task", task, "--timeout", "8m",
-                ], check=False, timeout=540, stdout=stream)
-            if invoked.returncode:
-                raise RuntimeError((invoked.stderr or "kagent invocation failed").strip().splitlines()[-1])
-            response = response_path.read_text(errors="replace")
-            try:
-                invocation = json.loads(response)
-                if invocation.get("status", {}).get("state") != "completed":
-                    raise RuntimeError("kagent invocation returned a non-completed task")
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("kagent CLI did not return its JSON task contract") from exc
-            agent_diagnosis = invocation_tool_result(invocation, "diagnose_incident")
-            agent_runbook = invocation_tool_result(invocation, "get_versioned_runbook")
+            invocation_error = None
+            for attempt in range(1, 4):
+                response_path = EVIDENCE / f"phase7-kagent-response-{stamp}-attempt-{attempt}.txt"
+                descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "w") as stream:
+                    invoked = run([
+                        str(REPO / "ops/kagent-cli"), "--kagent-url", "http://127.0.0.1:18083",
+                        "--namespace", "kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
+                        "--task", task, "--timeout", "8m",
+                    ], check=False, timeout=540, stdout=stream)
+                if invoked.returncode:
+                    invocation_error = RuntimeError((invoked.stderr or "kagent invocation failed").strip().splitlines()[-1])
+                    continue
+                response = response_path.read_text(errors="replace")
+                try:
+                    invocation = json.loads(response)
+                    if invocation.get("status", {}).get("state") != "completed":
+                        raise RuntimeError("kagent invocation returned a non-completed task")
+                    agent_diagnosis = invocation_tool_result(invocation, "diagnose_incident")
+                    agent_runbook = invocation_tool_result(invocation, "get_versioned_runbook")
+                    invocation_error = None
+                    break
+                except (json.JSONDecodeError, RuntimeError) as exc:
+                    invocation_error = exc
+            if invocation_error:
+                raise RuntimeError(f"kagent did not complete the required tool sequence after 3 attempts: {invocation_error}")
             if agent_diagnosis.get("signal_active") is not True:
                 raise RuntimeError("kagent did not receive the active injected fault signal")
             if agent_runbook.get("name") != "channel-inactive.md":
