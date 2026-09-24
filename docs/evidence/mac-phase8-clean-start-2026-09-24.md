@@ -31,9 +31,11 @@ has SHA256
 `6feb7a7786caeb5e6a12b57e9acb10ae162a7b504da1e64c4006815576e4b973`.
 It records no wallet or cluster credential.
 
-## Remaining functional gate
+## Completed functional gate
 
-This is the wallet-free infrastructure proof. The separate persistent Mac
-testnet wallet, funding, public channel, bidirectional payment, encrypted SCB,
-live monitoring, security acceptance, and wallet-preserving redeployment proof
-remain required before Phase 8 is complete.
+This record remains the wallet-free infrastructure proof. The separate
+persistent Mac testnet wallet subsequently passed funding, public channel,
+bidirectional payment, encrypted SCB, live monitoring, Pod restart recovery,
+security acceptance, and wallet-preserving redeployment checks. The combined
+result is recorded in
+[Phase 8 cross-platform evidence](phase8-cross-platform-2026-09-24.md).

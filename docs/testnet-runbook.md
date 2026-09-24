@@ -4,7 +4,7 @@
 
 This runbook completes the persistent Windows WSL 2 testnet node used for Phase 1 evidence. Wallet creation, seed custody, faucet use, peer selection, channel funding, and payments are explicit operator actions. The scripts only deploy, inspect, and verify their results.
 
-Run commands from the repository root in WSL. The same flow is repeated later on Mac with a separate wallet.
+Run commands from the repository root in WSL. Phase 8 applies the same flow on Mac with a separate wallet.
 
 ## Safety rules
 
@@ -293,4 +293,4 @@ Create a redacted Markdown record under `docs/evidence/` containing:
 - before/after Helm revisions and preserved PVC UIDs;
 - Grafana dashboard observations and deferred Windows Device Encryption limitation.
 
-The Phase 1 exit check remains pending until this evidence is generated from the live Windows node.
+For a new Phase 1 run, the exit check remains pending until this evidence is generated from the live Windows node.

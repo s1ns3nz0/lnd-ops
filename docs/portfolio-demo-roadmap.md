@@ -27,12 +27,13 @@ This file owns phase order, portfolio scope, and final demo acceptance. The link
 | --- | --- | --- |
 | Windows regtest functional baseline | Complete | Keep passing during later changes |
 | Phase 0 acceptance command | Complete on Windows | Keep the read-only gate passing; repeat on Mac before the final demo |
-| Windows testnet | Complete | Keep acceptance evidence current during later changes; repeat the host-specific proof on Mac in Phase 8 |
-| Phase 3 integrated operations view | Complete on Windows | Keep `ops/phase3-acceptance` passing during later phases |
-| Mac runtime equivalence | Pending | Host-specific clean and functional evidence |
-| Security enforcement | Complete on Windows | Repeat the host-specific proof on Mac in Phase 8 |
-| Recovery exercise | Pending | Isolated seed-plus-SCB recovery evidence |
-| kagent operations | Pending | Read-only diagnosis before any mutation |
+| Windows testnet | Complete | Keep acceptance evidence current during later changes |
+| Phase 3 integrated operations view | Complete on both hosts | Keep `ops/phase3-acceptance` passing during later phases |
+| Mac runtime equivalence | Complete | Keep the Phase 8 host evidence current |
+| Security enforcement | Complete on both hosts | Keep `ops/phase4-acceptance` passing during later phases |
+| Recovery exercise | Complete on Windows | Retain the isolated recovery evidence for the demo |
+| kagent operations | Complete on Windows | Rehearse the constrained workflow for the demo |
+| Phase 8 cross-platform acceptance | Complete | Preserve exact-revision CI and host evidence |
 | Portfolio demo | Pending | Rehearsed five-minute and reproducibility runs |
 
 Unless a phase defines a stricter value, **recent** means observed within the preceding hour, **current SCB** means its recorded plaintext hash equals the live LND SCB hash, **live data** means a successful scrape from the real workload rather than a fixture, and **reproducible** means the documented commands pass from the clean state defined in `implementation-roadmap.md`. External unavailability such as a faucet, peer, route, Loop service, or registry does not convert a failed test into a pass; record the evidence and leave the affected exit check pending.
@@ -97,7 +98,7 @@ Troubleshooting artifacts may be removed only from a reviewed explicit inventory
 
 ### Exit check
 
-A secret-free testnet evidence record proves an external peer, an active public channel, a successful payment, current backup integrity, live dashboards, and state-preserving redeployment on Windows. Repeat the host-specific proof on Mac before the final demo.
+A secret-free testnet evidence record proves an external peer, an active public channel, a successful payment, current backup integrity, live dashboards, and state-preserving redeployment on Windows. Phase 8 repeats and passes the equivalent host-specific proof on Mac.
 
 ## Phase 2: integrate Lightning Labs products
 
@@ -287,6 +288,11 @@ ops/acceptance testnet
 ### Exit check
 
 The documented clean path works on Mac arm64 and Windows WSL 2 amd64. CI covers platform-independent checks on Linux, and host evidence covers the runtime behavior CI cannot reproduce.
+
+Phase 8 passed on both target hosts. The final gate bound owner-only Mac and
+Windows runtime records to the same clean Git revision and required successful
+`Harness check` and `Verify operator slice` workflows for that exact revision.
+See [the cross-platform evidence](evidence/phase8-cross-platform-2026-09-24.md).
 
 ## Phase 9: produce the portfolio demo
 
