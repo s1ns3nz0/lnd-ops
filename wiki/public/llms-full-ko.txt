@@ -1,0 +1,600 @@
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/01-foundations/lnd-architecture
+----------------------------------------
+
+# LND 구조와 상태
+
+LND 구조와 상태
+
+
+
+먼저 잡아야 할 모델
+
+LND는 단순한 HTTP 서버가 아니다. Bitcoin 체인의 상태를 따라가고, 장기간 유지되는 노드 키로 peer와 연결하며, 채널 상태를 로컬 데이터베이스에 보관하고, 결제 HTLC를 시간 제약 안에서 처리한다. 따라서 프로세스를 다시 띄우는 것만으로 노드를 복구했다고 말할 수 없다.
+
+
+
+상태별 역할
+
+| 상태 | 역할 | 잃었을 때의 의미 | 이 프로젝트의 취급 |
+| --- | --- | --- | --- |
+| aezeed | 온체인 키 복구의 근원 | 자금 복구 능력 상실 | 사용자만 기록, 저장소와 자동화에서 제외 |
+| wallet password | 로컬 wallet DB 잠금 해제 | 노드가 잠긴 상태로 기동 | 대화형 입력만 허용 |
+| `wallet.db` | 온체인 지갑 상태 | seed 복구 절차 필요 | PVC에 영속화 |
+| `channel.db` | 최신 채널 상태 | 오래된 상태로 임의 복원하면 위험 | 일반 파일 복사를 복구 수단으로 취급하지 않음 |
+| SCB | 채널 상대에게 데이터 손실 복구를 요청하는 정적 백업 | 채널 복구 수단 하나를 잃음 | PVC 밖에 암호화 복사, 최신성 관측 |
+| macaroon | RPC 권한 증명 | 노출 시 권한 범위 내 호출 가능 | readonly만 관측 sidecar가 읽음 |
+| TLS 인증서 | RPC 서버 인증·암호화 | 클라이언트 연결과 신뢰 실패 | 만료 시각 관측, 수동 회전 runbook |
+
+
+
+regtest와 testnet을 나눈 이유
+
+regtest에는 Bitcoin Core와 LND 두 개를 함께 띄워 채굴, 채널 개설, 양방향 결제, 정책 차단, 복구를 통제된 환경에서 반복한다. testnet은 외부 네트워크와 실제 프로토콜 상호운용성을 보여주되 자금·채널 변경을 보수적으로 다룬다. 같은 Helm chart를 서로 다른 values로 렌더링해 구조 차이보다 운영 목적의 차이를 드러낸다.
+
+| 요구사항 | 선택 | 대안 | 선택 이유 | 비용·한계 |
+| --- | --- | --- | --- | --- |
+| 재현 가능한 결제 실습 | 로컬 regtest 2노드 | testnet에서 반복 | 채굴·채널·장애를 통제 가능 | 실제 라우팅 시장을 재현하지 않음 |
+| 외부 상호운용 증명 | testnet 1노드 | mainnet | 실자금 위험을 줄임 | testnet 유동성 품질이 불안정 |
+| 체인 접근 | regtest bitcoind, testnet Neutrino | testnet full node | 로컬 자원과 초기 동기화 비용 절감 | Neutrino peer 가용성에 의존 |
+
+무엇을 가지고 무엇을 복구하는가
+
+| 잃은 상태 | 남은 입력 | 복구 가능한 것 | 피할 수 없는 결과 |
+| --- | --- | --- | --- |
+| 실행 중인 Pod | 기존 PVC | 같은 node identity와 channel 상태 | wallet 재잠금 가능 |
+| wallet/PVC | aezeed만 | 온체인 wallet key와 발견된 온체인 자금 | channel 자동 복원 불가 |
+| wallet/PVC | aezeed + 최신 SCB | 온체인 자금과 peer force close를 통한 channel 자금 회수 | 기존 channel은 닫힘 |
+| 오래된 `channel.db` | aezeed 포함 | 상황별 수동 복구 후보 | 최신 commitment가 아니면 자금 위험; 임의 사용 금지 |
+| aezeed와 wallet DB 모두 | SCB만 | 노드의 개인키를 재생성할 수 없음 | 자금 복구 불가 |
+
+wallet password는 기존 `wallet.db`를 여는 값이고 aezeed를 대신하지 않는다. cipher seed passphrase는 암호화된 aezeed를 해독하는 값이며 wallet password와 다르다.
+
+구현 근거
+
+- `charts/lnd-ops/templates/lnd.yaml`: `/data/.lnd` PVC, RPC/P2P, regtest bitcoind와 testnet Neutrino 인자
+- `charts/lnd-ops/values-regtest.yaml`: 두 LND 노드와 Bitcoin Core
+- `docs/regtest-runbook.md`: 지갑·채널·양방향 결제 절차
+- `docs/testnet-runbook.md`: testnet의 수동 자금 경계
+
+읽기 전용 관찰
+
+
+
+`getinfo`의 identity, sync 상태, peer 수는 프로세스가 어떤 노드로 동작하는지 보여준다. `listchannels`의 `active`, `local_balance`, `remote_balance`는 연결성과 방향별 유동성을 구분하는 출발점이다.
+
+공식 원리
+
+- LND 개발자 문서
+- LND 데이터 손실 복구
+- Lightning 유동성 설명
+
+점검 문제
+
+Pod가 재생성된 뒤 같은 PVC를 붙이면 왜 같은 Lightning 노드인가?노드 신원과 wallet/channel 데이터가 프로세스 이미지가 아니라 `/data/.lnd`의 영속 상태에 있기 때문이다. 단, wallet은 다시 잠길 수 있으므로 동일 신원과 운영 준비 상태는 별도 검사해야 한다.
+
+SCB가 있으면 channel.db 백업은 필요 없다고 단순화할 수 있는가?SCB는 상대의 force close를 통해 자금을 회수하기 위한 복구 수단이다. 정상 운영 상태의 즉시 복원과 동일하지 않으므로 RTO와 채널 유지 관점에서 구분해야 한다.
+
+면접 질문
+
+> LND를 일반적인 stateless Deployment로 운영했을 때 가장 위험한 실패 모드는 무엇이며, readiness probe만으로 왜 막을 수 없는가?
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/02-requirements/operational-requirements
+----------------------------------------
+
+# 운영 요구 도출
+
+운영 요구 도출
+
+
+| LND 특성 | 플랫폼 요구 | 실패 시 확인할 불변 조건 |
+| --- | --- | --- |
+| 장기 노드 신원과 wallet/channel DB | 안정된 PVC와 이름 | pubkey와 PVC UID가 유지됨 |
+| wallet 잠금 상태 | 수동 unlock 경계와 상태 관측 | 자동화가 암호를 저장하지 않음 |
+| peer·체인 연결 | 최소 허용 egress와 동기화 지표 | sync, peer, channel을 따로 확인 |
+| 방향성 있는 채널 잔액 | inbound/outbound 별도 관측 | 목표 금액 송수신 가능 여부 |
+| SCB 변경 | PVC 밖 암호화 백업과 최신성 | live SCB와 기록된 백업 일치 |
+| 운영 자동화 | 읽기 우선, 작은 mutation allowlist | 거부와 실행 모두 감사 가능 |
+
+요구사항은 리소스 목록이 아니라 **복구 후에도 참이어야 할 조건**으로 쓴다. 이 원칙이 `ops/redeploy-check`, phase acceptance, evidence schema로 이어진다.
+
+점검
+“Pod Ready”가 노드 정상 운영을 증명하지 못하는 이유는?프로세스가 떠 있어도 wallet lock, chain sync 지연, peer 단절, channel inactive, 부족한 유동성이 남을 수 있기 때문이다.
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/03-kubernetes/stateful-design
+----------------------------------------
+
+# StatefulSet과 PVC
+
+StatefulSet과 PVC
+
+
+
+설계의 출발점
+
+LND의 컨테이너 이미지는 교체 가능하지만 `/data/.lnd`는 노드 자체에 가깝다. Kubernetes는 이 둘을 Pod와 PVC로 분리한다. StatefulSet은 각 노드에 안정된 ordinal과 전용 claim을 만들고, Service는 교체된 Pod에 같은 논리 주소를 제공한다.
+
+
+
+왜 Deployment가 아닌가
+
+Deployment도 PVC를 붙일 수 있다. 그러나 replica별 안정된 identity와 claim 관계를 기본 계약으로 제공하지 않는다. 이 프로젝트는 노드마다 `lnd-0-0 → data-lnd-0-0` 관계를 검사하고, regtest의 두 노드를 명시적으로 구분한다. StatefulSet의 순서 보장보다 **안정된 이름과 전용 storage identity**가 핵심 이유다.
+
+sidecar가 같은 Pod에 있는 이유
+
+`lndmon`과 payment collector는 loopback RPC와 readonly macaroon을 사용한다. 같은 Pod와 PVC의 read-only mount를 쓰면 macaroon을 Kubernetes Secret으로 복제하거나 네트워크에 별도 RPC 경로를 열지 않아도 된다. 반면 sidecar 장애가 Pod readiness와 자원 경합에 영향을 줄 수 있고, upstream 이미지가 UID 0으로 시작하는 호환성 예외가 Pod 전체 보안 설계에 남는다.
+
+NetworkPolicy의 역할
+
+기본 거부 후 DNS, Prometheus scrape, regtest Bitcoin RPC/ZMQ, peer P2P, testnet Neutrino만 허용한다. Service는 도달 가능한 이름을 만들 뿐 접근 권한을 만들지 않는다. NetworkPolicy는 노드가 필요한 통신만 표현하지만, CNI 구현과 host firewall을 대신하지 않는다.
+
+| 요구사항 | 선택 | 대안 | 선택 이유 | 비용·한계 |
+| --- | --- | --- | --- | --- |
+| 노드별 안정된 storage identity | StatefulSet + claim template | Deployment + 고정 PVC | 이름과 claim 관계가 선언적 | 수평 복제가 노드 복제 의미는 아님 |
+| 관측 자격 증명 최소화 | 동일 Pod의 readonly sidecar | 중앙 collector에 macaroon 배포 | 비밀 이동 범위를 줄임 | Pod 결합도와 자원 경합 |
+| 로컬 개발 영속 볼륨 | K3s local-path | 분산 storage | 단일 노드에 단순하고 재현 가능 | 노드 장애 HA 없음 |
+| 네트워크 경계 | default deny + 명시적 allow | 전체 egress 허용 | 필요 흐름을 코드로 증명 | 외부 peer 목적지는 넓은 CIDR |
+
+Pod 재생성과 복구는 다르다
+
+Pod 재생성은 같은 PVC로 프로세스를 다시 시작한다. 호스트 디스크 손실은 PVC 자체를 잃는 사건이다. SCB 복구는 별도 PVC에서 seed와 SCB를 사용하며 기존 노드와 동시에 실행하지 않는다. 이 세 경로를 하나의 “restart”로 묶으면 중복 신원과 잘못된 복구 판단이 생긴다.
+
+| 실패 | 남아 있는 상태 | 첫 판단 | 대응 계층 |
+| --- | --- | --- | --- |
+| Pod 종료 | PVC | controller가 같은 claim으로 재생성하는가 | StatefulSet |
+| wallet locked | PVC와 프로세스 | 저장 손실이 아니라 수동 unlock 대기인가 | LND runbook |
+| node/guest 중단 | local-path disk | host가 돌아올 수 있는가 | host 운영 |
+| PVC 삭제·disk 상실 | SCB·aezeed | 원래 node가 완전히 중지됐는가 | 격리된 recovery |
+| DB 손상 | 원본과 백업 상태 | 임의 copy가 최신인지 추측하지 않음 | 공식 복구 절차 |
+| telemetry 중단 | 업무 상태 미상 | 0이 아니라 unavailable로 처리 | monitoring runbook |
+
+구현 근거
+
+- `charts/lnd-ops/templates/lnd.yaml`: StatefulSet, claim template, sidecar, securityContext
+- `charts/lnd-ops/templates/networkpolicy.yaml`: 기본 거부와 허용 흐름
+- `ops/redeploy-check`: pubkey, channel, PVC UID, SCB, Prometheus sample의 재배포 전후 비교
+- Kubernetes StatefulSet 공식 문서
+- Kubernetes Persistent Volume 공식 문서
+
+읽기 전용 관찰
+
+
+
+점검 문제
+같은 PVC UID를 확인하는 이유는 무엇인가?이름이 같은 새 PVC가 만들어져도 데이터 연속성은 없다. UID는 재배포 전후에 동일한 Kubernetes storage 객체인지 구분한다.
+lndmon을 중앙 Deployment로 분리하면 어떤 새 위험이 생기는가?각 노드의 TLS 인증서와 readonly macaroon을 중앙 workload로 전송·마운트해야 하며 RPC 네트워크 경로와 권한 범위가 넓어진다.
+
+면접 질문
+> 단일 노드 local-path에서 StatefulSet을 썼다는 사실만으로 고가용성을 주장할 수 없는 이유와, 다중 노드로 옮길 때 먼저 바꿔야 할 계약은 무엇인가?
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/04-deployment/reproducible-helm
+----------------------------------------
+
+# Helm과 재현 가능한 배포
+
+Helm과 재현 가능한 배포
+
+
+재현성의 기준은 YAML이 렌더링되는가가 아니라 **리소스가 없는 호스트에서 bootstrap→deploy→verify가 통과하고, 기존 지갑 PVC를 보존한 재배포에서도 신원과 관측 이력이 유지되는가**다.
+
+- digest 고정 image와 멀티 아키텍처 OCI index
+- regtest/testnet은 같은 chart, 다른 values
+- `helm upgrade --install`의 반복 적용
+- 수동 지갑 경계를 exit code `10`으로 표현
+- Mac arm64와 Windows WSL2 amd64의 실제 acceptance
+
+
+
+구현: `ops/bootstrap`, `ops/deploy`, `docs/clean-start-runbook.md`
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/05-wallet/wallet-boundaries
+----------------------------------------
+
+# 지갑과 복구 경계
+
+지갑과 복구 경계
+
+
+| 항목 | 보호하는 것 | 자동화 정책 |
+| --- | --- | --- |
+| aezeed | 온체인 키 복구 | 화면·파일·LLM 입력 금지, 운영자 기록 |
+| wallet password | 로컬 DB unlock | 대화형 입력, 저장 금지 |
+| macaroon | RPC 권한 | readonly만 관측 workload에 read-only 제공 |
+| TLS cert | RPC 서버 신뢰 | 만료 관측, 수동 회전 |
+| SCB | 채널 데이터 손실 복구 | 호스트에 암호화 복사, 최신성 검사 |
+
+Vault를 쓰더라도 seed와 wallet unlock을 무조건 자동화해야 하는 것은 아니다. 이 프로젝트에서 Vault는 향후 중앙 비밀 수명주기 문제를 해결할 후보이며, 현재 단일 사용자 로컬 클러스터의 자금 조작 권한을 LLM이나 Pod에 넘기는 근거가 아니다.
+
+근거: `docs/testnet-runbook.md`, `docs/security-baseline.md`
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/06-payments/channel-liquidity
+----------------------------------------
+
+# 채널·유동성·결제
+
+채널·유동성·결제
+
+
+채널 capacity는 총량이고 liquidity는 방향이다. 로컬 잔액은 보내는 능력, 원격 잔액은 받는 능력의 한 입력이다. 활성 채널이 있어도 목표 금액 10,000 sats를 어느 방향으로도 처리하지 못할 수 있다.
+
+관측은 active/inactive channel, peer, pending HTLC, inbound/outbound bandwidth, trailing-hour 결제 성공·실패·수수료·해결 시간을 함께 본다. 단일 실패는 라우팅의 정상 변동일 수 있으므로 이 프로젝트는 1시간 내 outgoing 실패 3회 이상을 경보 후보로 사용한다.
+
+공식 근거: Lightning Terminal 채널 유동성
+
+capacity가 충분한데 결제가 실패할 수 있는 이유는?필요한 방향의 local/remote balance, 전체 경로의 유동성, HTLC 한도, peer 연결 상태가 별도 조건이기 때문이다.
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/07-observability/signals-to-decisions
+----------------------------------------
+
+# 신호에서 판단까지
+
+신호에서 판단까지
+
+
+
+좋은 대시보드는 수치를 많이 보여주는 화면이 아니라 **운영자가 다음 행동을 결정하는 데 필요한 상관관계**를 보존한다. 이 프로젝트는 LND 자체 exporter, lndmon, 제한된 custom collector, Kubernetes와 host 신호를 함께 사용한다.
+
+
+
+왜 이 값들을 보는가
+
+| 질문 | 신호 | 함께 볼 신호 | 판단 |
+| --- | --- | --- | --- |
+| 노드가 RPC를 받을 준비가 됐나? | wallet state | scrape up | `LOCKED`와 collector 장애를 구분 |
+| 체인을 따라가고 있나? | `lnd_chain_synced` | wallet state, block age, peer | 잠긴 wallet에서 파생 경보 억제 |
+| 채널을 쓸 수 있나? | active/inactive channel | peer, pending HTLC | peer 단절과 채널 자체 문제를 구분 |
+| 목표 금액을 보낼/받을 수 있나? | 방향별 bandwidth 합 | active channel | capacity 대신 방향별 가능성 판단 |
+| 결제 품질이 나빠졌나? | trailing-hour outcome | latency, fee, liquidity | 일시 실패와 반복 실패 분리 |
+| 데이터를 잃을 위험이 있나? | PVC/guest disk free | node pressure | 볼륨 부족과 host disk 부족 분리 |
+| 채널 복구 준비가 됐나? | SCB current/age | source present | 존재만이 아니라 최신성 판단 |
+| 관측 자체가 고장 났나? | scrape `up` | Prometheus Pod | “정상”과 “보이지 않음” 구분 |
+
+임계값은 운영 목표의 표현이다
+
+- **10,000 sats liquidity:** 데모에서 증명하려는 송수신 목표다. 보편적 운영 임계값이 아니다.
+- **결제 실패 3회/1h:** 한 번의 라우팅 실패보다 반복되는 사용자 영향을 잡기 위한 초기 기준이다.
+- **PVC·guest disk 10%:** cleanup과 확장 판단을 위한 여유 구간이다. 증가율 기반 예측은 향후 과제다.
+- **SCB 24h:** 백업 부재·불일치와 장기 미갱신을 묶은 초기 운영 정책이다.
+- **TLS 30일:** 수동 회전 runbook을 수행할 시간을 확보한다.
+
+상관관계와 억제
+
+wallet이 `LOCKED` 또는 `NON_EXISTING`이면 sync, channel, lndmon 경보가 연쇄적으로 생길 수 있다. root cause가 명확한 상태에서 파생 경보를 억제해야 운영자가 같은 사건을 여러 장애로 오해하지 않는다. 반대로 wallet-state collector의 scrape가 실패했으면 `LOCKED=0`을 정상으로 해석하지 않고 별도 unavailable alert를 낸다.
+
+대시보드 분리
+
+| 화면 | 운영 질문 |
+| --- | --- |
+| Overview | 지금 노드가 전체적으로 서비스 가능한가? |
+| Node and Channels | sync, peer, channel 중 어디가 막혔나? |
+| Payments and Liquidity | 어느 방향의 결제 능력과 품질이 떨어졌나? |
+| Kubernetes | Pod, node, PVC 중 인프라 원인은 무엇인가? |
+| Security | 정책 적용과 runtime event가 정상인가? |
+| Backup and Recovery | SCB와 복구 준비가 최신인가? |
+
+데이터 최소화
+
+payment hash, invoice 내용, macaroon, peer identity를 custom metric label이나 LLM 입력에 넣지 않는다. label cardinality와 정보 노출을 함께 줄인다. collector는 집계값과 상태만 내보낸다.
+
+구현 근거
+
+- `charts/monitoring-rules.yaml`: 16개 운영 alert와 runbook 연결
+- `charts/dashboards/`: 여섯 개 Git-provisioned dashboard
+- `collector/payment_metrics.py`: 집계된 결제·wallet·SCB·TLS 지표
+- `docs/observability-plan.md`: 신호 선택과 알려진 공백
+- Prometheus alerting rules
+
+읽기 전용 관찰
+
+
+
+알려진 공백
+
+- 취소된 invoice는 수신 실패가 아니므로 receive-failure 관측은 미완성이다.
+- PC나 K3s 자체가 멈추면 내부 Prometheus/Alertmanager도 알릴 수 없다.
+- 임계값은 현재 데모 목표와 관측량에 맞춘 초기값이며 실제 mainnet SLO가 아니다.
+
+점검 문제
+왜 `up == 0`과 업무 지표 0을 구분해야 하는가?업무 지표 0은 정상 상태일 수 있지만 `up == 0`이면 그 값을 관측하지 못한 것이다. 관측 실패를 정상으로 해석하면 false negative가 생긴다.
+incoming liquidity alert를 채널 개설 직후 바로 켜면 왜 잡음이 될 수 있는가?로컬 자금으로 연 채널은 처음에 outbound 위주다. inbound를 만들기 전 낮은 incoming liquidity는 설계된 초기 상태다.
+
+면접 질문
+> 결제 실패율 alert를 설계할 때 낮은 트래픽, 라우팅 실패의 정상 변동, 방향별 liquidity를 어떻게 함께 다룰 것인가?
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/08-incidents/runbook-lifecycle
+----------------------------------------
+
+# 장애 대응 수명주기
+
+장애 대응 수명주기
+
+
+runbook은 명령 모음이 아니라 판단의 순서다: 증상을 확인하고, 파생 경보를 제거하고, 원인을 좁힌 뒤, 가장 작은 조치를 수행하고, 원래 불변 조건의 회복을 검증한다.
+
+
+
+Phase 6은 channel 격리, CrashLoop, Falco marker를 실제로 주입하고 alert 전달과 복구를 검증했다. 상태 변경 실습은 `docs/phase9-demo-runbook.md`를 따른다.
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/09-security/defense-in-depth
+----------------------------------------
+
+# Kubernetes 심층 방어
+
+Kubernetes 심층 방어
+
+
+| 통제 | 막거나 발견하는 것 | 막지 못하는 것 |
+| --- | --- | --- |
+| Pod securityContext | privilege escalation과 Linux capability | 허용된 프로세스의 논리 오류 |
+| Kyverno | 잘못된 workload가 입장하는 것 | 이미 실행 중인 runtime 행위 |
+| RBAC | Kubernetes API 권한 남용 | Pod 간 네트워크 접근 |
+| NetworkPolicy | 불필요한 ingress/egress | host·CNI 바깥의 방화벽 역할 |
+| Falco | 실행 후 의심스러운 runtime event | 사전 차단과 비즈니스 의미 판단 |
+| digest pin | tag 변조와 예기치 않은 이미지 교체 | 고정된 이미지 자체의 취약점 |
+
+보안은 하나의 도구로 완성되지 않는다. admission, identity, network, runtime, recovery 단계에 다른 통제를 둔다. 자세한 예외와 acceptance는 `docs/security-baseline.md`에 있다.
+
+면접 질문
+> NetworkPolicy가 적용되어도 host firewall과 egress proxy가 별도 관심사인 이유는 무엇인가?
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/09-security/scb-recovery
+----------------------------------------
+
+# SCB와 복구
+
+SCB와 복구
+
+
+복구 실습은 원래 LND를 중지하고 별도 PVC에서 동일 seed와 SCB를 사용한다. 원래 노드와 복구 노드가 동시에 같은 identity로 실행되지 않는 것이 핵심 불변 조건이다. 성공은 프로세스 기동이 아니라 원래 pubkey, DLP force close, 온체인 자금 회수로 판정한다.
+
+- 준비: `ops/prepare-regtest-recovery`
+- 검증: `ops/verify-regtest-recovery`
+- 원본 복귀: `ops/finish-regtest-recovery`
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/10-automation/observe-to-act
+----------------------------------------
+
+# Observe에서 Verify까지
+
+Observe에서 Verify까지
+
+
+LLM은 판단 보조 계층이며 권한의 근원이 아니다. 모델이 무엇을 말하든 MCP gateway의 도구 allowlist, Kubernetes RBAC, NetworkPolicy가 실행 가능 범위를 결정한다.
+
+
+
+현재 검증된 기능
+
+- allowlist에 포함된 Pod, StatefulSet, PVC, Event 조회
+- 마지막 50줄의 redacted log 조회
+- inactive channel, unready Pod, Falco event용 고정 PromQL 진단
+- 커밋에 포함된 세 개의 versioned runbook 조회
+- health verification
+- 진단용 probe Deployment 재시작 1개
+- 5분 cooldown, 허용·거부 Kubernetes Event 감사
+- `unlock_wallet` 요청의 gateway·RBAC 거부
+
+운영자 승인이 필요한 기능
+
+wallet unlock, seed 사용, payment, channel open/close, LND restart, PVC·SCB 삭제, NetworkPolicy 완화는 모델의 직접 실행 범위가 아니다. 제안은 가능하지만 운영자가 상태와 영향 범위를 검토해야 한다.
+
+현재 구현에는 이러한 고위험 조치를 실행하는 **승인 토큰이나 승인 API가 없다**. 운영자는 모델 응답 밖에서 해당 버전의 runbook을 읽고 명령을 직접 수행한다. 따라서 “운영자 승인 필요”는 자동 실행이 대기 중이라는 뜻이 아니라, gateway가 그 기능을 제공하지 않는다는 뜻이다. 향후 승인 흐름을 추가하려면 action preview, 단일 사용 승인, 만료, approver identity, audit record, rollback과 사후 verification을 먼저 정의해야 한다.
+
+향후 설계
+
+- 더 많은 versioned runbook과 고정 진단 쿼리
+- 여러 alert와 Event의 시간 상관분석
+- dry-run 가능한 remediation plan
+- 승인 토큰의 수명과 단일 사용 감사
+- 외부 가용성 신호와 내부 원인의 상관관계
+
+왜 일반 kubectl 도구를 주지 않았나
+
+자연어 의도 분류의 실수는 피할 수 없다. 따라서 “위험한 명령을 프롬프트로 금지”하는 대신 서버가 여섯 개 도구와 고정된 파라미터만 제공한다. gateway ServiceAccount만 제한된 token을 가지며 kagent Agent는 token-free다.
+
+| 요구사항 | 선택 | 대안 | 선택 이유 | 비용·한계 |
+| --- | --- | --- | --- | --- |
+| 진단 유연성 | LLM + 고정 관측 도구 | shell/kubectl 전체 제공 | 데이터 해석은 유연, 권한은 결정적 | 새 시나리오마다 도구 추가 필요 |
+| 모델 운영 | Mac 외부 Ollama | cluster 내부 GPU 모델 | 현재 하드웨어 재사용 | LAN·가용성·TLS 경계 추가 |
+| 변경 통제 | probe restart 1개 | 모든 runbook 자동화 | end-to-end mutation을 안전하게 증명 | 실제 LND 자동 복구는 하지 않음 |
+| 감사 | Kubernetes Event + private evidence | 대화 로그만 저장 | 실행·거부를 정책 계층에서 기록 | Event는 단기 보존 |
+
+실제 장애 흐름
+
+Phase 7은 regtest peer NetworkPolicy를 임시 차단해 inactive channel 신호를 만든다. kagent는 live metric과 channel runbook을 사용해 진단한다. `finally` 경로가 원래 정책을 복원하고 channel active를 확인한 후에만 allowlisted probe 조치를 검증한다.
+
+구현 근거
+
+- `agent/runbook_gateway.py`: 도구 입력 검증, redaction, cooldown, event
+- `charts/agent/templates/cross-namespace-rbac.yaml`: namespace별 읽기 권한
+- `charts/agent/templates/resources.yaml`: token, network, mutation 경계
+- `docs/phase7-runbook.md`: 배포와 acceptance
+
+점검 문제
+프롬프트에 “지갑 작업 금지”라고 쓰는 것만으로 부족한 이유는?프롬프트는 권한 통제가 아니며 오해·주입·모델 오류가 가능하다. 서버 allowlist와 RBAC가 요청을 결정적으로 거부해야 한다.
+왜 Act 뒤에 Verify가 독립 단계인가?API 호출 성공은 사용자 영향 회복을 뜻하지 않는다. 정책 원복, workload 상태, channel·metric 회복을 별도로 확인해야 한다.
+
+면접 질문
+> 자동 remediation 범위를 넓힐 때 위험도를 어떤 기준으로 분류하고, 승인과 rollback을 어떤 상태 머신으로 표현할 것인가?
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/11-validation/evidence
+----------------------------------------
+
+# 증거 기반 검증
+
+증거 기반 검증
+
+
+acceptance evidence는 명령 출력 덤프가 아니다. schema, Git revision, host 유형, 통과한 불변 조건, 알려진 제약을 기록하며 seed, password, macaroon, invoice, payment hash, 원시 식별자는 제외한다.
+
+- 교차 플랫폼 Phase 8 증거
+- Windows Phase 7 kagent 증거
+- Windows Phase 6 장애 증거
+
+검증 상태는 `설계됨`, `자동 검증됨`, `실제 환경 검증됨`만 사용한다. 문서 CI는 모든 학습 페이지에 버전, 플랫폼, 날짜, 커밋, 상태, 적용 범위가 있는지 검사한다.
+
+`근거 커밋`은 페이지 파일의 최신 커밋이 아니라 해당 주장의 acceptance가 통과한 revision이다. 본문을 윤문했다고 자동으로 바꾸지 않으며, 관련 검증을 다시 실행했을 때 갱신한다. `실제 환경 검증됨`은 연결된 evidence나 runbook에 재현 절차와 확인한 불변 조건이 있어야 한다.
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/12-retrospective/tradeoffs
+----------------------------------------
+
+# 한계와 다음 단계
+
+한계와 다음 단계
+
+
+현재 프로젝트는 재현 가능한 단일 노드 운영, 지갑 보존 재배포, 관측, 정책, 장애·복구, 제한된 LLM 대응을 증명했다. 다음은 증명하지 않았다.
+
+- mainnet 자금 운영과 고가용성
+- 다중 노드 storage failover
+- 외부에서 host·cluster 중단을 감지하는 가용성 감시
+- 실제 receive failure 관측
+- Windows 전체 볼륨 암호화 완료
+- 일반화된 LND 자동 remediation
+- 장기 로그와 감사 이벤트 보존
+
+확장은 “도구 추가”보다 실패 모델과 불변 조건을 먼저 정의한다. 다중 노드 전환이라면 storage topology, 동일 identity 중복 실행 방지, fencing, backup RPO/RTO를 우선 설계해야 한다.
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/decisions
+----------------------------------------
+
+# ADR 색인
+
+ADR 색인
+
+
+| 결정 | 선택 | 핵심 이유 | 재검토 조건 |
+| --- | --- | --- | --- |
+| ADR-001 | 단일 노드 K3s | 두 로컬 OS에서 동일한 경량 배포 계약 | HA 또는 다중 운영자 요구 |
+| ADR-002 | LND StatefulSet + PVC | 안정된 노드·storage identity | 외부 managed LND 상태 계층 |
+| ADR-003 | regtest와 testnet 분리 | 파괴적 실습과 외부 상호운용 분리 | mainnet 운영 설계 시작 |
+| ADR-004 | Prometheus/Grafana | metric·alert·dashboard를 Git으로 검증 | 장기 다중 클러스터 관측 |
+| ADR-005 | Kyverno + Falco | admission과 runtime을 분리 | 관리형 정책·runtime 플랫폼 도입 |
+| ADR-006 | 외부 Ollama + 제한 gateway | GPU 재사용과 권한 최소화 | 인증된 내부 inference 서비스 |
+| ADR-007 | Vault 보안 확장 | 현재 수동 자금 경계를 유지 | 다중 사용자·비밀 회전 요구 |
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/
+----------------------------------------
+
+# LND Ops Wiki
+
+이 Wiki를 읽는 법
+
+각 장은 **LND의 특성 → 운영 위험 → 플랫폼 설계 → 관측 신호 → 보안 통제 → 대응 → 검증** 순서로 전개됩니다. Linux와 Kubernetes 기본 사용 경험은 가정하지만 LND의 개념은 처음부터 설명합니다. 장 후반의 선택 비교와 면접 질문은 플랫폼 엔지니어 수준의 검토를 목표로 합니다.
+
+
+
+세 개의 출발점
+
+- 처음 실행한다면 안전하게 시작하기
+- 처음부터 이해하려면 학습 지도
+- 상태 보존이 궁금하면 LND 구조와 상태
+- 운영 자동화가 궁금하면 신호에서 판단까지
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/roadmap
+----------------------------------------
+
+# 학습 지도
+
+학습 지도
+
+
+
+기술 이름을 외우는 대신 노드의 생명주기를 따라간다. 앞 단계의 요구가 다음 단계의 설계 입력이 된다.
+
+
+
+| 단계 | 답해야 할 질문 | 완료 기준 |
+| --- | --- | --- |
+| 1 | LND가 어떤 상태를 만들고 어떤 프로토콜과 통신하는가? | wallet, channel.db, macaroon, TLS, SCB 역할을 구분한다 |
+| 2 | 그 상태 때문에 플랫폼에 무엇이 필요한가? | 영속성·신원·네트워크·복구 요구를 적는다 |
+| 3 | 왜 StatefulSet과 PVC인가? | Pod 교체와 노드 신원 보존을 연결한다 |
+| 4 | 왜 Helm과 멱등 스크립트인가? | 빈 환경과 재배포 계약을 설명한다 |
+| 5 | 어떤 비밀을 어디까지 자동화할 수 있는가? | seed, password, macaroon, SCB 경계를 구분한다 |
+| 6 | 용량과 유동성은 왜 다른가? | send/receive 가능성을 별도 판단한다 |
+| 7 | 왜 그 메트릭과 임계값인가? | 사용자 영향과 신호를 연결한다 |
+| 8 | runbook은 어떻게 모호성을 줄이는가? | 증상→근거→조치→검증 흐름을 만든다 |
+| 9 | 예방·탐지·복구가 어떻게 겹치는가? | Kyverno, NetworkPolicy, RBAC, Falco, SCB 역할을 구분한다 |
+| 10 | LLM에게 어떤 권한을 주어야 하는가? | 현재/승인 필요/향후 기능을 나눈다 |
+| 11 | 무엇을 통과해야 완료인가? | 커밋·플랫폼·증거가 연결된 acceptance를 설명한다 |
+| 12 | 현재 설계가 어디서 깨지는가? | 단일 노드와 홈 네트워크의 한계를 말한다 |
+
+추천 경로
+
+1. LND 구조와 상태
+2. StatefulSet과 PVC
+3. 채널·유동성·결제
+4. 신호에서 판단까지
+5. Observe에서 Verify까지
+
+----------------------------------------
+Source: https://s1ns3nz0.github.io/lnd-ops/start-here
+----------------------------------------
+
+# 안전하게 시작하기
+
+안전하게 시작하기
+
+
+먼저 모드를 고른다
+
+| 모드 | 필요한 환경 | 상태 변경 | 시작점 |
+| --- | --- | --- | --- |
+| 읽기만 | 브라우저 | 없음 | 학습 지도 |
+| 기존 환경 관찰 | 배포된 lnd-ops와 kubeconfig | 없음 | 아래 읽기 전용 점검 |
+| 로컬 regtest 실습 | 준비된 Mac 또는 Windows WSL2 | regtest만 변경 | clean-start runbook |
+| testnet 검증 | 자금·채널이 있는 기존 testnet 노드 | 기본 경로는 읽기 전용 | testnet runbook |
+
+처음에는 **기존 환경 관찰**로 시작한다. 다음 명령은 Kubernetes나 LND 상태를 변경하지 않는다.
+
+첫 읽기 전용 점검
+
+
+
+기대 결과는 Kubernetes node가 `Ready`이고, LND Pod와 PVC 관계가 출력되며, 마지막 명령이 실행할 읽기 전용 1~3단계 계획을 보여주는 것이다. `Unauthorized`, `connection refused`, `Pending PVC`가 나오면 실습을 진행하지 말고 Windows runbook 또는 clean-start runbook에서 환경을 복구한다.
+
+안전 규칙
+
+1. 장애 주입과 복구는 regtest에서 먼저 수행한다.
+2. seed, cipher seed passphrase, wallet password, macaroon, payment request를 문서·Git·로그·LLM 입력에 붙이지 않는다.
+3. `delete`, wallet unlock, payment, channel open/close, recovery 명령은 해당 runbook의 선행 조건을 확인한 뒤 실행한다.
+4. testnet에서는 명령이 읽기 전용인지 확인하고, 자금 이동은 운영자가 금액과 목적지를 직접 검토한다.
+5. recovery namespace나 같은 pubkey의 두 LND가 보이면 추측해서 정리하지 않는다.
+
+페이지 메타데이터 읽기
+
+| 항목 | 의미 |
+| --- | --- |
+| 관련 버전 | 설명과 검증에 사용한 핵심 버전 |
+| 검증 플랫폼 | 실제로 수행했거나 자동 검사한 환경 |
+| 마지막 검증 | 코드 작성일이 아니라 근거를 다시 확인한 날짜 |
+| 근거 커밋 | 설명한 acceptance/evidence가 통과한 Git revision; 문서 수정마다 자동 변경하지 않음 |
+| 설계됨 | 의도와 경계가 문서화됐지만 실행 증거가 없음 |
+| 자동 검증됨 | CI나 결정적 테스트가 통과함 |
+| 실제 환경 검증됨 | 대상 Mac/Windows 클러스터에서 acceptance를 통과함 |
+| 적용 범위 | regtest, testnet 중 어느 환경에 근거가 있는지 표시 |
+
+완료 조건
+
+- 현재 context와 API server가 의도한 로컬 클러스터다.
+- node가 `Ready`다.
+- Pod가 어떤 PVC를 쓰는지 설명할 수 있다.
+- dry-run의 1~3단계가 왜 읽기 전용인지 설명할 수 있다.
+- 비밀과 자금 조작이 학습 명령에서 분리됐음을 확인했다.
+
+다음은 LND 구조와 상태다.

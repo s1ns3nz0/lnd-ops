@@ -1,0 +1,74 @@
+name: Publish learning wiki
+
+on:
+  pull_request:
+    paths:
+      - 'wiki/**'
+      - 'scripts/*wiki*.mjs'
+      - 'package*.json'
+      - '.github/workflows/pages.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'wiki/**'
+      - 'scripts/*wiki*.mjs'
+      - 'package*.json'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm test
+      - run: npm run docs:build
+      - name: Smoke test static artifact
+        run: |
+          test -s wiki/.vitepress/dist/index.html
+          test -s wiki/.vitepress/dist/llms.txt
+          test -s wiki/.vitepress/dist/manifest.json
+          grep -q 'LND Ops Wiki' wiki/.vitepress/dist/index.html
+      - if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: wiki/.vitepress/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Smoke test deployment
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            curl --fail --location --retry 2 --max-time 20 "${PAGE_URL}" | grep -q 'LND Ops Wiki' && exit 0
+            sleep 5
+          done
+          exit 1

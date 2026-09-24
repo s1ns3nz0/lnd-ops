@@ -2,6 +2,12 @@
 
 ![LND Ops terminal banner](docs/assets/lnd-ops-banner.png)
 
+The Korean [LND Ops learning Wiki](https://s1ns3nz0.github.io/lnd-ops/) explains
+how LND's state and failure model lead to this repository's Kubernetes,
+observability, security, recovery, and constrained kagent design. Run it locally
+with `npm ci && npm run docs:dev`; validate the production artifact with
+`npm run docs:build`.
+
 Reproducible Lightning node operator portfolio project for Mac arm64 Lima K3s and Windows WSL 2 K3s. Both run the same Helm chart with separate testnet wallets and a disposable regtest profile. The [demo execution plan](docs/demo-execution-plan.md) is the working path from the current state to the final portfolio demo. The [implementation roadmap](docs/implementation-roadmap.md) defines the MVP, multi-platform images, and repeat-deployment contract. The [operator plan](docs/operator-plan.md) records the target architecture, while the [observability plan](docs/observability-plan.md) records dashboards, alerts, and runbook priorities. The [regtest runbook](docs/regtest-runbook.md) covers the manual wallet and channel exercise. The [Windows runbook](docs/windows-runbook.md) is the exact Windows 11 Home acceptance path.
 
 Phase 7 uses a fixed operator-selected Ollama server rather than assuming the

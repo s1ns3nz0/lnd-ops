@@ -1,0 +1,23 @@
+# LND Ops Wiki
+
+> LND 운영 요구를 Kubernetes 설계, 관측, 보안, runbook, kagent 대응으로 연결하는 한국어 학습 Wiki입니다.
+
+## Docs (한국어)
+
+- [LND 구조와 상태](https://s1ns3nz0.github.io/lnd-ops/llms/ko/01-foundations/lnd-architecture.md): LND가 Bitcoin, Lightning peer, wallet, channel 상태를 어떻게 연결하는지 설명한다
+- [운영 요구 도출](https://s1ns3nz0.github.io/lnd-ops/llms/ko/02-requirements/operational-requirements.md): LND의 상태와 실패 모델을 플랫폼 요구사항으로 번역한다
+- [StatefulSet과 PVC](https://s1ns3nz0.github.io/lnd-ops/llms/ko/03-kubernetes/stateful-design.md): LND의 영속성과 신원 요구를 Kubernetes 리소스로 번역한다
+- [Helm과 재현 가능한 배포](https://s1ns3nz0.github.io/lnd-ops/llms/ko/04-deployment/reproducible-helm.md): 빈 환경, 반복 배포, 다중 아키텍처를 하나의 계약으로 다룬다
+- [지갑과 복구 경계](https://s1ns3nz0.github.io/lnd-ops/llms/ko/05-wallet/wallet-boundaries.md): seed, password, macaroon, TLS, SCB의 서로 다른 보안 역할
+- [채널·유동성·결제](https://s1ns3nz0.github.io/lnd-ops/llms/ko/06-payments/channel-liquidity.md): capacity와 방향별 liquidity가 송수신 가능성에 미치는 영향
+- [신호에서 판단까지](https://s1ns3nz0.github.io/lnd-ops/llms/ko/07-observability/signals-to-decisions.md): 각 LND·Kubernetes 지표를 사용자 영향, alert, runbook, kagent 판단과 연결한다
+- [장애 대응 수명주기](https://s1ns3nz0.github.io/lnd-ops/llms/ko/08-incidents/runbook-lifecycle.md): 증상, 근거, 조치, 복구 검증을 버전이 붙은 runbook으로 연결한다
+- [Kubernetes 심층 방어](https://s1ns3nz0.github.io/lnd-ops/llms/ko/09-security/defense-in-depth.md): NetworkPolicy, RBAC, Kyverno, Falco가 서로 다른 실패 단계를 다루는 이유
+- [SCB와 복구](https://s1ns3nz0.github.io/lnd-ops/llms/ko/09-security/scb-recovery.md): 노드 재시작, PVC 상실, SCB 데이터 손실 복구를 구분한다
+- [Observe에서 Verify까지](https://s1ns3nz0.github.io/lnd-ops/llms/ko/10-automation/observe-to-act.md): kagent와 Ollama가 runbook을 사용하되 권한 경계를 넘지 않는 자동 대응 구조
+- [증거 기반 검증](https://s1ns3nz0.github.io/lnd-ops/llms/ko/11-validation/evidence.md): 커밋, 플랫폼, 불변 조건을 비밀 없는 evidence로 연결한다
+- [한계와 다음 단계](https://s1ns3nz0.github.io/lnd-ops/llms/ko/12-retrospective/tradeoffs.md): 현재 로컬 단일 노드 설계가 증명한 것과 증명하지 않은 것을 구분한다
+- [ADR 색인](https://s1ns3nz0.github.io/lnd-ops/llms/ko/decisions.md): 시스템 전체에 영향을 주는 기술 선택과 대안
+- [LND Ops Wiki](https://s1ns3nz0.github.io/lnd-ops/llms/ko/index.md): LND 운영 요구를 Kubernetes 설계와 연결하는 학습 Wiki
+- [학습 지도](https://s1ns3nz0.github.io/lnd-ops/llms/ko/roadmap.md): LND 운영 생명주기를 따라가는 12단계 학습 경로
+- [안전하게 시작하기](https://s1ns3nz0.github.io/lnd-ops/llms/ko/start-here.md): 읽기 전용 학습, 기존 클러스터 관찰, regtest 실습의 시작 조건과 안전 경계
