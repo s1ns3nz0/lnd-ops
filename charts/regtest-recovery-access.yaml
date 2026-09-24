@@ -1,6 +1,38 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: allow-regtest-services-egress
+  namespace: lnd-regtest-recovery
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lnd-0
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lnd-regtest
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bitcoin
+      ports:
+        - {protocol: TCP, port: 18443}
+        - {protocol: TCP, port: 28332}
+        - {protocol: TCP, port: 28333}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lnd-regtest
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lnd-1
+      ports:
+        - {protocol: TCP, port: 9735}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: allow-regtest-recovery-bitcoin
   namespace: lnd-regtest
 spec:

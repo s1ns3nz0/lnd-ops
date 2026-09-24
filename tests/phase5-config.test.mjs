@@ -8,10 +8,14 @@ const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 test('encrypted recovery keeps the original identity stopped and plaintext off host storage', async () => {
   const prepare = await readFile(resolve(repo, 'ops/prepare-regtest-recovery'), 'utf8');
+  const access = await readFile(resolve(repo, 'charts/regtest-recovery-access.yaml'), 'utf8');
   assert.match(prepare, /backup-status-encrypted/);
   assert.match(prepare, /passphrase-fd 3/);
   assert.match(prepare, /scale statefulset\/lnd-0 --replicas=0/);
   assert.match(prepare, /gpg[\s\S]*--decrypt[\s\S]*kubectl[\s\S]*tee \/data\/recovery\.backup/);
+  assert.match(access, /name: allow-regtest-services-egress[\s\S]*namespace: lnd-regtest-recovery/);
+  assert.match(access, /policyTypes: \[Egress\][\s\S]*app\.kubernetes\.io\/name: bitcoin[\s\S]*port: 18443/);
+  assert.match(access, /policyTypes: \[Egress\][\s\S]*app\.kubernetes\.io\/name: lnd-1[\s\S]*port: 9735/);
 });
 
 test('Phase 5 acceptance requires recovery, alert restoration, and prior-phase continuity', async () => {
