@@ -39,7 +39,9 @@ Both wallet namespaces use default-deny ingress and egress. Explicit rules allow
 - Prometheus scrapes from the labeled monitoring namespace;
 - regtest LND-to-Bitcoin RPC/ZMQ on TCP 18443, 28332, and 28333;
 - regtest peer traffic inside the namespace on TCP 9735;
-- testnet Lightning peer traffic on TCP 9735 and Neutrino Bitcoin traffic on TCP 18333.
+- testnet Lightning peer traffic on the chart's explicit peer-port allowlist
+  (TCP 9735 and the Lightning Labs Loop testnet port TCP 9736 by default), and
+  Neutrino Bitcoin traffic on TCP 18333.
 
 The acceptance test creates a compliant disposable Pod and proves it cannot connect to LND RPC on TCP 10009. It then deletes the probe. Host firewall rules remain a separate prerequisite; no additional firewall product is installed.
 

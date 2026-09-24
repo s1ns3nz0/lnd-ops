@@ -20,6 +20,8 @@ bitcoin:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: 2, memory: 2Gi}
+testnet:
+  publicPeerPorts: [9735, 9736]
 monitoring:
   enabled: false
   lndmonImage: docker.io/lightninglabs/lndmon@sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5

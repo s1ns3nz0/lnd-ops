@@ -92,6 +92,11 @@ Do not proceed from an unconfirmed balance.
 
 ## 4. Select and connect an external peer
 
+If the public DNS seed returns no candidates, the default NetworkPolicy also
+permits the operator-reviewed Lightning Labs Loop testnet endpoint on TCP 9736
+as a graph-bootstrap peer. Connecting to a bootstrap peer does not authorize a
+channel; select the channel peer separately after the graph is available.
+
 Wait until the public graph has synchronized, then list announced clearnet candidates:
 
 ```sh

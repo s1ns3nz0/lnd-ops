@@ -30,6 +30,7 @@ test('network policies include every configured LND node', () => {
     assert.match(rendered.stdout, new RegExp(`- ${node}\\n`));
   }
   assert.match(rendered.stdout, /name: lnd-peer-traffic[\s\S]*policyTypes: \[Ingress, Egress\][\s\S]*egress:[\s\S]*port: 9735/);
+  assert.match(rendered.stdout, /name: testnet-public-traffic[\s\S]*port: 9735[\s\S]*port: 9736[\s\S]*port: 18333/);
   assert.match(rendered.stdout, /name: testnet-public-p2p-ingress[\s\S]*app\.kubernetes\.io\/name: lnd-0/);
 });
 

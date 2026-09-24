@@ -109,7 +109,9 @@ spec:
     - to:
         - ipBlock: {cidr: 0.0.0.0/0}
       ports:
-        - {protocol: TCP, port: 9735}
+        {{- range .Values.testnet.publicPeerPorts }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
         - {protocol: TCP, port: 18333}
 ---
 apiVersion: networking.k8s.io/v1
