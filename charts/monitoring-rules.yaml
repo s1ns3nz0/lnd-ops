@@ -126,7 +126,14 @@ spec:
     - name: lnd-ops-security
       rules:
         - alert: LndOpsFalcoRuntimeEvent
-          expr: increase(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"}[5m]) > 0
+          expr: |
+            increase(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"}[5m]) > 0
+            or
+            (
+              falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"} > 0
+              unless
+              falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"} offset 5m
+            )
           for: 0m
           labels:
             severity: warning

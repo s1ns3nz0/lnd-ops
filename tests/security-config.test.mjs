@@ -48,7 +48,9 @@ test('security chart runtime images render with locked digests', async () => {
 
 test('security verification covers denial and runtime delivery paths', async () => {
   const verifier = await readFile(resolve(repo, 'ops/verify-security'), 'utf8');
+  const rules = await readFile(resolve(repo, 'charts/monitoring-rules.yaml'), 'utf8');
   for (const proof of ['security-unpinned', 'security-no-resources', 'security-privileged', 'auth", "can-i', 'lnd-ops-network-probe', 'modern bpf', 'LndOpsFalcoRuntimeEvent', 'lnd_ops_tls_certificate_expiry_timestamp_seconds']) {
     assert.ok(verifier.toLowerCase().includes(proof.toLowerCase()), `missing proof: ${proof}`);
   }
+  assert.match(rules, /falcosecurity_falcosidekick_falco_events_total[\s\S]*unless[\s\S]*offset 5m/);
 });
