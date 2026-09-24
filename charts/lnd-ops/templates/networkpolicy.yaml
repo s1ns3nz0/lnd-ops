@@ -63,9 +63,21 @@ spec:
           {{- range $i := until (int .Values.lnd.nodes) }}
           - lnd-{{ $i }}
           {{- end }}
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
   ingress:
     - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  {{- range $i := until (int .Values.lnd.nodes) }}
+                  - lnd-{{ $i }}
+                  {{- end }}
+      ports:
+        - {protocol: TCP, port: 9735}
+  egress:
+    - to:
         - podSelector:
             matchExpressions:
               - key: app.kubernetes.io/name
