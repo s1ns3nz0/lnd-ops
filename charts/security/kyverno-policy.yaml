@@ -81,6 +81,5 @@ spec:
               - {key: "{{ request.object.spec.hostNetwork || `false` }}", operator: Equals, value: true}
               - {key: "{{ request.object.spec.hostPID || `false` }}", operator: Equals, value: true}
               - {key: "{{ request.object.spec.hostIPC || `false` }}", operator: Equals, value: true}
-              - {key: "{{ request.object.spec.volumes[?hostPath] | length(@) }}", operator: GreaterThan, value: 0}
+              - {key: "{{ length(request.object.spec.volumes[?hostPath] || `[]`) }}", operator: GreaterThan, value: 0}
               - {key: "{{ request.object.spec.containers[?securityContext.privileged] | length(@) }}", operator: GreaterThan, value: 0}
-
