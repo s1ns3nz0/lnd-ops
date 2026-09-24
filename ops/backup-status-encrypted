@@ -4,11 +4,13 @@ set -euo pipefail
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
 profile=${1:-}
 node=${2:-}
-case "$profile/$node" in
-  testnet/lnd-0|regtest/lnd-0|regtest/lnd-1) ;;
-  *) echo 'Usage: ops/backup-status-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2 ;;
-esac
-[[ $# -eq 2 ]] || { echo 'Usage: ops/backup-status-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2; }
+valid=false
+[[ $profile == testnet && $node =~ ^lnd-[0-9]+$ ]] && valid=true
+[[ $profile == regtest && $node =~ ^lnd-[01]$ ]] && valid=true
+[[ $valid == true && $# -eq 2 ]] || {
+  echo 'Usage: ops/backup-status-encrypted testnet lnd-N | regtest lnd-0|lnd-1' >&2
+  exit 2
+}
 
 source_file=/data/.lnd/data/chain/bitcoin/$profile/channel.backup
 target=$HOME/lnd-ops-backups-encrypted/$profile/$node/channel.backup.gpg

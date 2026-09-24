@@ -5,11 +5,13 @@ umask 077
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
 profile=${1:-}
 node=${2:-}
-case "$profile/$node" in
-  testnet/lnd-0|regtest/lnd-0|regtest/lnd-1) ;;
-  *) echo 'Usage: ops/backup-scb-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2 ;;
-esac
-[[ $# -eq 2 ]] || { echo 'Usage: ops/backup-scb-encrypted testnet|regtest lnd-0|lnd-1' >&2; exit 2; }
+valid=false
+[[ $profile == testnet && $node =~ ^lnd-[0-9]+$ ]] && valid=true
+[[ $profile == regtest && $node =~ ^lnd-[01]$ ]] && valid=true
+[[ $valid == true && $# -eq 2 ]] || {
+  echo 'Usage: ops/backup-scb-encrypted testnet lnd-N | regtest lnd-0|lnd-1' >&2
+  exit 2
+}
 [[ -t 0 && -t 1 ]] || { echo 'Run in an interactive terminal; the encryption passphrase is never accepted through arguments or pipes' >&2; exit 2; }
 command -v gpg >/dev/null || { echo 'gpg is required' >&2; exit 1; }
 

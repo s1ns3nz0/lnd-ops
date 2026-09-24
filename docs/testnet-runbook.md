@@ -224,6 +224,14 @@ ops/backup-scb-encrypted testnet lnd-0
 ops/backup-status-encrypted testnet lnd-0
 ```
 
+Back up every test-only payer that owns a channel as well. For a replacement
+at index 2:
+
+```sh
+ops/backup-scb-encrypted testnet lnd-2
+ops/backup-status-encrypted testnet lnd-2
+```
+
 The encrypted copy is stored at `~/lnd-ops-backups-encrypted/testnet/lnd-0/channel.backup.gpg`, outside the Kubernetes PVC. The status check proves that its recorded plaintext hash equals the live LND SCB hash without decrypting it again.
 
 `ops/backup-scb-encrypted` asks for a new encryption passphrase; it is not asking for the wallet password or seed. The script streams the live SCB directly from the Pod into GPG AES-256 encryption, decrypts the new ciphertext in memory to verify its hash, and writes only the encrypted file plus a non-secret transfer record. Both files are operator-owned mode `0600`, and their parent directories are mode `0700`.
