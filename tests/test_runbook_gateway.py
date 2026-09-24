@@ -35,6 +35,7 @@ class RunbookGatewayTests(unittest.TestCase):
     @mock.patch.object(gateway, "kube_request")
     def test_cooldown_stops_repeat_restart(self, kube_request, audit, fake_time):
         fake_time.time.return_value = 1000
+        fake_time.time_ns.return_value = 1000000000000
         kube_request.return_value = {"data": {"lastRestartEpoch": "900"}}
         result = gateway.tool_response({"action": "restart_diagnostic_probe"})
         self.assertFalse(result["allowed"])

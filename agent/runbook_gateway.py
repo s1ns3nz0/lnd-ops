@@ -73,9 +73,10 @@ def kube_request(path, method="GET", body=None):
     with open(TOKEN_PATH, encoding="utf-8") as stream:
         token = stream.read().strip()
     data = json.dumps(body).encode() if body is not None else None
+    content_type = "application/merge-patch+json" if method == "PATCH" else "application/json"
     request = urllib.request.Request(
         f"https://{KUBE_HOST}:{KUBE_PORT}/{path}", data=data, method=method,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/merge-patch+json"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
     )
     with urllib.request.urlopen(request, context=ssl.create_default_context(cafile=CA_PATH), timeout=10) as response:
         return json.load(response)
@@ -94,7 +95,7 @@ def prometheus_query(query):
 def audit(reason, action, outcome):
     namespace = open(NAMESPACE_PATH, encoding="utf-8").read().strip()
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    name = f"runbook-agent-{int(time.time())}"
+    name = f"runbook-agent-{time.time_ns()}"
     event = {
         "apiVersion": "v1", "kind": "Event",
         "metadata": {"name": name, "namespace": namespace},

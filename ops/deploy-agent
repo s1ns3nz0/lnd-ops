@@ -141,6 +141,7 @@ def main(argv):
              "--set", f"ollama.port={port}",
              "--set-string", f"kubeApi.serverCIDR={api_addresses[0]}/32",
              "--set", f"kubeApi.port={api_ports[0]}", "--wait", "--timeout", "10m"])
+        run(["kubectl", "-n", "lnd-agent", "rollout", "restart", "deployment/runbook-gateway"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
         print(f'OK Phase 7 agent deployed: kagent={KAGENT_VERSION} provider=Ollama model={config["model"]}')
