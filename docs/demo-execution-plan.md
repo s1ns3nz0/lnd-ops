@@ -87,7 +87,7 @@ Implement these as vertical slices. Each slice includes configuration, observabl
 
 Wallet creation or unlock, seed access, payment initiation, channel closure, backup deletion, PVC deletion, and security-policy weakening stay outside kagent automation.
 
-The Step 3 read-only gate is `ops/phase3-acceptance`. It preserves the Phase 1 testnet gate, requires a current encrypted SCB, executes every PromQL expression in the six Git-provisioned dashboards against live Prometheus data, and verifies every required alert and runbook link. It writes only a private `0600` summary under the project state directory. Falco and certificate-expiry panels enter this gate after their Phase 4 producers exist.
+The Step 3 cluster-read-only gate is `ops/phase3-acceptance`. Run it from a clean checkout with the intended `KUBECONFIG`; it preserves the Phase 1 testnet gate, requires a current encrypted SCB, executes every PromQL expression in the six Git-provisioned dashboards against live Prometheus data, and verifies every required alert and runbook link. It writes a private `0600` summary under the project state directory, including the Git commit, Kubernetes context, proof-command mapping, and explicit Phase 4 exclusions. Exit `0` is a pass, `10` identifies a required operator action, `1` is a failed invariant, and `2` is invalid invocation. Falco and certificate-expiry panels enter this gate after their Phase 4 producers exist.
 
 ## Step 8: Mac equivalence and reproducibility
 

@@ -22,15 +22,24 @@ class Failure(Exception):
     pass
 
 
+def detail_line(result, fallback):
+    lines = (result.stderr or result.stdout).strip().splitlines()
+    detail = lines[-1] if lines else fallback
+    while detail.startswith(("ACTION: ", "FAIL: ")):
+        detail = detail.split(": ", 1)[1]
+    return detail
+
+
 def run(name, arguments):
     result = subprocess.run([str(REPO / "ops" / name), *arguments], text=True, capture_output=True, timeout=600)
     if result.returncode == 10:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        raise ManualGate(detail[-1] if detail else f"manual gate: {name}")
+        raise ManualGate(detail_line(result, f"manual gate: {name}"))
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        raise Failure(detail[-1] if detail else f"failed: {name}")
-    return result.stdout.strip()
+        raise Failure(detail_line(result, f"failed: {name}"))
+    output = result.stdout.strip()
+    if not output:
+        raise Failure(f"{name} returned success without a result summary")
+    return output
 
 
 def write_result(payload, now):
@@ -58,12 +67,20 @@ def main(arguments):
         return 2
     os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
     try:
+        status = subprocess.run(
+            ["git", "-C", str(REPO), "status", "--porcelain"], text=True, capture_output=True, check=True, timeout=30
+        ).stdout
+        if status:
+            raise Failure("repository worktree must be clean before Phase 3 acceptance")
         phase1 = run("acceptance", ["testnet"])
         monitoring = run("verify-monitoring", ["--profile", "testnet"])
         backup = run("backup-status-encrypted", ["testnet", "lnd-0"])
         dashboards = run("verify-dashboards", [])
         commit = subprocess.run(
             ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True, capture_output=True, check=True, timeout=30
+        ).stdout.strip()
+        context = subprocess.run(
+            ["kubectl", "config", "current-context"], text=True, capture_output=True, check=True, timeout=30
         ).stdout.strip()
         now = datetime.now(timezone.utc)
         payload = {
@@ -73,6 +90,8 @@ def main(arguments):
             "host": {"system": platform.system(), "machine": platform.machine()},
             "profile": "testnet",
             "git_commit": commit,
+            "kubeconfig": str(pathlib.Path(os.environ["KUBECONFIG"]).expanduser().resolve()),
+            "kubernetes_context": context,
             "checks": {
                 "phase1_continuity": "pass",
                 "live_monitoring": "pass",
@@ -86,6 +105,14 @@ def main(arguments):
                 "backup": backup.splitlines()[-1],
                 "dashboards": dashboards.splitlines()[-1],
             },
+            "proof_commands": {
+                "phase1_continuity": "ops/acceptance testnet",
+                "live_monitoring": "ops/verify-monitoring --profile testnet",
+                "current_encrypted_scb": "ops/backup-status-encrypted testnet lnd-0",
+                "six_dashboards_and_live_queries": "ops/verify-dashboards",
+                "alerts_and_runbooks": "ops/verify-dashboards",
+            },
+            "phase4_exclusions": ["Falco events", "certificate expiry"],
         }
         path = write_result(payload, now)
         print(f"OK Phase 3 acceptance: {payload['summaries']['dashboards']}")
