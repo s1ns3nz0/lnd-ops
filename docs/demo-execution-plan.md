@@ -124,7 +124,7 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Proceed to the isolated seed-plus-SCB recovery exercise and backup hardening in
-Phase 5. Keep `ops/phase4-acceptance` passing after changes that affect LND,
-monitoring, storage, networking, or security, and repeat the host-specific
-testnet, operations, and security proof on Mac during the cross-platform phase.
+Proceed to Phase 6 fault-to-runbook exercises. Keep `ops/phase5-acceptance`
+passing after changes that affect LND, monitoring, storage, networking,
+recovery, or security, and repeat the host-specific testnet, operations,
+security, and recovery proof on Mac during the cross-platform phase.

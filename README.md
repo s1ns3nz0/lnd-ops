@@ -83,6 +83,13 @@ backup bytes. The acceptance gate requires owner-only isolated recovery
 evidence, duplicate-identity prevention, the preserved original PVC, and
 continued Phase 4 testnet operation.
 
+Windows Phase 5 has passed with encrypted SCB verification, isolated
+seed-plus-SCB recovery, DLP force close, confirmed on-chain fund recovery, live
+backup-alert delivery and restoration, preserved original PVC resumption, and
+Phase 4 continuity. See the
+[Windows Phase 5 evidence](docs/evidence/windows-phase5-recovery-2026-09-24.md).
+Windows full-volume encryption remains an explicit deferred limitation.
+
 After creating and unlocking a wallet, run `ops/deploy regtest --monitoring` or `ops/deploy testnet --monitoring` to enable lndmon and the payment collector. The command requires each node's read-only macaroon and a responding LND RPC before changing the chart. Helm mounts the collector source from a ConfigMap and runs it with a digest-pinned multi-architecture Python image, so Mac arm64 and Windows amd64 need no node-local image build or privileged K3s import. Adding sidecars rolls the Pod; unlock the wallet again if LND asks, then run `ops/verify <profile>` and `ops/verify-monitoring --profile <profile>`. Later ordinary `ops/deploy <profile>` invocations keep monitoring enabled.
 
 After the testnet wallet has an open channel and `ops/backup-scb` has created its host copy, run `ops/redeploy-check`. It checks the node key, channel points, LND and Prometheus PVC UIDs, source and host SCB checksums, and the exact timestamp/value of a historical Prometheus sample before and after reapplying both charts. It also requires both Helm release revisions to advance. A passing run saves a private, secret-free JSON record under `${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/evidence/`; use `--evidence NAME` to select a filename within that protected directory. Metric labels and the cluster UID are hashed so local target names and the raw cluster identifier are not recorded. It exits `10` before deploying if the manual wallet or channel gates are still pending. This checks ordinary chart reapplication; a separate recovery exercise must test Pod restart and wallet unlock.

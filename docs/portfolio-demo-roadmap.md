@@ -186,7 +186,7 @@ Allowed workloads continue to operate. Purpose-built violating fixtures are reje
 
 ### Deliverables
 
-- Enable Secure Boot and Windows Device Encryption, record the recovery key outside the host, and replace temporary encrypted-file SCBs with the standard protected-volume copies.
+- Enable Secure Boot and Windows Device Encryption and record the recovery key outside the host. When the host cannot provide Device Encryption under the operator-approved temporary exception, keep AES-256 GPG-protected SCBs and record the missing full-volume protection as a limitation.
 - Automate SCB freshness and integrity reporting without exposing backup bytes.
 - Keep each node's seed and SCB independent.
 - Exercise seed-plus-SCB recovery in an isolated namespace.
@@ -336,6 +336,12 @@ Phase 4 is complete on Windows with enforced Kyverno admission, scoped RBAC,
 default-deny NetworkPolicy, a real Falco event delivered to Alertmanager, live
 certificate-expiry monitoring, and Phase 3 continuity intact. See
 [windows-phase4-security-2026-09-24.md](evidence/windows-phase4-security-2026-09-24.md).
-The immediate next implementation slice is Phase 5: exercise isolated
-seed-plus-SCB recovery and finish backup hardening. The working sequence is
-maintained in [demo-execution-plan.md](demo-execution-plan.md).
+Phase 5 is complete on Windows with encrypted SCB integrity, isolated
+seed-plus-SCB recovery, DLP force close, confirmed on-chain fund recovery,
+backup-alert delivery and restoration, duplicate-identity prevention, and
+Phase 4 continuity. See
+[windows-phase5-recovery-2026-09-24.md](evidence/windows-phase5-recovery-2026-09-24.md).
+Windows full-volume encryption remains explicitly deferred. The immediate next
+implementation slice is Phase 6: exercise representative operational faults
+through their alerts and runbooks. The working sequence is maintained in
+[demo-execution-plan.md](demo-execution-plan.md).
