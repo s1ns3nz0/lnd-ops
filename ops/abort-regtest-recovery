@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 && "$1" == --preserve-original-wallet ]] || {
+  echo 'Usage: ops/abort-regtest-recovery --preserve-original-wallet' >&2
+  exit 2
+}
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+original_namespace=lnd-regtest
+recovery_namespace=lnd-regtest-recovery
+
+state=$(kubectl get namespace "$original_namespace" -o jsonpath='{.metadata.labels.lnd-ops-recovery}')
+[[ "$state" == started ]] || {
+  echo 'FAIL: no regtest recovery exercise is marked as in progress' >&2
+  exit 1
+}
+kubectl get namespace "$recovery_namespace" >/dev/null 2>&1 || {
+  echo 'FAIL: recovery namespace is missing; refusing to infer cleanup state' >&2
+  exit 1
+}
+
+recorded_uid=$(kubectl get namespace "$recovery_namespace" -o jsonpath='{.metadata.annotations.lnd-ops\.dev/original-pvc-uid}')
+current_uid=$(kubectl -n "$original_namespace" get pvc data-lnd-0-0 -o jsonpath='{.metadata.uid}')
+[[ -n "$recorded_uid" && "$recorded_uid" == "$current_uid" ]] || {
+  echo 'FAIL: preserved original wallet PVC does not match the recovery record' >&2
+  exit 1
+}
+
+echo 'Stopping and deleting only the disposable recovery copy'
+kubectl -n "$recovery_namespace" scale statefulset/lnd-0 --replicas=0
+kubectl -n "$recovery_namespace" wait --for=delete pod/lnd-0-0 --timeout=3m || true
+kubectl delete namespace "$recovery_namespace" --wait=true
+kubectl -n "$original_namespace" delete networkpolicy \
+  allow-regtest-recovery-bitcoin allow-regtest-recovery-peer --ignore-not-found >/dev/null
+kubectl label namespace "$original_namespace" lnd-ops-recovery- >/dev/null
+kubectl -n "$original_namespace" scale statefulset/lnd-0 --replicas=1
+kubectl -n "$original_namespace" rollout status statefulset/lnd-0 --timeout=5m
+
+[[ "$(kubectl -n "$original_namespace" get pvc data-lnd-0-0 -o jsonpath='{.metadata.uid}')" == "$recorded_uid" ]] || {
+  echo 'FAIL: original wallet PVC changed while aborting recovery' >&2
+  exit 1
+}
+echo 'OK: recovery attempt aborted; original wallet PVC preserved'
+echo 'ACTION: unlock lnd-0 with its wallet password (not the SCB passphrase or seed)'
+echo 'kubectl -n lnd-regtest exec -it lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest unlock'

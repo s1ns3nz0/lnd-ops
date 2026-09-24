@@ -37,3 +37,12 @@ test('backup alert exercise always restores the original telemetry record', asyn
   assert.match(exercise, /LndOpsSCBBackupStale/);
   assert.match(exercise, /Alertmanager/);
 });
+
+test('failed recovery can resume only the recorded original PVC', async () => {
+  const abort = await readFile(resolve(repo, 'ops/abort-regtest-recovery'), 'utf8');
+  assert.match(abort, /original-pvc-uid/);
+  assert.match(abort, /recorded_uid.*current_uid/);
+  assert.match(abort, /delete namespace "\$recovery_namespace"/);
+  assert.match(abort, /scale statefulset\/lnd-0 --replicas=1/);
+  assert.doesNotMatch(abort, /delete pvc/);
+});

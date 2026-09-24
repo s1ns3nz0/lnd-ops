@@ -71,6 +71,10 @@ For a disposable wallet-free clean-start proof, remove the Mac Lima VM or uninst
 
 After the regtest channel and both host SCBs exist, the same runbook covers `ops/prepare-regtest-recovery` and `ops/verify-regtest-recovery`. Preparation stops original `lnd-0` before creating a fresh recovery PVC and copying its SCB. The operator restores the original seed interactively. The [Mac recovery exercise](docs/evidence/mac-regtest-recovery-2026-09-23.md) completed with the original node identity, DLP force-close, and recovered on-chain funds.
 After a passing recovery, `ops/finish-regtest-recovery --preserve-original-wallet` retires the recovered copy before restarting the preserved original PVC. The operator then unlocks the original wallet interactively; no second wallet creation is required.
+If the original aezeed is unavailable or recovery verification fails, use
+`ops/abort-regtest-recovery --preserve-original-wallet`; it checks the recorded
+PVC UID, removes only the disposable recovery copy, and resumes the preserved
+original wallet without creating recovery evidence.
 
 Phase 5 adds `ops/exercise-backup-alert` and `ops/phase5-acceptance`. The alert
 exercise proves the live SCB freshness metric, five-minute production alert,

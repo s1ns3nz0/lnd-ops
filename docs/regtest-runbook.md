@@ -76,6 +76,18 @@ Each file goes to `~/lnd-ops-backups/regtest/<node>/channel.backup` on Mac or `<
 
 ## Isolated seed and SCB recovery exercise
 
+The prompts use four different credentials. Identify them before starting:
+
+| Name | Used for | When entered |
+| --- | --- | --- |
+| `lnd-0 wallet password` | Unlock the existing or recovered wallet database | `lncli unlock`, and twice while creating the recovered wallet |
+| `lnd-0 aezeed` | Recreate the original node keys and public identity | The 24-word existing-seed prompt during recovery |
+| `aezeed cipher passphrase` | Decrypt the aezeed only if one was set when the original wallet was created | The optional seed passphrase prompt; this is usually empty |
+| `SCB GPG passphrase` | Decrypt the host copy of `channel.backup.gpg` | `ops/prepare-regtest-recovery` only |
+
+Do not proceed if the original `lnd-0 aezeed` cannot be identified. The wallet
+password and SCB GPG passphrase cannot replace it.
+
 Use only the disposable regtest channel from this runbook. `ops/prepare-regtest-recovery` requires a verified host SCB and one channel from `lnd-0` to `lnd-1`. It prefers the encrypted GPG backup, verifies its transfer record, asks for its passphrase interactively, and streams the decrypted SCB directly into the recovery Pod without writing plaintext on the host. It creates `lnd-regtest-recovery` with a fresh PVC, stops original `lnd-0`, and copies the SCB into the new Pod. It leaves the original PVC intact and marks the original namespace so `ops/deploy regtest` refuses to restart that identity. This procedure deliberately causes the channel to close; do not use it for an ordinary redeploy.
 
 ```sh
@@ -106,6 +118,16 @@ ops/verify regtest
 ```
 
 The finish command refuses to proceed until recovery verification passes, stops and deletes the recovered copy before starting the original identity, and checks that the original PVC UID is unchanged. The original database will observe the already-confirmed channel closure when it synchronizes.
+
+If recovery cannot pass because the original aezeed is unavailable or the wrong
+seed was entered, abort without accepting recovery evidence:
+
+```sh
+ops/abort-regtest-recovery --preserve-original-wallet
+```
+
+The abort command checks the recorded original PVC UID, deletes only the
+disposable recovery namespace, and resumes the preserved original StatefulSet.
 
 ## Phase 5 backup alert and acceptance
 
