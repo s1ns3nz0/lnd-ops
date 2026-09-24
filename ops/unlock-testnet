@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 0 ]] || { echo 'Usage: ops/unlock-testnet' >&2; exit 2; }
+[[ -t 0 && -t 1 ]] || {
+  echo 'Run in an interactive terminal; the wallet password is never accepted through arguments or pipes' >&2
+  exit 2
+}
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+state=$(kubectl -n lnd-testnet exec lnd-0-0 -c lnd -- \
+  lncli --lnddir=/data/.lnd --network=testnet state | \
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+case "$state" in
+  LOCKED)
+    kubectl -n lnd-testnet exec -it lnd-0-0 -c lnd -- \
+      lncli --lnddir=/data/.lnd --network=testnet unlock
+    ;;
+  SERVER_ACTIVE) echo 'OK: testnet wallet is already unlocked'; exit 0 ;;
+  NON_EXISTING) echo 'ACTION: run ops/create-testnet-wallet first' >&2; exit 10 ;;
+  *) echo "FAIL: unexpected testnet wallet state: $state" >&2; exit 1 ;;
+esac
+echo 'OK: testnet wallet unlocked'

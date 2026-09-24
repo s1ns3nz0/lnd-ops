@@ -35,6 +35,19 @@ test('Mac clean-start proof can use an isolated project VM and state directory',
   assert.match(exercise, /expect_wallet_gate testnet/);
 });
 
+test('testnet wallet helpers keep credentials interactive and refuse replacement', async () => {
+  const create = await read('ops/create-testnet-wallet');
+  const unlock = await read('ops/unlock-testnet');
+  for (const source of [create, unlock]) {
+    assert.match(source, /-t 0 && -t 1/);
+    assert.doesNotMatch(source, /--password|wallet_password/);
+  }
+  assert.match(create, /NON_EXISTING/);
+  assert.match(create, /refusing to replace an existing wallet/);
+  assert.match(unlock, /LOCKED/);
+  assert.match(unlock, /SERVER_ACTIVE/);
+});
+
 test('Phase 8 CI contains every platform-independent security and portability gate', async () => {
   const workflow = await read('.github/workflows/verify.yml');
   for (const required of [

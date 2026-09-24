@@ -53,15 +53,13 @@ lncli_testnet() {
 The following command is interactive. Use a new password longer than eight characters. When asked for an existing cipher seed, answer `n` for a new wallet. Record the displayed 24 words offline before confirming that they are saved.
 
 ```sh
-kubectl -n lnd-testnet exec -it lnd-0-0 -c lnd -- \
-  lncli --lnddir=/data/.lnd --network=testnet create
+ops/create-testnet-wallet
 ```
 
 Do not run `create` again after success. If the Pod later reports a locked wallet, unlock the existing wallet:
 
 ```sh
-kubectl -n lnd-testnet exec -it lnd-0-0 -c lnd -- \
-  lncli --lnddir=/data/.lnd --network=testnet unlock
+ops/unlock-testnet
 ```
 
 Verify identity and watch synchronization without recording private material:
