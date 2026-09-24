@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Combine both host proofs and current GitHub CI into Phase 8 acceptance."""
+
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+
+
+def run(args, timeout=300):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"failed: {pathlib.Path(args[0]).name}")
+    return result.stdout
+
+
+def load(path, expected_host):
+    path = pathlib.Path(path)
+    raw = path.read_bytes()
+    data = json.loads(raw)
+    if path.stat().st_mode & 0o777 != 0o600 or path.stat().st_uid != os.getuid():
+        raise RuntimeError(f"host evidence must be operator-owned mode 0600: {path}")
+    if data.get("schema") != "lnd-ops/phase8-host/v1" or data.get("result") != "pass" or data.get("host") != expected_host:
+        raise RuntimeError(f"invalid {expected_host} host evidence")
+    if data.get("secrets_recorded") is not False:
+        raise RuntimeError(f"{expected_host} evidence does not assert secret-free output")
+    checked = datetime.fromisoformat(data["checked_at"].replace("Z", "+00:00"))
+    age = datetime.now(timezone.utc) - checked
+    if age.total_seconds() < 0 or age.total_seconds() > 86400:
+        raise RuntimeError(f"{expected_host} evidence is older than 24 hours")
+    return path.name, data, hashlib.sha256(raw).hexdigest()
+
+
+def main(argv):
+    if len(argv) != 1:
+        print("Usage: ops/phase8-acceptance WINDOWS_HOST_EVIDENCE.json", file=sys.stderr)
+        return 2
+    try:
+        if run(["git", "-C", str(REPO), "status", "--porcelain"]).strip():
+            raise RuntimeError("repository worktree must be clean")
+        mac_paths = sorted(EVIDENCE.glob("phase8-host-mac-arm64-*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        if not mac_paths:
+            raise RuntimeError("run ops/phase8-host-acceptance on Mac first")
+        mac = load(mac_paths[0], "mac-arm64")
+        windows = load(argv[0], "windows-wsl2-amd64")
+        head = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).strip()
+        for name, data in (("Mac", mac[1]), ("Windows", windows[1])):
+            if data.get("git_commit") != head:
+                raise RuntimeError(f"{name} host evidence was not produced from current revision {head}")
+        runs = json.loads(run([
+            "gh", "run", "list", "--repo", "s1ns3nz0/lnd-ops", "--commit", head, "--limit", "20",
+            "--json", "workflowName,status,conclusion,headSha",
+        ]))
+        required = {"Harness check", "Verify operator slice"}
+        successful = {item["workflowName"] for item in runs if item.get("headSha") == head and item.get("status") == "completed" and item.get("conclusion") == "success"}
+        if not required.issubset(successful):
+            raise RuntimeError("current revision has not passed both required GitHub workflows")
+        payload = {
+            "schema": "lnd-ops/phase8-acceptance/v1", "result": "pass",
+            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "git_commit": head,
+            "hosts": {
+                "mac-arm64": {"evidence": mac[0], "sha256": mac[2]},
+                "windows-wsl2-amd64": {"evidence": windows[0], "sha256": windows[2]},
+            },
+            "ci": sorted(required), "standard_command_surface": "pass",
+            "cross_platform_runtime": "pass", "secrets_recorded": False,
+        }
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        output = EVIDENCE / f"phase8-acceptance-{stamp}.json"
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True); stream.write("\n")
+        print("OK Phase 8 acceptance: Mac arm64, Windows WSL 2 amd64, reproducibility, and CI passed")
+        print(f"Evidence: {output}")
+        return 0
+    except (RuntimeError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr); return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

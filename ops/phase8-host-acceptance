@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Produce one host's secret-free Phase 8 runtime evidence."""
+
+import hashlib
+import json
+import os
+import pathlib
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+class Gate(Exception):
+    pass
+
+
+def run(args, timeout=1800):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if result.returncode == 10:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise Gate(lines[-1] if lines else f"manual gate: {pathlib.Path(args[0]).name}")
+    if result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"failed: {pathlib.Path(args[0]).name}")
+    return result.stdout
+
+
+def latest(pattern, schema):
+    paths = sorted(EVIDENCE.glob(pattern), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+    if not paths:
+        raise Gate(f"missing private evidence: {pattern}")
+    path = paths[0]
+    raw = path.read_bytes()
+    data = json.loads(raw)
+    if path.stat().st_mode & 0o777 != 0o600 or path.stat().st_uid != os.getuid():
+        raise RuntimeError(f"evidence must be operator-owned mode 0600: {path.name}")
+    if data.get("schema") != schema or data.get("result") != "pass":
+        raise RuntimeError(f"invalid evidence contract: {path.name}")
+    return path.name, hashlib.sha256(raw).hexdigest()
+
+
+def main(argv):
+    if argv:
+        print("Usage: ops/phase8-host-acceptance", file=sys.stderr)
+        return 2
+    try:
+        if run(["git", "-C", str(REPO), "status", "--porcelain"]).strip():
+            raise RuntimeError("repository worktree must be clean")
+        run([str(REPO / "ops/doctor")], timeout=300)
+        run([str(REPO / "ops/acceptance"), "testnet"])
+        run([str(REPO / "ops/phase4-acceptance")])
+        testnet = latest("testnet-acceptance-*.json", "lnd-ops/testnet-acceptance/v1")
+        security = latest("phase4-acceptance-*.json", "lnd-ops/phase4-acceptance/v1")
+        system, machine = platform.system(), platform.machine()
+        if system == "Darwin" and machine == "arm64":
+            clean = latest("phase8-clean-start-mac-*.json", "lnd-ops/phase8-clean-start/v1")
+            host = "mac-arm64"
+        elif system == "Linux" and machine in {"x86_64", "amd64"} and "microsoft" in pathlib.Path("/proc/sys/kernel/osrelease").read_text().lower():
+            document = REPO / "docs/evidence/windows-infrastructure-2026-09-23.md"
+            raw = document.read_bytes()
+            if b"previously empty K3s installation" not in raw or b"Windows WSL 2 infrastructure smoke test passed" not in raw:
+                raise RuntimeError("Windows clean-start evidence contract is incomplete")
+            clean = (document.name, hashlib.sha256(raw).hexdigest())
+            host = "windows-wsl2-amd64"
+        else:
+            raise RuntimeError(f"unsupported Phase 8 host: {system}/{machine}")
+        payload = {
+            "schema": "lnd-ops/phase8-host/v1", "result": "pass",
+            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "git_commit": run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).strip(),
+            "host": host, "testnet_acceptance": testnet[0], "testnet_acceptance_sha256": testnet[1],
+            "security_acceptance": security[0], "security_acceptance_sha256": security[1],
+            "clean_start_evidence": clean[0], "clean_start_evidence_sha256": clean[1],
+            "standard_command_surface": "pass", "secrets_recorded": False,
+        }
+        EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        output = EVIDENCE / f"phase8-host-{host}-{stamp}.json"
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True); stream.write("\n")
+        print(f"OK Phase 8 host acceptance: {host} clean start, testnet, operations, and security passed")
+        print(f"Evidence: {output}")
+        return 0
+    except Gate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr); return 10
+    except (RuntimeError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr); return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

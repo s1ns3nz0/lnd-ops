@@ -48,6 +48,20 @@ test('testnet wallet helpers keep credentials interactive and refuse replacement
   assert.match(unlock, /SERVER_ACTIVE/);
 });
 
+test('Phase 8 acceptance requires current evidence from both hosts and both CI workflows', async () => {
+  const host = await read('ops/phase8-host-acceptance');
+  const combined = await read('ops/phase8-acceptance');
+  assert.match(host, /ops\/acceptance.*testnet/s);
+  assert.match(host, /ops\/phase4-acceptance/s);
+  assert.match(host, /phase8-clean-start\/v1/);
+  assert.match(combined, /mac-arm64/);
+  assert.match(combined, /windows-wsl2-amd64/);
+  assert.match(combined, /Harness check/);
+  assert.match(combined, /Verify operator slice/);
+  assert.match(combined, /86400/);
+  assert.match(combined, /git_commit.*head/s);
+});
+
 test('Phase 8 CI contains every platform-independent security and portability gate', async () => {
   const workflow = await read('.github/workflows/verify.yml');
   for (const required of [
