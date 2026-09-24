@@ -147,6 +147,9 @@ spec:
         - ipBlock: {cidr: 10.43.0.1/32}
       ports: [{protocol: TCP, port: 443}]
     - to:
+        - ipBlock: {cidr: {{ .Values.kubeApi.serverCIDR | quote }}}
+      ports: [{protocol: TCP, port: {{ .Values.kubeApi.port }}}]
+    - to:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lnd-monitoring}}
       ports: [{protocol: TCP, port: 9090}]
 ---
@@ -177,6 +180,9 @@ spec:
     - to:
         - ipBlock: {cidr: 10.43.0.1/32}
       ports: [{protocol: TCP, port: 443}]
+    - to:
+        - ipBlock: {cidr: {{ .Values.kubeApi.serverCIDR | quote }}}
+      ports: [{protocol: TCP, port: {{ .Values.kubeApi.port }}}]
     - to:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lnd-agent}}
           podSelector: {matchLabels: {app.kubernetes.io/name: runbook-gateway}}

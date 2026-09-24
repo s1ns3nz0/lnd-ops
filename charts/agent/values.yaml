@@ -9,6 +9,9 @@ probe:
     requests: {cpu: 10m, memory: 32Mi}
     limits: {cpu: 100m, memory: 128Mi}
 actionCooldownSeconds: 300
+kubeApi:
+  serverCIDR: 192.0.2.2/32
+  port: 6443
 ollama:
   serverCIDR: 192.0.2.1/32
   port: 11434

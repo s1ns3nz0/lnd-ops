@@ -120,9 +120,27 @@ def main(argv):
         run(["kubectl", "apply", "-f", "-"], runbooks)
         parsed = urllib.parse.urlparse(config["endpoint"])
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        endpoint_slice = json.loads(run([
+            "kubectl", "-n", "default", "get", "endpointslice",
+            "-l", "kubernetes.io/service-name=kubernetes", "-o", "json",
+        ]))
+        api_addresses = sorted({
+            address for item in endpoint_slice.get("items", [])
+            for endpoint_item in item.get("endpoints", [])
+            for address in endpoint_item.get("addresses", [])
+            if ipaddress.ip_address(address).version == 4
+        })
+        api_ports = sorted({
+            int(port_item["port"]) for item in endpoint_slice.get("items", [])
+            for port_item in item.get("ports", []) if port_item.get("port")
+        })
+        if len(api_addresses) != 1 or len(api_ports) != 1:
+            raise RuntimeError("Phase 7 requires exactly one IPv4 Kubernetes API endpoint")
         run(["helm", "upgrade", "--install", "lnd-ops-agent", str(REPO / "charts/agent"),
              "--namespace", "lnd-agent", "--set-string", f'ollama.serverCIDR={config["server_cidr"]}',
-             "--set", f"ollama.port={port}", "--wait", "--timeout", "10m"])
+             "--set", f"ollama.port={port}",
+             "--set-string", f"kubeApi.serverCIDR={api_addresses[0]}/32",
+             "--set", f"kubeApi.port={api_ports[0]}", "--wait", "--timeout", "10m"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
         print(f'OK Phase 7 agent deployed: kagent={KAGENT_VERSION} provider=Ollama model={config["model"]}')

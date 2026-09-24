@@ -35,6 +35,8 @@ test('Phase 7 uses pinned kagent artifacts and external Ollama input', async () 
   assert.match(deploy, /--endpoint/);
   assert.match(deploy, /--server-cidr/);
   assert.match(deploy, /allow-insecure-http/);
+  assert.match(deploy, /kubernetes\.io\/service-name=kubernetes/);
+  assert.match(deploy, /kubeApi\.serverCIDR/);
   assert.match(sums, /kagent-0\.9\.12\.tgz/);
   assert.match(sums, /kagent-crds-0\.9\.12\.tgz/);
   assert.equal([...values.matchAll(/@sha256:[0-9a-f]{64}/g)].length, 5);
