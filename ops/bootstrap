@@ -6,6 +6,11 @@ repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo_dir/ops/versions.env"
 vm_name=${LND_OPS_VM_NAME:-lnd-ops-k3s}
 state_dir=${LND_OPS_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops}
+k3s_host_port=${LND_OPS_K3S_HOST_PORT:-6443}
+[[ $k3s_host_port =~ ^[0-9]+$ ]] && (( k3s_host_port >= 1024 && k3s_host_port <= 65535 )) || {
+  echo 'LND_OPS_K3S_HOST_PORT must be an unprivileged TCP port' >&2
+  exit 2
+}
 
 wait_for_encryption() {
   local status=''
@@ -55,6 +60,7 @@ case "$(uname -s)" in
       sed -e "s|@K3S_VERSION@|$K3S_VERSION|g" \
         -e "s|@K3S_INSTALLER_URL@|$K3S_INSTALLER_URL|g" \
         -e "s|@K3S_INSTALLER_SHA256@|$K3S_INSTALLER_SHA256|g" \
+        -e "s|@K3S_HOST_PORT@|$k3s_host_port|g" \
         "$repo_dir/ops/lima.yaml.in" > "$rendered"
       echo "Creating project VM $vm_name with K3s $K3S_VERSION"
       limactl create --yes --name "$vm_name" "$rendered"
@@ -67,6 +73,17 @@ case "$(uname -s)" in
     mkdir -p "$state_dir"
     chmod 700 "$state_dir"
     limactl shell "$vm_name" -- sudo cat /etc/rancher/k3s/k3s.yaml > "$state_dir/kubeconfig"
+    if [[ $k3s_host_port != 6443 ]]; then
+      python3 - "$state_dir/kubeconfig" "$k3s_host_port" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+expected = "server: https://127.0.0.1:6443"
+if text.count(expected) != 1:
+    raise SystemExit("unexpected K3s server address in generated kubeconfig")
+path.write_text(text.replace(expected, f"server: https://127.0.0.1:{sys.argv[2]}"))
+PY
+    fi
     chmod 600 "$state_dir/kubeconfig"
     echo "KUBECONFIG=$state_dir/kubeconfig"
     KUBECONFIG="$state_dir/kubeconfig" kubectl wait --for=condition=Ready nodes --all --timeout=2m

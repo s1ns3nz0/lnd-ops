@@ -28,6 +28,7 @@ fi
 
 export LND_OPS_VM_NAME=$vm_name
 export LND_OPS_STATE_DIR=$isolated_state
+export LND_OPS_K3S_HOST_PORT=16443
 mkdir -p -m 700 "$isolated_state" "$evidence_dir"
 
 expect_wallet_gate() {

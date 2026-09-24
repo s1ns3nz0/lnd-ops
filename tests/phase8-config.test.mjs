@@ -26,6 +26,7 @@ test('Mac clean-start proof can use an isolated project VM and state directory',
   const exercise = await read('ops/exercise-clean-start');
   assert.match(bootstrap, /LND_OPS_VM_NAME/);
   assert.match(bootstrap, /LND_OPS_STATE_DIR/);
+  assert.match(bootstrap, /LND_OPS_K3S_HOST_PORT/);
   assert.match(collector, /LND_OPS_VM_NAME/);
   assert.match(doctor, /LND_OPS_STATE_DIR/);
   assert.match(exercise, /lnd-ops-phase8-clean/);

@@ -12,6 +12,9 @@ mounts: []
 containerd:
   system: false
   user: false
+portForwards:
+  - guestPort: 6443
+    hostPort: @K3S_HOST_PORT@
 provision:
   - mode: system
     script: |
