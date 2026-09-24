@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+vm_name=${LND_OPS_VM_NAME:-lnd-ops-k3s}
 # shellcheck disable=SC1091
 source "$repo_dir/ops/versions.env"
 case "$(uname -m)" in
@@ -46,7 +47,7 @@ docker buildx build --pull=false --platform "$platform" --load \
   --build-arg "BASE_IMAGE=$base_tag" --tag "$image" "$repo_dir/collector" >&2
 echo "Loading $image into project K3s" >&2
 if [[ "$host" == mac ]]; then
-  docker save "$image" | limactl shell lnd-ops-k3s -- sudo k3s ctr images import - >&2
+  docker save "$image" | limactl shell "$vm_name" -- sudo k3s ctr images import - >&2
 else
   docker save "$image" | sudo k3s ctr images import - >&2
 fi

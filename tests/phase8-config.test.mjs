@@ -19,6 +19,21 @@ test('Phase 8 keeps the documented stable command surface executable', async () 
   assert.match(await read('ops/acceptance'), /regtest\|testnet/);
 });
 
+test('Mac clean-start proof can use an isolated project VM and state directory', async () => {
+  const bootstrap = await read('ops/bootstrap');
+  const collector = await read('ops/build-collector');
+  const doctor = await read('ops/doctor');
+  const exercise = await read('ops/exercise-clean-start');
+  assert.match(bootstrap, /LND_OPS_VM_NAME/);
+  assert.match(bootstrap, /LND_OPS_STATE_DIR/);
+  assert.match(collector, /LND_OPS_VM_NAME/);
+  assert.match(doctor, /LND_OPS_STATE_DIR/);
+  assert.match(exercise, /lnd-ops-phase8-clean/);
+  assert.match(exercise, /phase8-clean-start\/v1/);
+  assert.match(exercise, /expect_wallet_gate regtest/);
+  assert.match(exercise, /expect_wallet_gate testnet/);
+});
+
 test('Phase 8 CI contains every platform-independent security and portability gate', async () => {
   const workflow = await read('.github/workflows/verify.yml');
   for (const required of [

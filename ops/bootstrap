@@ -4,8 +4,8 @@ set -euo pipefail
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck disable=SC1091
 source "$repo_dir/ops/versions.env"
-vm_name=lnd-ops-k3s
-state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops
+vm_name=${LND_OPS_VM_NAME:-lnd-ops-k3s}
+state_dir=${LND_OPS_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops}
 
 wait_for_encryption() {
   local status=''

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+[[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || {
+  echo 'This isolated clean-start exercise currently targets Mac arm64; use the Windows clean-start runbook for WSL 2.' >&2
+  exit 2
+}
+[[ $# -le 1 && ( $# -eq 0 || "$1" == --cleanup ) ]] || {
+  echo 'Usage: ops/exercise-clean-start [--cleanup]' >&2
+  exit 2
+}
+
+vm_name=lnd-ops-phase8-clean
+primary_state=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops
+run_id=$(date -u +%Y%m%dT%H%M%S)
+isolated_state=$primary_state/clean-start/$run_id
+evidence_dir=$primary_state/evidence
+
+if limactl list --format '{{.Name}}' 2>/dev/null | grep -Fxq "$vm_name"; then
+  echo "FAIL: isolated VM $vm_name already exists; inspect or remove it before a new exercise" >&2
+  exit 1
+fi
+if [[ -e $isolated_state ]]; then
+  echo "FAIL: isolated state path already exists: $isolated_state" >&2
+  exit 1
+fi
+
+export LND_OPS_VM_NAME=$vm_name
+export LND_OPS_STATE_DIR=$isolated_state
+mkdir -p -m 700 "$isolated_state" "$evidence_dir"
+
+expect_wallet_gate() {
+  local profile=$1 status=0
+  "$repo_dir/ops/verify" "$profile" >/dev/null 2>&1 || status=$?
+  [[ $status -eq 10 ]] || {
+    echo "FAIL: wallet-free $profile verification returned $status instead of the explicit wallet gate (10)" >&2
+    return 1
+  }
+}
+
+echo "Creating isolated clean-start VM $vm_name"
+"$repo_dir/ops/bootstrap"
+export KUBECONFIG=$isolated_state/kubeconfig
+"$repo_dir/ops/doctor"
+"$repo_dir/ops/bootstrap"
+"$repo_dir/ops/deploy" regtest
+expect_wallet_gate regtest
+"$repo_dir/ops/deploy" testnet
+expect_wallet_gate testnet
+"$repo_dir/ops/deploy-monitoring"
+"$repo_dir/ops/verify-monitoring" --infrastructure-only
+"$repo_dir/ops/deploy-security"
+
+# Reapply the profile charts to prove the entry points reconcile an existing
+# wallet-free deployment without manual resource edits.
+"$repo_dir/ops/deploy" regtest
+"$repo_dir/ops/deploy" testnet
+expect_wallet_gate regtest
+expect_wallet_gate testnet
+
+kubectl wait --for=condition=Ready nodes --all --timeout=2m >/dev/null
+kubectl -n lnd-regtest rollout status statefulset/bitcoin --timeout=3m >/dev/null
+kubectl -n lnd-regtest rollout status statefulset/lnd-0 --timeout=3m >/dev/null
+kubectl -n lnd-regtest rollout status statefulset/lnd-1 --timeout=3m >/dev/null
+kubectl -n lnd-testnet rollout status statefulset/lnd-0 --timeout=3m >/dev/null
+kubectl -n lnd-monitoring get prometheus,alertmanager >/dev/null
+kubectl get clusterpolicy lnd-ops-workload-baseline >/dev/null
+kubectl -n falco rollout status daemonset/falco --timeout=5m >/dev/null
+
+export PHASE8_RUN_ID=$run_id PHASE8_VM_NAME=$vm_name PHASE8_REPO=$repo_dir
+output=$evidence_dir/phase8-clean-start-mac-$run_id.json
+export PHASE8_OUTPUT=$output
+python3 - <<'PY'
+import json, os, pathlib, platform, subprocess
+from datetime import datetime, timezone
+
+def out(*args):
+    return subprocess.check_output(args, text=True).strip()
+
+path = pathlib.Path(os.environ["PHASE8_OUTPUT"])
+payload = {
+    "schema": "lnd-ops/phase8-clean-start/v1",
+    "result": "pass",
+    "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "git_commit": out("git", "-C", os.environ["PHASE8_REPO"], "rev-parse", "HEAD"),
+    "host": {"system": platform.system(), "machine": platform.machine()},
+    "isolated_vm": os.environ["PHASE8_VM_NAME"],
+    "cluster_node": out("kubectl", "get", "nodes", "-o", "jsonpath={.items[0].metadata.name}"),
+    "kubelet_version": out("kubectl", "get", "nodes", "-o", "jsonpath={.items[0].status.nodeInfo.kubeletVersion}"),
+    "checks": {
+        "vm_absent_before_start": "pass",
+        "bootstrap_from_zero": "pass",
+        "bootstrap_idempotent": "pass",
+        "regtest_wallet_free_deploy": "pass",
+        "testnet_wallet_free_deploy": "pass",
+        "wallet_manual_gates": "pass",
+        "monitoring_infrastructure": "pass",
+        "security_stack": "pass",
+        "profile_reapply": "pass",
+        "manual_manifest_edits": False,
+    },
+    "secrets_recorded": False,
+}
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w") as stream:
+    json.dump(payload, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+print(f"OK Phase 8 Mac clean start: {path}")
+PY
+
+if [[ ${1:-} == --cleanup ]]; then
+  limactl stop "$vm_name"
+  limactl delete --force "$vm_name"
+  echo "Removed isolated VM $vm_name after recording passing evidence"
+else
+  echo "Isolated VM retained for inspection: $vm_name"
+fi
