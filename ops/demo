@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""Run the cumulative, color-coded Phase 9 portfolio demonstration."""
+
+import argparse
+import json
+import os
+import pathlib
+import platform
+import re
+import signal
+import subprocess
+import sys
+from datetime import date, datetime, timedelta, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+STAGE_COLORS = ("\033[36m", "\033[34m", "\033[35m", "\033[33m", "\033[32m", "\033[96m", "\033[95m")
+
+STAGES = (
+    {
+        "id": "preflight",
+        "title": "환경과 데모 안전성 사전점검",
+        "detail": "필수 도구, Kubernetes 연결, 깨끗한 Git revision을 확인합니다.",
+        "commands": (("ops/doctor",),),
+        "mode": "read-only",
+    },
+    {
+        "id": "lightning",
+        "title": "라이브 Lightning 노드와 채널",
+        "detail": "testnet 동기화, 외부 peer, public channel, 결제 집계를 확인합니다.",
+        "commands": (("ops/testnet-status",),),
+        "mode": "read-only",
+    },
+    {
+        "id": "observability",
+        "title": "결제·유동성·Kubernetes 관측",
+        "detail": "실시간 metric과 여섯 개 Grafana dashboard 쿼리를 검증합니다.",
+        "commands": (("ops/verify-monitoring", "--profile", "testnet"), ("ops/verify-dashboards",)),
+        "mode": "read-only",
+    },
+    {
+        "id": "fault-agent",
+        "title": "안전한 장애·경보·kagent 진단·복구",
+        "detail": "regtest peer 격리를 주입하고 Ollama 진단 후 원래 NetworkPolicy와 채널을 복구합니다.",
+        "commands": (("ops/exercise-phase7-agent",),),
+        "mode": "reversible-regtest-mutation",
+    },
+    {
+        "id": "automation-guardrails",
+        "title": "자동 대응 allowlist와 감사 증거",
+        "detail": "허용된 probe 재시작, cooldown, 금지된 wallet 동작 거부를 검증합니다.",
+        "commands": (("ops/phase7-acceptance",),),
+        "mode": "read-only",
+    },
+    {
+        "id": "continuity",
+        "title": "지갑·채널·PVC·SCB·Prometheus 연속성",
+        "detail": "현재 testnet 상태가 최근 wallet-preserving redeploy 증거와 일치하는지 확인합니다.",
+        "commands": (("ops/acceptance", "testnet"),),
+        "mode": "read-only",
+    },
+    {
+        "id": "security-evidence",
+        "title": "보안·복구·교차 플랫폼 증거 마무리",
+        "detail": "Kyverno, RBAC, NetworkPolicy, Falco와 공개 Phase 5·7·8 증거를 확인합니다.",
+        "commands": (("ops/verify-security",),),
+        "mode": "reversible-security-probes",
+    },
+)
+
+PUBLIC_EVIDENCE = {
+    "docs/evidence/windows-phase5-recovery-2026-09-24.md": "Phase 5 passed",
+    "docs/evidence/windows-phase7-kagent-2026-09-24.md": "Phase 7 passed",
+    "docs/evidence/phase8-cross-platform-2026-09-24.md": "Phase 8 passed",
+}
+
+
+class DemoInterrupted(Exception):
+    pass
+
+
+def paint(value, color, enabled):
+    return f"{color}{value}{RESET}" if enabled else value
+
+
+def stage_label(number, enabled):
+    return paint(f"[{number}/7]", BOLD + STAGE_COLORS[number - 1], enabled)
+
+
+def print_catalog(enabled):
+    print(paint("LND Ops · Phase 9 Demo", BOLD, enabled))
+    print("실행할 마지막 단계를 선택하면 1단계부터 선택한 단계까지 순서대로 실행합니다.\n")
+    for number, stage in enumerate(STAGES, 1):
+        print(f"{stage_label(number, enabled)} {paint(stage['title'], STAGE_COLORS[number - 1], enabled)}")
+        print(f"      {stage['detail']}")
+    print()
+    print(paint("주의:", YELLOW + BOLD, enabled), "4단계는 regtest NetworkPolicy와 진단용 probe를 일시 변경한 뒤 자동 복구합니다.")
+    print("      7단계는 일회성 보안 probe Pod와 Falco 테스트 이벤트를 생성한 뒤 probe를 삭제합니다.")
+    print("      지갑, 결제, 채널 종료, PVC, SCB는 변경하지 않습니다.")
+
+
+def select_target():
+    while True:
+        try:
+            answer = input("어느 단계까지 실행할까요? [1-7, 기본값 7]: ").strip() or "7"
+        except EOFError as exc:
+            raise ValueError("interactive input unavailable; use --to 1..7") from exc
+        if answer.isdigit() and 1 <= int(answer) <= len(STAGES):
+            return int(answer)
+        print("1부터 7 사이의 숫자를 입력하세요.", file=sys.stderr)
+
+
+def clean_revision():
+    result = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"], text=True, capture_output=True)
+    if result.returncode or result.stdout.strip():
+        raise RuntimeError("데모는 변경 사항이 없는 clean Git revision에서만 실행할 수 있습니다")
+
+
+def command_display(command):
+    return " ".join(command)
+
+
+def run_command(command, dry_run, enabled):
+    print(paint("  RUN", BOLD + YELLOW, enabled), command_display(command), flush=True)
+    if dry_run:
+        return
+    process = subprocess.Popen([str(REPO / command[0]), *command[1:]], cwd=REPO)
+    try:
+        returncode = process.wait()
+    except KeyboardInterrupt:
+        print(paint("\n  WAIT", BOLD + YELLOW, enabled), "하위 명령의 복구 절차가 끝날 때까지 기다립니다.", file=sys.stderr)
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            returncode = process.wait(timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            raise DemoInterrupted("child recovery did not finish within 180 seconds; follow the recovery runbook") from exc
+        finally:
+            signal.signal(signal.SIGINT, previous)
+        raise DemoInterrupted(f"child exited {returncode} after interrupt; verify the channel-inactive recovery checklist")
+    if returncode:
+        if returncode == 10:
+            raise RuntimeError(f"operator action required: {command_display(command)}")
+        raise RuntimeError(f"command failed ({returncode}): {command_display(command)}")
+
+
+def verify_public_evidence(today=None):
+    today = today or datetime.now(timezone.utc).date()
+    for name, marker in PUBLIC_EVIDENCE.items():
+        path = REPO / name
+        if not path.is_file():
+            raise RuntimeError(f"missing public demo evidence: {name}")
+        content = path.read_text()
+        if marker not in content:
+            raise RuntimeError(f"public demo evidence lacks pass marker {marker!r}: {name}")
+        match = re.search(r"20\d{2}-\d{2}-\d{2}", content[:500])
+        if not match:
+            raise RuntimeError(f"public demo evidence lacks a validation date: {name}")
+        checked = date.fromisoformat(match.group(0))
+        age = today - checked
+        if age < timedelta(0) or age > timedelta(days=7):
+            raise RuntimeError(f"public demo evidence is outside the seven-day rehearsal window: {name}")
+
+
+def git_head():
+    return subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True, capture_output=True, check=True
+    ).stdout.strip()
+
+
+def write_evidence(target, completed):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    now = datetime.now(timezone.utc)
+    path = EVIDENCE / f"phase9-demo-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    payload = {
+        "schema": "lnd-ops/phase9-demo/v1",
+        "result": "pass",
+        "checked_at": now.isoformat().replace("+00:00", "Z"),
+        "git_commit": git_head(),
+        "host": {"system": platform.system(), "machine": platform.machine()},
+        "requested_through": target,
+        "completed": completed,
+        "secrets_recorded": False,
+        "testnet_wallet_or_channel_mutation": "excluded-by-stage-contract",
+        "deferred_limitations": ["Windows full-volume encryption remains deferred"],
+    }
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(payload, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    return path
+
+
+def parse_args(arguments):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--to", type=int, choices=range(1, len(STAGES) + 1), metavar="N", help="run cumulatively through stage N")
+    parser.add_argument("--list", action="store_true", help="show the stage catalog and exit")
+    parser.add_argument("--dry-run", action="store_true", help="show commands without executing them or writing evidence")
+    parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
+    return parser.parse_args(arguments)
+
+
+def main(arguments):
+    args = parse_args(arguments)
+    color = not args.no_color and "NO_COLOR" not in os.environ and (sys.stdout.isatty() or os.environ.get("FORCE_COLOR") == "1")
+    print_catalog(color)
+    if args.list:
+        return 0
+    try:
+        target = args.to if args.to is not None else select_target()
+        print(f"\n선택: {paint(f'1 → {target} 단계', BOLD + STAGE_COLORS[target - 1], color)}")
+        if not args.dry_run:
+            clean_revision()
+        completed = []
+        for number, stage in enumerate(STAGES[:target], 1):
+            print(f"\n{stage_label(number, color)} {paint(stage['title'], BOLD + STAGE_COLORS[number - 1], color)}")
+            for command in stage["commands"]:
+                run_command(command, args.dry_run, color)
+            if number == 7 and not args.dry_run:
+                verify_public_evidence()
+            completed.append({
+                "number": number,
+                "id": stage["id"],
+                "mode": stage["mode"],
+                "commands": [command_display(command) for command in stage["commands"]],
+            })
+            print(paint("  PASS", BOLD + GREEN, color), stage["title"])
+        if args.dry_run:
+            print(paint("\nDRY RUN 완료: 실제 명령과 증거 기록을 실행하지 않았습니다.", BOLD + YELLOW, color))
+            return 0
+        evidence = write_evidence(target, completed)
+        print(paint(f"\n데모 {target}단계까지 완료", BOLD + GREEN, color))
+        print(f"Evidence: {evidence}")
+        if target < len(STAGES):
+            print(paint(f"다음 실행은 --to {target + 1}로 확장할 수 있습니다.", DIM, color))
+        return 0
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(paint(f"\nFAIL: {exc}", BOLD + RED, color), file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, DemoInterrupted) as exc:
+        detail = str(exc) or "interrupted outside a child command"
+        print(paint(f"\nINTERRUPTED: {detail}", BOLD + RED, color), file=sys.stderr)
+        print("Recovery checklist: docs/runbooks/channel-inactive.md", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

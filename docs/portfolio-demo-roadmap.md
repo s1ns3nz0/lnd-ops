@@ -296,6 +296,11 @@ See [the cross-platform evidence](evidence/phase8-cross-platform-2026-09-24.md).
 
 ## Phase 9: produce the portfolio demo
 
+Use the cumulative, color-coded [`ops/demo`](phase9-demo-runbook.md) entry point
+for rehearsal and presentation. It displays all seven stages before execution,
+asks how far to run, and records a secret-free private result for the selected
+prefix.
+
 ### Demo artifacts
 
 - architecture and trust-boundary diagrams;

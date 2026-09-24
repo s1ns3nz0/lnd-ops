@@ -41,6 +41,11 @@ Success ends with `OK: Windows WSL 2 infrastructure smoke test passed`. Fresh wa
 
 The regtest, testnet, and monitoring infrastructure slices are implemented on Mac arm64 and Windows WSL 2 amd64. The Mac regtest wallet, channel, bidirectional payment, SCB, and [seed-plus-SCB recovery exercise](docs/evidence/mac-regtest-recovery-2026-09-23.md) passed. The Windows regtest wallet, channel, bidirectional payment, encrypted SCBs, live monitoring, and wallet-preserving redeployment also [passed](docs/evidence/windows-regtest-mvp-2026-09-23.md). Independent Mac and Windows testnet nodes then passed with external peers, active public channels, bidirectional payments, live monitoring, Pod restart recovery, current encrypted SCBs, wallet-preserving redeployment, Kubernetes security controls, and [cross-platform Phase 8 acceptance](docs/evidence/phase8-cross-platform-2026-09-24.md). The post-MVP path through the final public demonstration is defined in the [portfolio demo roadmap](docs/portfolio-demo-roadmap.md).
 
+Start the Phase 9 rehearsal with `ops/demo`. It presents seven color-coded
+cumulative stages, asks which final stage to run, and writes a private,
+secret-free result. Use `ops/demo --to 7 --dry-run` to preview the complete
+sequence. See the [Phase 9 demo runbook](docs/phase9-demo-runbook.md).
+
 The [clean-start runbook](docs/clean-start-runbook.md) gives the guarded deletion, fresh deployment, repeat deployment, and evidence procedure for both target hosts. Both target hosts have completed their Phase 8 runtime proof.
 
 The [image platform check](docs/evidence/image-platforms-2026-09-22.md) verifies every rendered project and monitoring image reference against its locked OCI index and both target CPU architectures.

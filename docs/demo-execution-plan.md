@@ -126,10 +126,11 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Proceed to the Lightning Labs product slice, beginning with Loop and restricted
-credentials. Preserve the Phase 7 tool and RBAC boundary, and repeat the
-host-specific testnet, operations, security, recovery, fault, and kagent proof
-on Mac during the cross-platform phase.
+Run `ops/demo --to 7 --dry-run` on the prepared Windows WSL 2 host, then rehearse
+the cumulative live path with `ops/demo`. Record the total duration and any
+operator pauses, refresh evidence that falls outside its defined window, and
+review the terminal capture for secret exposure before producing the final
+five-minute presentation.
 
 The Windows Phase 6 rehearsal command is `ops/exercise-phase6-faults`. It uses
 one active disposable regtest channel and the live monitoring/security stack.
