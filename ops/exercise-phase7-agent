@@ -221,6 +221,12 @@ def main():
             return bool(current) and all(channel.get("active") for channel in current) and signal.get("signal_active") is False
         recovered_at = wait_for("active regtest channel and healthy gateway signal", healthy)
 
+        # A previous successful exercise may have left the durable five-minute
+        # cooldown active. Wait for that safety state instead of mutating it.
+        def cooldown_expired():
+            state = kubectl_json("-n", "lnd-agent", "get", "configmap", "runbook-action-state")
+            return time.time() - int(state.get("data", {}).get("lastRestartEpoch", "0")) >= 300
+        wait_for("existing response cooldown to expire", cooldown_expired, timeout=360)
         allowed = pod_tool("execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
         if not allowed.get("allowed") or not allowed.get("audit_recorded"):
             raise RuntimeError("allowlisted response did not succeed with an audit record")
