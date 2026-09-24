@@ -17,6 +17,8 @@ Status updated on 2026-09-24. Every evidence record pins the exact Git commit us
 - **Complete:** persistent Windows testnet node. The wallet is funded and synchronized, its external peer and public channel are active, real outgoing and incoming payments succeeded, monitoring observed both directions, a Pod restart preserved the node identity and restored the public channel peer, and chart reapplication preserved the wallet, channels, SCB, PVCs, and Prometheus history. `ops/acceptance testnet` passed on runtime revision `c1312c94c1ba1d3b098d7582b4d872f5324aa2ae`; the secret-free Phase 1 record documents that run.
 - **Complete:** Windows Phase 3 integrated operations view. Six dashboards returned live data for all 54 panels, all 14 alert rules were healthy with versioned runbooks, the current encrypted SCB was visible, and chart reapplication preserved the funded node and Prometheus history. `ops/phase3-acceptance` passed on runtime revision `14487d13682417bcaf920e9df5163907e3197bfa`.
 - **Complete:** Windows Phase 4 Kubernetes security baseline. Enforced Kyverno admission, scoped RBAC, default-deny NetworkPolicy, a real modern eBPF Falco event through Alertmanager, live LND certificate expiry, 57 live dashboard queries, 16 healthy alert rules, and Phase 3 continuity passed on runtime revision `0f13cc8463ef0c3aee9738fc43f1541f628360cc`.
+- **Complete:** Windows Phase 5 recovery and Phase 6 fault-to-runbook proof. Isolated seed-plus-SCB recovery returned funds on-chain; representative Lightning, Kubernetes, and Falco faults reached live alerts and returned healthy.
+- **Complete:** Windows Phase 7 constrained kagent. The external Ollama-backed agent produced a live runbook-grounded diagnosis; one named probe restart succeeded with audit evidence, an immediate repeat hit cooldown, and a wallet-unlock request was denied. `ops/phase7-acceptance` passed on revision `44d9491cf71c268bd506a16ee4a1c0e3bdffc301`.
 - **Deferred hardening:** Windows Secure Boot and Device Encryption. Until those are enabled, testnet SCBs use independent GPG encryption and the limitation must appear in demo evidence.
 
 ## Delivery order
@@ -124,11 +126,10 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Proceed to Phase 7 constrained kagent diagnosis and allowlisted response. Keep
-`ops/phase6-acceptance` passing after changes that affect LND, monitoring,
-storage, networking, recovery, fault handling, or security, and repeat the
-host-specific testnet, operations, security, recovery, and fault proof on Mac
-during the cross-platform phase.
+Proceed to the Lightning Labs product slice, beginning with Loop and restricted
+credentials. Preserve the Phase 7 tool and RBAC boundary, and repeat the
+host-specific testnet, operations, security, recovery, fault, and kagent proof
+on Mac during the cross-platform phase.
 
 The Windows Phase 6 rehearsal command is `ops/exercise-phase6-faults`. It uses
 one active disposable regtest channel and the live monitoring/security stack.

@@ -347,6 +347,10 @@ Prometheus, Alertmanager, their versioned runbooks, recovery, alert clearing,
 and healthy post-checks. See
 [windows-phase6-faults-2026-09-24.md](evidence/windows-phase6-faults-2026-09-24.md).
 Windows full-volume encryption remains explicitly deferred. The immediate next
-implementation slice is Phase 7: constrained kagent diagnosis and allowlisted
-response. The working sequence is maintained in
+implementation slice is Phase 2: Loop and the selected Lightning Labs product
+extension. Phase 7 is complete on Windows with an external Ollama-backed live
+diagnosis, a single audited probe restart, cooldown enforcement, forbidden
+wallet-action denial, and least-privilege RBAC. See
+[windows-phase7-kagent-2026-09-24.md](evidence/windows-phase7-kagent-2026-09-24.md).
+The working sequence is maintained in
 [demo-execution-plan.md](demo-execution-plan.md).

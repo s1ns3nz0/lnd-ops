@@ -29,6 +29,31 @@ The kagent Agent Pod uses a token-free ServiceAccount. Only the gateway has a
 Kubernetes token, scoped through namespace Roles. The UI and controller remain
 ClusterIP services and are accessed through local `kubectl port-forward`.
 
+The capability list maps to exactly six MCP tools:
+
+| Tool | Scope |
+| --- | --- |
+| `get_workload_status` | Allowlisted Pod, StatefulSet, PVC, and Event reads |
+| `get_redacted_logs` | Final 50 log lines with Lightning secret patterns removed |
+| `diagnose_incident` | One of three fixed Prometheus queries and diagnoses |
+| `get_versioned_runbook` | One of three runbooks packaged from this Git revision |
+| `verify_health` | Fixed Prometheus and diagnostic-probe checks |
+| `execute_allowlisted_response` | Probe restart, or an audited denial |
+
+## Prerequisites
+
+Start from a clone whose `git status --porcelain` is empty. Phase 6 must have a
+passing private acceptance record whose commit is an ancestor of the current
+revision. The Kubernetes host needs the `kubectl`, Helm, Python 3, `curl`, K3s,
+and kubeconfig installed by the platform runbook. The operator needs cluster
+administrator access to install CRDs and namespace Roles.
+
+The tested topology uses a single-node cluster, one IPv4 Kubernetes API
+endpoint, and a stable `/32` Ollama server address. The deployment stops rather
+than widening egress if it discovers zero or multiple API addresses. Multi-node
+clusters, IPv6-only servers, NAT that changes the visible source, and private
+CA installation are outside this phase's tested contract.
+
 ## Prepare the Ollama server
 
 Use a model that supports tool calling. The model name passed to the deployment
@@ -115,6 +140,14 @@ cooldown, and `unlock_wallet` is denied and audited. Private response and JSON
 evidence files use mode `0600`; the JSON stores only the response hash and
 boolean outcomes.
 
+Private files are created under
+`${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/evidence/` with schemas
+`lnd-ops/phase7-exercise/v1` and `lnd-ops/phase7-acceptance/v1`. Keep them in
+the WSL Linux filesystem rather than a Windows mounted directory so mode
+`0600` remains meaningful. The exercise requires `RunbookActionAllowed` and
+`RunbookActionDenied` Events. Events are short-lived operational records; the
+private JSON is the retained acceptance evidence.
+
 Access the UI locally when needed:
 
 ```sh
@@ -130,3 +163,24 @@ or a tool returns an error, the deployment or exercise fails. No fallback model
 or broader Kubernetes tool is enabled. The diagnostic probe is the only
 mutable workload; an LLM outage cannot change the LND nodes, wallets, channels,
 payments, backups, PVCs, or security policy.
+
+Use these checks before changing policy or widening RBAC:
+
+```sh
+kubectl -n kagent get pods,agent,remotemcpserver
+kubectl -n lnd-agent get pods,networkpolicy
+kubectl -n lnd-agent logs deployment/runbook-gateway --tail=100
+kubectl -n kagent logs deployment/kagent-controller --tail=100
+```
+
+`Accepted=False` points to gateway discovery or network reachability. An Agent
+that is accepted but not ready points to its runtime Pod or model connection.
+Resolve image pulls against the pinned digest instead of using `latest`. Install
+a missing model on the configured server instead of selecting an unrelated
+fallback. After fixing a partial deployment, rerun `ops/deploy-agent`; it uses
+Helm upgrade semantics and retains cooldown state outside Helm ownership.
+
+The host `/api/tags` preflight prevents a known-bad deployment. The live
+exercise is the cluster reachability proof: the Agent Pod calls the external
+model and calls the gateway over the cluster network. Acceptance remains
+invalid until that invocation completes.
