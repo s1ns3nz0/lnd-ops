@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version=0.9.12
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/tools
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) platform=linux-amd64; checksum=afc3a9f2bded4075384cd6d59c4d727c22ee4ab921d79ce52ebce004ee16b1a1 ;;
+  Linux-aarch64|Linux-arm64) platform=linux-arm64; checksum=77b138e36e3375adc72bdf630df3a2311d6ad99068d12f4f70c07d5a44bb6b84 ;;
+  Darwin-arm64) platform=darwin-arm64; checksum=0394ea4dca5019714cb9d24735ec8eb090b539863e264cbc780e0a138984762c ;;
+  *) echo "Unsupported kagent CLI platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+binary=$state_dir/kagent-$version-$platform
+if [[ ! -x $binary ]] || [[ $(shasum -a 256 "$binary" | awk '{print $1}') != "$checksum" ]]; then
+  install -d -m 700 "$state_dir"
+  tmp=$(mktemp "$state_dir/.kagent.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
+  curl --fail --location --proto '=https' --tlsv1.2 \
+    "https://github.com/kagent-dev/kagent/releases/download/v$version/kagent-$platform" -o "$tmp"
+  [[ $(shasum -a 256 "$tmp" | awk '{print $1}') == "$checksum" ]] || {
+    echo 'kagent CLI checksum mismatch' >&2
+    exit 1
+  }
+  chmod 700 "$tmp"
+  mv "$tmp" "$binary"
+  trap - EXIT
+fi
+exec "$binary" "$@"

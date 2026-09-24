@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Accept Phase 7 constrained kagent evidence and security invariants."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+def run(args, check=True, timeout=300):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def owner_evidence(pattern):
+    files = sorted(EVIDENCE.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        raise RuntimeError(f"missing evidence: {pattern}")
+    path = files[0]
+    if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o777 != 0o600:
+        raise RuntimeError(f"unsafe evidence permissions: {path.name}")
+    return path, json.loads(path.read_text())
+
+
+def denied(verb, resource, namespace="lnd-agent", name=None):
+    args = ["kubectl", "auth", "can-i", verb, resource, "--namespace", namespace,
+            "--as=system:serviceaccount:lnd-agent:runbook-gateway"]
+    if name:
+        args.append(f"--resource-name={name}")
+    result = run(args, check=False)
+    return result.returncode != 0 and result.stdout.strip() == "no"
+
+
+def main():
+    try:
+        if run(["git", "-C", str(REPO), "status", "--porcelain"]).stdout:
+            raise RuntimeError("repository worktree must be clean before Phase 7 acceptance")
+        head = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
+        exercise_path, exercise = owner_evidence("phase7-exercise-*.json")
+        if exercise.get("schema") != "lnd-ops/phase7-exercise/v1" or exercise.get("result") != "pass":
+            raise RuntimeError("Phase 7 exercise evidence contract is invalid")
+        if exercise.get("git_commit") != head:
+            raise RuntimeError("rerun Phase 7 exercise at the current Git commit")
+        checked = datetime.fromisoformat(exercise["checked_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - checked > timedelta(hours=24):
+            raise RuntimeError("Phase 7 exercise evidence is older than 24 hours")
+        for key, expected in {
+            "live_evidence_grounded": True, "allowlisted_response": "pass",
+            "forbidden_response": "denied", "cooldown": "enforced",
+            "audit_events": "pass", "secrets_recorded": False,
+        }.items():
+            if exercise.get(key) != expected:
+                raise RuntimeError(f"Phase 7 exercise lacks {key}={expected!r}")
+
+        phase6_path, phase6 = owner_evidence("phase6-acceptance-*.json")
+        if phase6.get("schema") != "lnd-ops/phase6-acceptance/v1" or phase6.get("result") != "pass":
+            raise RuntimeError("Phase 6 continuity evidence is invalid")
+        ancestor = run(["git", "-C", str(REPO), "merge-base", "--is-ancestor", phase6["git_commit"], head], check=False)
+        if ancestor.returncode:
+            raise RuntimeError("Phase 6 accepted revision is not an ancestor of Phase 7")
+
+        for deployment in ("runbook-gateway", "runbook-diagnostic-probe"):
+            available = run(["kubectl", "-n", "lnd-agent", "get", "deployment", deployment,
+                             "-o", "jsonpath={.status.availableReplicas}"]).stdout
+            if available != "1":
+                raise RuntimeError(f"{deployment} is not available")
+        run(["kubectl", "-n", "kagent", "get", "agent", "lnd-ops-runbook-agent"])
+        server = json.loads(run(["kubectl", "-n", "kagent", "get", "remotemcpserver",
+                                 "lnd-ops-runbook-gateway", "-o", "json"]).stdout)
+        conditions = server.get("status", {}).get("conditions", [])
+        if not any(c.get("type") == "Accepted" and c.get("status") == "True" for c in conditions):
+            raise RuntimeError("kagent has not accepted the constrained MCP gateway")
+
+        dangerous = [
+            ("create", "pods", "lnd-regtest", None), ("delete", "pods", "lnd-regtest", None),
+            ("patch", "statefulsets.apps", "lnd-regtest", "lnd-0"),
+            ("patch", "persistentvolumeclaims", "lnd-testnet", "data-lnd-0-0"),
+            ("create", "secrets", "lnd-testnet", None),
+            ("patch", "networkpolicies.networking.k8s.io", "lnd-regtest", None),
+        ]
+        if not all(denied(*item) for item in dangerous):
+            raise RuntimeError("runbook gateway unexpectedly has a forbidden Kubernetes permission")
+        allowed_patch = run([
+            "kubectl", "auth", "can-i", "patch", "deployments.apps", "--namespace", "lnd-agent",
+            "--resource-name=runbook-diagnostic-probe",
+            "--as=system:serviceaccount:lnd-agent:runbook-gateway",
+        ]).stdout.strip()
+        if allowed_patch != "yes":
+            raise RuntimeError("runbook gateway lacks its one allowlisted mutation")
+
+        result = {
+            "schema": "lnd-ops/phase7-acceptance/v1", "result": "pass",
+            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "git_commit": head, "phase6_continuity": phase6_path.name,
+            "exercise_evidence": exercise_path.name, "provider": "Ollama",
+            "mcp_gateway_accepted": True, "least_privilege_rbac": "pass",
+            "live_diagnosis": "pass", "allowed_response": "pass",
+            "forbidden_response": "denied", "cooldown": "enforced",
+        }
+        output = EVIDENCE / f"phase7-acceptance-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(result, stream, indent=2, sort_keys=True); stream.write("\n")
+        print("OK Phase 7 acceptance: Ollama diagnosis and constrained runbook response controls passed")
+        print(f"Evidence: {output}")
+        return 0
+    except (RuntimeError, OSError, KeyError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

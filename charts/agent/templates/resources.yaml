@@ -1,0 +1,186 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: runbook-gateway}
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: runbook-probe}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kagent-no-kubernetes-api
+  namespace: kagent
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: runbook-action-state}
+data: {lastRestartEpoch: "0"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runbook-diagnostic-probe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: runbook-diagnostic-probe}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: runbook-diagnostic-probe}
+    spec:
+      serviceAccountName: runbook-probe
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: probe
+          image: {{ .Values.probe.image | quote }}
+          command: [python3, -c, "import time; time.sleep(31536000)"]
+          resources: {{- toYaml .Values.probe.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runbook-gateway}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: runbook-gateway}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: runbook-gateway}
+    spec:
+      serviceAccountName: runbook-gateway
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: gateway
+          image: {{ .Values.gateway.image | quote }}
+          command: [python3, /app/runbook_gateway.py]
+          env:
+            - {name: ACTION_COOLDOWN_SECONDS, value: {{ .Values.actionCooldownSeconds | quote }}}
+            - {name: RUNBOOK_ALLOWLIST, value: "channel-inactive.md,pod-not-ready.md,falco-runtime-event.md"}
+          ports: [{name: mcp, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: mcp}, initialDelaySeconds: 2, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: mcp}, initialDelaySeconds: 10, periodSeconds: 10}
+          resources: {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: source, mountPath: /app/runbook_gateway.py, subPath: runbook_gateway.py, readOnly: true}
+            - {name: runbooks, mountPath: /runbooks, readOnly: true}
+      volumes:
+        - name: source
+          configMap: {name: runbook-gateway-source, defaultMode: 0444}
+        - name: runbooks
+          configMap: {name: runbook-agent-runbooks, defaultMode: 0444}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runbook-gateway}
+spec:
+  selector: {app.kubernetes.io/name: runbook-gateway}
+  ports: [{name: mcp, port: 8080, targetPort: mcp}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: runbook-gateway-local}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [runbook-action-state]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [runbook-diagnostic-probe]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: runbook-gateway-local}
+subjects: [{kind: ServiceAccount, name: runbook-gateway}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: runbook-gateway-local}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: runbook-gateway-traffic}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: runbook-gateway}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kagent}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: {cidr: 10.43.0.1/32}
+      ports: [{protocol: TCP, port: 443}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lnd-monitoring}}
+      ports: [{protocol: TCP, port: 9090}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: probe-deny-all}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: runbook-diagnostic-probe}}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kagent-constrained-traffic
+  namespace: kagent
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: {cidr: 10.43.0.1/32}
+      ports: [{protocol: TCP, port: 443}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lnd-agent}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: runbook-gateway}}
+      ports: [{protocol: TCP, port: 8080}]
+    - to:
+        - ipBlock: {cidr: {{ .Values.ollama.serverCIDR | quote }}}
+      ports: [{protocol: TCP, port: {{ .Values.ollama.port }}}]

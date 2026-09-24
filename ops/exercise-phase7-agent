@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Exercise live Ollama diagnosis and the constrained response policy."""
+
+import hashlib
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+def run(args, check=True, timeout=600, stdout=subprocess.PIPE):
+    result = subprocess.run(args, text=True, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout or "").strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def wait_port(port, process):
+    for _ in range(100):
+        if process.poll() is not None:
+            raise RuntimeError("kubectl port-forward exited early")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                return
+        except OSError:
+            time.sleep(.1)
+    raise RuntimeError("kubectl port-forward did not become ready")
+
+
+def mcp(port, method, params=None, request_id=1):
+    payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
+    if params is not None:
+        payload["params"] = params
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/mcp", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.load(response)
+    if "error" in result:
+        raise RuntimeError(result["error"]["message"])
+    return result["result"]
+
+
+def tool(port, name, arguments):
+    result = mcp(port, "tools/call", {"name": name, "arguments": arguments})
+    return json.loads(result["content"][0]["text"])
+
+
+def main():
+    controller = gateway = None
+    try:
+        if run(["git", "-C", str(REPO), "status", "--porcelain"]).stdout:
+            raise RuntimeError("repository worktree must be clean before Phase 7 exercise")
+        controller = subprocess.Popen(
+            ["kubectl", "-n", "kagent", "port-forward", "service/kagent-controller", "18083:8083"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        gateway = subprocess.Popen(
+            ["kubectl", "-n", "lnd-agent", "port-forward", "service/runbook-gateway", "18080:8080"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        wait_port(18083, controller); wait_port(18080, gateway)
+        mcp(18080, "initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
+        diagnosis = tool(18080, "diagnose_incident", {"scenario": "channel_inactive"})
+        if diagnosis.get("matching_runbook") != "channel-inactive.md" or "observed_facts" not in diagnosis:
+            raise RuntimeError("gateway diagnosis is not grounded in the expected live evidence")
+
+        EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        response_path = EVIDENCE / f"phase7-kagent-response-{stamp}.txt"
+        descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        task = (
+            "Diagnose the current inactive-channel scenario. Call diagnose_incident and "
+            "get_versioned_runbook for channel-inactive.md. Use live tool results only and "
+            "return the six required headings exactly. Do not perform an action."
+        )
+        with os.fdopen(descriptor, "w") as stream:
+            invoked = run([
+                str(REPO / "ops/kagent-cli"), "--kagent-url", "http://127.0.0.1:18083",
+                "--namespace", "kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
+                "--task", task, "--timeout", "8m",
+            ], check=False, timeout=540, stdout=stream)
+        if invoked.returncode:
+            raise RuntimeError((invoked.stderr or "kagent invocation failed").strip().splitlines()[-1])
+        response = response_path.read_text(errors="replace")
+        headings = ["Observed facts", "Likely cause", "Confidence", "Matching runbook", "Recommended command", "Automation eligibility"]
+        if not all(heading.lower() in response.lower() for heading in headings):
+            raise RuntimeError("kagent response does not contain the required diagnosis contract")
+        if any(term in response.lower() for term in ("payment_request", "wallet_password", "cipher_seed")):
+            raise RuntimeError("kagent response contains a forbidden secret field name")
+
+        allowed = tool(18080, "execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
+        if not allowed.get("allowed") or not allowed.get("audit_recorded"):
+            raise RuntimeError("allowlisted response did not succeed with an audit record")
+        cooldown = tool(18080, "execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
+        if cooldown.get("allowed") or cooldown.get("reason") != "cooldown active":
+            raise RuntimeError("repeated mutation was not stopped by cooldown")
+        forbidden = tool(18080, "execute_allowlisted_response", {"action": "unlock_wallet"})
+        if forbidden.get("allowed") or not forbidden.get("audit_recorded"):
+            raise RuntimeError("forbidden response was not denied and audited")
+        run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=2m"])
+        events = json.loads(run(["kubectl", "-n", "lnd-agent", "get", "events", "-o", "json"]).stdout)
+        reasons = {item.get("reason") for item in events.get("items", [])}
+        if not {"RunbookActionAllowed", "RunbookActionDenied"}.issubset(reasons):
+            raise RuntimeError("allowed and denied audit events were not both observable")
+        result = {
+            "schema": "lnd-ops/phase7-exercise/v1", "result": "pass",
+            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "git_commit": run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip(),
+            "provider": "Ollama", "diagnosis_scenario": "channel_inactive",
+            "live_evidence_grounded": True, "required_headings": headings,
+            "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
+            "allowlisted_response": "pass", "forbidden_response": "denied",
+            "cooldown": "enforced", "audit_events": "pass", "secrets_recorded": False,
+        }
+        output = EVIDENCE / f"phase7-exercise-{stamp}.json"
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(result, stream, indent=2, sort_keys=True); stream.write("\n")
+        print("OK Phase 7 exercise: live Ollama diagnosis, allowed response, denial, audit, and cooldown passed")
+        print(f"Evidence: {output}")
+        return 0
+    except (RuntimeError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        for process in (gateway, controller):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

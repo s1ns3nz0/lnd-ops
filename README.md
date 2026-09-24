@@ -2,6 +2,11 @@
 
 Reproducible Lightning node operator portfolio project for Mac arm64 Lima K3s and Windows WSL 2 K3s. Both run the same Helm chart with separate testnet wallets and a disposable regtest profile. The [demo execution plan](docs/demo-execution-plan.md) is the working path from the current state to the final portfolio demo. The [implementation roadmap](docs/implementation-roadmap.md) defines the MVP, multi-platform images, and repeat-deployment contract. The [operator plan](docs/operator-plan.md) records the target architecture, while the [observability plan](docs/observability-plan.md) records dashboards, alerts, and runbook priorities. The [regtest runbook](docs/regtest-runbook.md) covers the manual wallet and channel exercise. The [Windows runbook](docs/windows-runbook.md) is the exact Windows 11 Home acceptance path.
 
+Phase 7 uses a fixed operator-selected Ollama server rather than assuming the
+model runs on either Kubernetes host. The [Phase 7 runbook](docs/phase7-runbook.md)
+defines the server contract, constrained kagent tools, one allowlisted probe
+restart, audit and cooldown controls, and the live acceptance commands.
+
 ## Windows 11 Home quick start
 
 First, open an elevated PowerShell window. Git must be available for this initial clone.

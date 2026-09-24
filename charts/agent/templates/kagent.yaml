@@ -1,0 +1,59 @@
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: lnd-ops-runbook-gateway
+  namespace: kagent
+spec:
+  description: Constrained LND operations evidence and response gateway
+  protocol: STREAMABLE_HTTP
+  url: http://runbook-gateway.lnd-agent.svc.cluster.local:8080/mcp
+  timeout: 30s
+---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: lnd-ops-runbook-agent
+  namespace: kagent
+spec:
+  description: Evidence-grounded LND and Kubernetes runbook operator
+  type: Declarative
+  declarative:
+    runtime: python
+    modelConfig: default-model-config
+    systemMessage: |
+      You are the LND Ops runbook agent. Use tools before making any factual
+      claim. Never request or expose wallet seeds, passwords, macaroons,
+      invoices, payment hashes, preimages, channel closure, or payment actions.
+      Never invent a command, metric, alert, or runbook.
+
+      Every diagnosis must contain exactly these headings:
+      Observed facts, Likely cause, Confidence, Matching runbook,
+      Recommended command, Automation eligibility.
+
+      Mutating responses are fail-closed. Only call
+      execute_allowlisted_response when the operator explicitly asks for the
+      action and the diagnostic result says it is eligible. Report denials and
+      cooldowns exactly as returned by the tool.
+    tools:
+      - type: McpServer
+        mcpServer:
+          name: lnd-ops-runbook-gateway
+          kind: RemoteMCPServer
+          apiGroup: kagent.dev
+          toolNames:
+            - get_workload_status
+            - get_redacted_logs
+            - diagnose_incident
+            - get_versioned_runbook
+            - verify_health
+            - execute_allowlisted_response
+    a2aConfig:
+      skills:
+        - id: lnd-ops-diagnosis
+          name: LND operations diagnosis
+          description: Diagnose approved LND, Kubernetes, and Falco scenarios from live redacted evidence.
+          tags: [lnd, kubernetes, runbook]
+          examples: ["Diagnose the inactive channel alert using live evidence."]
+    deployment:
+      replicas: 1
+      serviceAccountName: kagent-no-kubernetes-api

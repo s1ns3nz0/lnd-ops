@@ -49,7 +49,8 @@ jobs:
         run: |
           bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
           bash -n ops/build-collector
-          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/verify-monitoring", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts")]'
+          bash -n ops/kagent-cli
+          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/verify-monitoring", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py")]'
           python3 -m py_compile ops/exercise-regtest ops/verify-regtest-recovery collector/payment_metrics.py
           python3 -m json.tool ops/images.lock.json >/dev/null
           for dashboard in charts/dashboards/*.json; do python3 -m json.tool "$dashboard" >/dev/null; done
@@ -63,10 +64,14 @@ jobs:
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/vendor/kube-prometheus-stack-91.4.1.tgz -f charts/monitoring-values.yaml
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/agent --namespace lnd-agent
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/vendor/kagent-0.9.12.tgz --namespace kagent -f charts/kagent-values.yaml
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml --set monitoring.enabled=true --set-string monitoring.paymentCollectorImage=localhost/lnd-ops-payment-collector:ci >/dev/null
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops-agent charts/agent --namespace lnd-agent >/dev/null
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template kagent charts/vendor/kagent-0.9.12.tgz --namespace kagent -f charts/kagent-values.yaml --set-string providers.ollama.config.host=https://ollama.example --set-string providers.ollama.model=gpt-oss:20b >/dev/null
       - name: Build payment collector for both CPU architectures
         run: |
           docker buildx create --name lnd-ops-ci --use

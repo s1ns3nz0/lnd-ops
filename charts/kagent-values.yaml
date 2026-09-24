@@ -1,0 +1,51 @@
+rbac:
+  namespaces: [kagent]
+controller:
+  auth:
+    mode: unsecure
+  agentDeployment:
+    serviceAccountName: kagent-no-kubernetes-api
+  image:
+    tag: "0.9.12@sha256:d1ea7b70bb8d97de9f0774d44b598971c944b3ab4e88294b0bb78e59d1a63c15"
+  agentImage:
+    tag: "0.9.12@sha256:5ee30b4584e8de3266eb3cc11f5c46e8627716339d04d14166c50bda5f0f4182"
+  skillsInitImage:
+    tag: "0.9.12@sha256:a1152800fbee8b9143877dcebb981b8a3b450c2c0c3904c8c61e8aa7ce87852a"
+  route:
+    enabled: false
+ui:
+  image:
+    tag: "0.9.12@sha256:1d5ada8d7f65a6b9ad28232463f9fd670c4c20875baa1c8008aaa1f1f988382e"
+  service:
+    type: ClusterIP
+  route:
+    enabled: false
+providers:
+  default: ollama
+  ollama:
+    provider: Ollama
+    model: qwen3:8b
+    config:
+      host: https://ollama.invalid
+      options:
+        num_ctx: "16384"
+kmcp: {enabled: false}
+substrate: {enabled: false}
+kagent-tools: {enabled: false}
+k8s-agent: {enabled: false}
+kgateway-agent: {enabled: false}
+istio-agent: {enabled: false}
+promql-agent: {enabled: false}
+observability-agent: {enabled: false}
+argo-rollouts-agent: {enabled: false}
+helm-agent: {enabled: false}
+cilium-policy-agent: {enabled: false}
+cilium-manager-agent: {enabled: false}
+cilium-debug-agent: {enabled: false}
+grafana-mcp: {enabled: false}
+querydoc: {enabled: false}
+database:
+  postgres:
+    bundled:
+      image:
+        tag: "18.3-alpine@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7"

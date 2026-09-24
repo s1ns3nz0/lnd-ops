@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Install pinned kagent and the constrained LND runbook gateway."""
+
+import argparse
+import ipaddress
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+CONFIG = STATE / "phase7-ollama.json"
+KAGENT_VERSION = "0.9.12"
+
+
+def run(args, input_text=None, timeout=1200, cwd=None):
+    result = subprocess.run(args, input=input_text, text=True, capture_output=True, timeout=timeout, cwd=cwd)
+    if result.returncode:
+        message = (result.stderr or result.stdout).strip().splitlines()
+        raise RuntimeError(message[-1] if message else f"command failed: {args[0]}")
+    return result.stdout
+
+
+def endpoint(value, allow_http):
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ({"https", "http"} if allow_http else {"https"}):
+        raise ValueError("Ollama endpoint must use HTTPS; use --allow-insecure-http only on a trusted private network")
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Ollama endpoint must be an origin URL without credentials, query, or fragment")
+    if parsed.path not in ("", "/"):
+        raise ValueError("Ollama endpoint must not contain a path")
+    if parsed.hostname in {"localhost", "127.0.0.1", "host.docker.internal"}:
+        raise ValueError("Ollama must be a server address reachable from the Kubernetes cluster")
+    return value.rstrip("/")
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--endpoint")
+    parser.add_argument("--model")
+    parser.add_argument("--server-cidr")
+    parser.add_argument("--allow-insecure-http", action="store_true")
+    return parser.parse_args(argv)
+
+
+def load_config(args):
+    if any((args.endpoint, args.model, args.server_cidr)):
+        if not all((args.endpoint, args.model, args.server_cidr)):
+            raise ValueError("--endpoint, --model, and --server-cidr must be supplied together")
+        value = {
+            "endpoint": endpoint(args.endpoint, args.allow_insecure_http),
+            "model": args.model,
+            "server_cidr": str(ipaddress.ip_network(args.server_cidr, strict=True)),
+            "allow_insecure_http": args.allow_insecure_http,
+        }
+        if not value["model"].strip() or any(c.isspace() for c in value["model"]):
+            raise ValueError("model must be a non-empty Ollama model name without whitespace")
+        STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+    elif CONFIG.is_file() and not CONFIG.is_symlink() and CONFIG.stat().st_mode & 0o777 == 0o600:
+        value = json.loads(CONFIG.read_text())
+        endpoint(value["endpoint"], value.get("allow_insecure_http", False))
+        ipaddress.ip_network(value["server_cidr"], strict=True)
+    else:
+        raise ValueError("configure the fixed Ollama server with --endpoint, --model, and --server-cidr")
+    return value
+
+
+def check_ollama(config):
+    request = urllib.request.Request(config["endpoint"] + "/api/tags", headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = json.load(response)
+    names = {item.get("name") for item in payload.get("models", [])}
+    if config["model"] not in names and not any(name and name.split(":")[0] == config["model"] for name in names):
+        raise RuntimeError(f'Ollama model {config["model"]!r} is not installed on the configured server')
+
+
+def main(argv):
+    try:
+        args = parse_args(argv)
+        config = load_config(args)
+        check_ollama(config)
+        os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+        if not pathlib.Path(os.environ["KUBECONFIG"]).is_file():
+            raise RuntimeError(f'kubeconfig missing: {os.environ["KUBECONFIG"]}')
+        vendor = REPO / "charts/vendor"
+        checks = run(["shasum", "-a", "256", "--check", "SHA256SUMS"], timeout=60, cwd=vendor)
+        for required in (f"kagent-{KAGENT_VERSION}.tgz", f"kagent-crds-{KAGENT_VERSION}.tgz"):
+            if f"{required}: OK" not in checks:
+                raise RuntimeError(f"vendor checksum did not verify {required}")
+        for namespace, level in (("kagent", "baseline"), ("lnd-agent", "restricted")):
+            manifest = run(["kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "yaml"])
+            run(["kubectl", "apply", "-f", "-"], manifest)
+            run(["kubectl", "label", "namespace", namespace, f"pod-security.kubernetes.io/enforce={level}", "--overwrite"])
+        run(["helm", "upgrade", "--install", "kagent-crds", str(vendor / f"kagent-crds-{KAGENT_VERSION}.tgz"),
+             "--namespace", "kagent", "--wait", "--timeout", "10m"])
+        run(["kubectl", "wait", "--for=condition=Established", "crd/agents.kagent.dev", "crd/modelconfigs.kagent.dev",
+             "crd/remotemcpservers.kagent.dev", "--timeout=2m"])
+        run(["helm", "upgrade", "--install", "kagent", str(vendor / f"kagent-{KAGENT_VERSION}.tgz"),
+             "--namespace", "kagent", "--values", str(REPO / "charts/kagent-values.yaml"),
+             "--set-string", f'providers.ollama.model={config["model"]}',
+             "--set-string", f'providers.ollama.config.host={config["endpoint"]}',
+             "--wait", "--timeout", "15m"])
+        source = run(["kubectl", "-n", "lnd-agent", "create", "configmap", "runbook-gateway-source",
+                      "--from-file", str(REPO / "agent/runbook_gateway.py"), "--dry-run=client", "-o", "yaml"])
+        run(["kubectl", "apply", "-f", "-"], source)
+        runbooks = run(["kubectl", "-n", "lnd-agent", "create", "configmap", "runbook-agent-runbooks",
+                        "--from-file", str(REPO / "docs/runbooks/channel-inactive.md"),
+                        "--from-file", str(REPO / "docs/runbooks/pod-not-ready.md"),
+                        "--from-file", str(REPO / "docs/runbooks/falco-runtime-event.md"),
+                        "--dry-run=client", "-o", "yaml"])
+        run(["kubectl", "apply", "-f", "-"], runbooks)
+        parsed = urllib.parse.urlparse(config["endpoint"])
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        run(["helm", "upgrade", "--install", "lnd-ops-agent", str(REPO / "charts/agent"),
+             "--namespace", "lnd-agent", "--set-string", f'ollama.serverCIDR={config["server_cidr"]}',
+             "--set", f"ollama.port={port}", "--wait", "--timeout", "10m"])
+        run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
+        run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
+        print(f'OK Phase 7 agent deployed: kagent={KAGENT_VERSION} provider=Ollama model={config["model"]}')
+        print("Ollama endpoint configuration is owner-only under the project state directory")
+        return 0
+    except (ValueError, RuntimeError, OSError, json.JSONDecodeError, urllib.error.URLError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
