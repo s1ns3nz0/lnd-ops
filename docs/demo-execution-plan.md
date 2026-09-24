@@ -10,11 +10,11 @@ Each host runs an independent wallet. Reproducibility means creating an equivale
 
 ## Current position
 
-Status recorded on 2026-09-23. Every evidence record pins the exact Git commit used, so this status does not substitute for revision-specific evidence.
+Status updated on 2026-09-24. Every evidence record pins the exact Git commit used, so this status does not substitute for revision-specific evidence.
 
 - **Complete:** scripted K3s and Helm deployment on Windows WSL 2; disposable two-node regtest; wallets, channel, bidirectional payments, monitoring, encrypted SCBs, and state-preserving chart reapplication.
 - **Complete:** `ops/acceptance regtest` and secret-free Windows Phase 0 evidence.
-- **In progress:** persistent Windows testnet node. The Pod and PVC exist, but the testnet wallet, external channel, payments, and Phase 1 evidence still require operator actions.
+- **In progress:** persistent Windows testnet node. The wallet is funded and synchronized, its external peer and public channel are active, real outgoing and incoming payments have succeeded, monitoring has observed both directions, and a Pod restart preserved the node identity and restored the public channel peer. The remaining Phase 1 gates are a current encrypted SCB after the latest restart, wallet-preserving chart reapplication, final testnet acceptance, and the secret-free evidence record.
 - **Deferred hardening:** Windows Secure Boot and Device Encryption. Until those are enabled, testnet SCBs use independent GPG encryption and the limitation must appear in demo evidence.
 
 ## Delivery order
@@ -120,4 +120,4 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Finish `docs/testnet-runbook.md`, the read-only testnet progress/acceptance checks, encrypted-SCB verification, reconnect check, and testnet redeployment evidence support. Test those paths without wallet secrets, then create and unlock the testnet wallet interactively. The wallet is created once and reused for later acceptance and redeployment checks.
+Create fresh bidirectional testnet payment samples, update and verify the encrypted `lnd-0` SCB, run `ops/redeploy-check`, and pass `ops/acceptance testnet` within its one-hour payment window. Commit a redacted Windows Phase 1 record under `docs/evidence/`, then proceed to the integrated dashboard phase without recreating the funded wallet.
