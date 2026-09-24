@@ -20,6 +20,18 @@ test('Phase 4 policy and network baseline are enforced', async () => {
   assert.match(network, /name: default-deny/);
 });
 
+test('network policies include every configured LND node', () => {
+  const rendered = spawnSync('helm', [
+    'template', 'lnd-ops', 'charts/lnd-ops', '-n', 'lnd-testnet',
+    '--set', 'profile=testnet', '--set', 'lnd.nodes=3', '--set', 'monitoring.enabled=true',
+  ], { cwd: repo, encoding: 'utf8' });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  for (const node of ['lnd-0', 'lnd-1', 'lnd-2']) {
+    assert.match(rendered.stdout, new RegExp(`- ${node}\\n`));
+  }
+  assert.match(rendered.stdout, /name: testnet-public-p2p-ingress[\s\S]*app\.kubernetes\.io\/name: lnd-0/);
+});
+
 test('security chart runtime images render with locked digests', async () => {
   const lock = JSON.parse(await readFile(resolve(repo, 'ops/helm-plugins/lnd-ops-security-images/images.lock.json'), 'utf8'));
   assert.ok(Object.keys(lock).length >= 10);
