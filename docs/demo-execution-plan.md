@@ -15,6 +15,7 @@ Status updated on 2026-09-24. Every evidence record pins the exact Git commit us
 - **Complete:** scripted K3s and Helm deployment on Windows WSL 2; disposable two-node regtest; wallets, channel, bidirectional payments, monitoring, encrypted SCBs, and state-preserving chart reapplication.
 - **Complete:** `ops/acceptance regtest` and secret-free Windows Phase 0 evidence.
 - **Complete:** persistent Windows testnet node. The wallet is funded and synchronized, its external peer and public channel are active, real outgoing and incoming payments succeeded, monitoring observed both directions, a Pod restart preserved the node identity and restored the public channel peer, and chart reapplication preserved the wallet, channels, SCB, PVCs, and Prometheus history. `ops/acceptance testnet` passed on runtime revision `c1312c94c1ba1d3b098d7582b4d872f5324aa2ae`; the secret-free Phase 1 record documents that run.
+- **Complete:** Windows Phase 3 integrated operations view. Six dashboards returned live data for all 54 panels, all 14 alert rules were healthy with versioned runbooks, the current encrypted SCB was visible, and chart reapplication preserved the funded node and Prometheus history. `ops/phase3-acceptance` passed on runtime revision `14487d13682417bcaf920e9df5163907e3197bfa`.
 - **Deferred hardening:** Windows Secure Boot and Device Encryption. Until those are enabled, testnet SCBs use independent GPG encryption and the limitation must appear in demo evidence.
 
 ## Delivery order
@@ -122,4 +123,4 @@ Raw machine-readable evidence stays under `${XDG_STATE_HOME:-$HOME/.local/state}
 
 ## Immediate next action
 
-Proceed to the integrated dashboard and alert slice without recreating the funded wallet. Keep `ops/acceptance testnet` passing after changes that affect LND, monitoring, storage, or networking, and repeat the host-specific testnet proof on Mac during the cross-platform phase.
+Proceed to the Kubernetes security baseline without recreating the funded wallet. Keep `ops/phase3-acceptance` passing after changes that affect LND, monitoring, storage, or networking, and repeat the host-specific testnet and operations proof on Mac during the cross-platform phase.

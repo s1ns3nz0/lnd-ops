@@ -28,6 +28,7 @@ This file owns phase order, portfolio scope, and final demo acceptance. The link
 | Windows regtest functional baseline | Complete | Keep passing during later changes |
 | Phase 0 acceptance command | Complete on Windows | Keep the read-only gate passing; repeat on Mac before the final demo |
 | Windows testnet | Complete | Keep acceptance evidence current during later changes; repeat the host-specific proof on Mac in Phase 8 |
+| Phase 3 integrated operations view | Complete on Windows | Keep `ops/phase3-acceptance` passing; add Falco and certificate signals in Phase 4 |
 | Mac runtime equivalence | Pending | Host-specific clean and functional evidence |
 | Security enforcement | Pending | Positive and negative policy tests |
 | Recovery exercise | Pending | Isolated seed-plus-SCB recovery evidence |
@@ -331,4 +332,4 @@ The demo passes only when it can be repeated from the documented repository revi
 | 9 | Phase 8 | Both-host reproducibility and CI |
 | 10 | Phase 9 | Rehearsed public portfolio demo |
 
-Phase 1 is complete on Windows. The immediate next implementation slice is Phase 3: finish the integrated operations dashboards and alerts while keeping the funded testnet wallet, channels, SCB, PVCs, and Phase 1 acceptance path intact. The working sequence is maintained in [demo-execution-plan.md](demo-execution-plan.md).
+Phase 3 is complete on Windows with the funded testnet wallet, channels, SCB, PVCs, Prometheus history, and Phase 1 acceptance path intact. The immediate next implementation slice is Phase 4: enforce and test the Kubernetes security baseline, including Kyverno, scoped RBAC, NetworkPolicy, Falco, and certificate handling. The working sequence is maintained in [demo-execution-plan.md](demo-execution-plan.md).
