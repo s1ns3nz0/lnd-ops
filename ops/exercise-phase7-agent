@@ -105,6 +105,18 @@ def pod_tool(name, arguments):
     return json.loads(result["content"][0]["text"])
 
 
+def invocation_tool_result(invocation, name):
+    for event in invocation.get("history", []):
+        for part in event.get("parts", []):
+            data = part.get("data", {})
+            if data.get("name") != name or "response" not in data:
+                continue
+            content = data["response"].get("content", [])
+            if content and content[0].get("type") == "text":
+                return json.loads(content[0]["text"])
+    raise RuntimeError(f"kagent response lacks the {name} tool result")
+
+
 def main():
     controller = None
     try:
@@ -164,8 +176,12 @@ def main():
                     raise RuntimeError("kagent invocation returned a non-completed task")
             except json.JSONDecodeError as exc:
                 raise RuntimeError("kagent CLI did not return its JSON task contract") from exc
-            if '"signal_active":true' not in json.dumps(invocation, separators=(",", ":")):
+            agent_diagnosis = invocation_tool_result(invocation, "diagnose_incident")
+            agent_runbook = invocation_tool_result(invocation, "get_versioned_runbook")
+            if agent_diagnosis.get("signal_active") is not True:
                 raise RuntimeError("kagent did not receive the active injected fault signal")
+            if agent_runbook.get("name") != "channel-inactive.md":
+                raise RuntimeError("kagent did not receive the matching versioned runbook")
             headings = ["Observed facts", "Likely cause", "Confidence", "Matching runbook", "Recommended command", "Automation eligibility"]
             if not all(heading.lower() in response.lower() for heading in headings):
                 raise RuntimeError("kagent response does not contain the required diagnosis contract")
