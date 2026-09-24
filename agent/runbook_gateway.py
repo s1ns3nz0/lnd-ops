@@ -25,7 +25,7 @@ WORKLOAD_KINDS = {
 }
 SCENARIOS = {
     "channel_inactive": {
-        "query": 'sum(lnd_channels_inactive_total{namespace=~"lnd-regtest|lnd-testnet"})',
+        "query": 'sum(lnd_channels_inactive_total{namespace="lnd-regtest"})',
         "alert": "LndOpsChannelInactive",
         "runbook": "channel-inactive.md",
         "cause": "one or more LND channels are inactive",

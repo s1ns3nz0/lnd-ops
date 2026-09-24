@@ -23,6 +23,7 @@ class RunbookGatewayTests(unittest.TestCase):
             "get_versioned_runbook", "verify_health", "execute_allowlisted_response",
         })
         self.assertFalse(any("shell" in name or "kubectl" in name or "promql" in name for name in gateway.TOOLS))
+        self.assertEqual(gateway.SCENARIOS["channel_inactive"]["query"], 'sum(lnd_channels_inactive_total{namespace="lnd-regtest"})')
 
     @mock.patch.object(gateway, "audit")
     def test_forbidden_action_is_denied_and_audited(self, audit):
