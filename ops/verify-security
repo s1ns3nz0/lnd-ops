@@ -77,7 +77,10 @@ def main(arguments):
         server_dry_run(manifest("security-privileged", image, confined=False, privileged=True), False)
 
         for namespace, account in (("lnd-testnet", "lnd-node"), ("lnd-regtest", "lnd-node"), ("lnd-regtest", "bitcoin-node")):
-            allowed = kubectl("auth", "can-i", "get", "secrets", "--as", f"system:serviceaccount:{namespace}:{account}").stdout.strip()
+            kubectl("-n", namespace, "get", "serviceaccount", account)
+            allowed = kubectl(
+                "auth", "can-i", "get", "secrets", "--as", f"system:serviceaccount:{namespace}:{account}", check=False
+            ).stdout.strip()
             if allowed != "no":
                 raise Failure(f"{namespace}/{account} can read Secrets")
         pod = json.loads(kubectl("-n", "lnd-testnet", "get", "pod", "lnd-0-0", "-o", "json").stdout)
