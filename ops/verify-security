@@ -97,16 +97,16 @@ def main(arguments):
         if daemonset["status"].get("numberReady", 0) != daemonset["status"].get("desiredNumberScheduled", -1):
             raise Failure("Falco DaemonSet is not Ready")
         logs = kubectl("-n", "falco", "logs", "daemonset/falco", "-c", "falco", "--tail=200").stdout
-        if "modern_ebpf" not in logs.lower() and "modern ebpf" not in logs.lower():
+        if not any(marker in logs.lower() for marker in ("modern_ebpf", "modern ebpf", "modern bpf")):
             raise Failure("Falco logs do not prove the modern eBPF driver is active")
 
-        before = prometheus('sum(falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
+        before = prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
         baseline = float(before[0]["value"][1]) if before else 0
         kubectl("-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "payment-metrics", "--", "python3", "-c", "print('lnd-ops-falco-test')")
         observed = False
         for _ in range(18):
             time.sleep(5)
-            result = prometheus('sum(falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
+            result = prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
             if result and float(result[0]["value"][1]) > baseline:
                 observed = True
                 break
