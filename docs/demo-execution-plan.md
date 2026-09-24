@@ -128,3 +128,13 @@ Proceed to Phase 6 fault-to-runbook exercises. Keep `ops/phase5-acceptance`
 passing after changes that affect LND, monitoring, storage, networking,
 recovery, or security, and repeat the host-specific testnet, operations,
 security, and recovery proof on Mac during the cross-platform phase.
+
+The Windows Phase 6 rehearsal command is `ops/exercise-phase6-faults`. It uses
+one active disposable regtest channel and the live monitoring/security stack.
+It restores NetworkPolicy in a `finally` path, deletes only its named
+CrashLoop Pod, and lets the Falco rolling event window expire. Do not interrupt
+the command while a fault is active; if the process is interrupted, restore the
+Git-rendered `lnd-peer-traffic` policy and delete Pod `phase6-crashloop` before
+continuing. A successful run writes owner-only evidence, after which
+`ops/phase6-acceptance --acknowledge-host-encryption-deferred` reruns Phase 5
+continuity.
