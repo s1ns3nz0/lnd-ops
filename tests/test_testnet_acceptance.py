@@ -20,6 +20,7 @@ class TestnetAcceptanceTests(unittest.TestCase):
     def current():
         return {
             "node_key": "02node", "external_peer_pubkeys": ["03peer"], "channel_points": ["tx:0"],
+            "active_public_channel_points": ["tx:0"],
             "lnd_pvc_uid": "lnd-pvc", "prometheus_pvc_uid": "prom-pvc", "scb_source_sha256": "a" * 64,
             "cluster_uid_sha256": "b" * 64, "helm_revisions": {"lnd-ops": 4, "lnd-ops-monitoring": 5},
             "recent_outgoing_count": 1, "recent_incoming_count": 1,
@@ -76,6 +77,39 @@ class TestnetAcceptanceTests(unittest.TestCase):
         with unittest.mock.patch.object(acceptance, "verify_prometheus_history"):
             with self.assertRaisesRegex(acceptance.InvariantFailure, "node_key"):
                 acceptance.verify_matches(current, self.redeploy())
+
+    def test_live_state_preserves_public_and_private_channel_points(self):
+        replies = {
+            "getinfo": {"identity_pubkey": "02node", "synced_to_chain": True},
+            "listpeers": {"peers": [{"pub_key": "03" + "a" * 64}]},
+            "listchannels": {"channels": [
+                {"channel_point": "public:0", "remote_pubkey": "03" + "a" * 64, "active": True,
+                 "private": False, "capacity": "100000"},
+                {"channel_point": "payer:1", "remote_pubkey": "03" + "b" * 64, "active": False,
+                 "private": True, "capacity": "30000"},
+            ]},
+            "listpayments": {"payments": [{"status": "SUCCEEDED", "creation_date": "1700000000"}]},
+            "listinvoices": {"invoices": [{"state": "SETTLED", "settle_date": "1700000000"}]},
+        }
+
+        def lncli(operation, *_args):
+            return replies[operation]
+
+        objects = iter([
+            {"metadata": {"uid": "lnd-pvc"}},
+            {"metadata": {"uid": "prom-pvc"}},
+            {"metadata": {"uid": "cluster"}},
+        ])
+        history = json.dumps([{"revision": 4}])
+        with unittest.mock.patch.object(acceptance, "lncli", side_effect=lncli), unittest.mock.patch.object(
+            acceptance, "kubectl_json", side_effect=lambda *_args: next(objects)
+        ), unittest.mock.patch.object(
+            acceptance, "kubectl", return_value="a" * 64 + "  channel.backup\n"
+        ), unittest.mock.patch.object(acceptance, "command", return_value=history):
+            state = acceptance.live_state(1700000100)
+
+        self.assertEqual(state["channel_points"], ["payer:1", "public:0"])
+        self.assertEqual(state["active_public_channel_points"], ["public:0"])
 
 
 if __name__ == "__main__":

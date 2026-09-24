@@ -129,7 +129,8 @@ def live_state(now):
     return {
         "node_key": info["identity_pubkey"],
         "external_peer_pubkeys": peer_keys,
-        "channel_points": sorted(item["channel_point"] for item in public_active),
+        "channel_points": sorted(item["channel_point"] for item in channels),
+        "active_public_channel_points": sorted(item["channel_point"] for item in public_active),
         "lnd_pvc_uid": pvc["metadata"]["uid"],
         "prometheus_pvc_uid": prom["metadata"]["uid"],
         "scb_source_sha256": source_hash,
@@ -268,7 +269,8 @@ def main(arguments):
         current = payload["current"]
         print(
             "OK testnet acceptance: synchronized node, "
-            f"{len(current['external_peer_pubkeys'])} external peer(s), {len(current['channel_points'])} public channel(s), "
+            f"{len(current['external_peer_pubkeys'])} external peer(s), "
+            f"{len(current['active_public_channel_points'])} public channel(s), "
             "recent send/receive payments, encrypted SCB, monitoring and redeploy continuity"
         )
         print(f"Evidence: {path}")
