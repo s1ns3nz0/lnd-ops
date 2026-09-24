@@ -30,7 +30,6 @@ def rendered_references():
 locked_references = {
     (image["tag"].rsplit(":", 1)[0], image["digest"])
     for name, image in lock.items()
-    if name != "payment-collector-base"
 }
 collector_base = lock["payment-collector-base"]
 dockerfile = (repo / "collector/Dockerfile").read_text()

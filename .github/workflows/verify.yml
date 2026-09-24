@@ -78,6 +78,31 @@ jobs:
           docker buildx build --platform linux/amd64,linux/arm64 --output type=cacheonly collector
           docker buildx build --platform linux/amd64 --load --tag localhost/lnd-ops-payment-collector:ci collector
           docker run --rm --platform linux/amd64 --entrypoint python3 localhost/lnd-ops-payment-collector:ci -c 'import platform, runpy; assert platform.machine() == "x86_64"; runpy.run_path("/app/payment_metrics.py", run_name="smoke")'
+      - name: Validate Kubernetes schemas
+        run: |
+          mkdir -p /tmp/lnd-ops-manifests
+          helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml > /tmp/lnd-ops-manifests/regtest.yaml
+          helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml > /tmp/lnd-ops-manifests/testnet.yaml
+          helm template lnd-ops-agent charts/agent --namespace lnd-agent > /tmp/lnd-ops-manifests/agent.yaml
+          docker run --rm -v /tmp/lnd-ops-manifests:/manifests:ro \
+            ghcr.io/yannh/kubeconform@sha256:8f0eeaaa96ba27ba1500b0e4b1c215acc358d159c62a7ecae58d7a03403287b0 \
+            -strict -summary -ignore-missing-schemas /manifests
+      - name: Test Kyverno workload policy
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work \
+            reg.kyverno.io/kyverno/kyverno-cli@sha256:ced7b2be0b04250cabfe695f15307f69eb715fe23234816388af4f3812915b2a \
+            test charts/security/tests --remove-color --require-tests
+      - name: Scan Git history for secrets
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 \
+            detect --source=/repo --no-banner --redact --exit-code=1
+      - name: Scan project image for critical vulnerabilities
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            docker.io/aquasec/trivy@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08 \
+            image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 --skip-version-check \
+            localhost/lnd-ops-payment-collector:ci
       - name: Verify pinned image indexes
         run: |
           sudo apt-get update
