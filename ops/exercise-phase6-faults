@@ -2,6 +2,7 @@
 """Exercise one Lightning, Kubernetes, and security fault end to end."""
 
 import json
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -120,6 +121,7 @@ def lightning_fault():
     peer = active[0]["remote_pubkey"]
     policy = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")
     original_spec = policy["spec"]
+    policy_hash = hashlib.sha256(json.dumps(original_spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     injected = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     restored = False
     try:
@@ -136,6 +138,10 @@ def lightning_fault():
         patch = json.dumps({"spec": original_spec})
         kubectl("-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", patch, check=False)
         restored = True
+    restored_spec = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")["spec"]
+    restored_hash = hashlib.sha256(json.dumps(restored_spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if restored_hash != policy_hash:
+        raise Failure("LND peer NetworkPolicy did not return to its exact pre-fault spec")
     peer_info = json.loads(lncli("lnd-regtest", "lnd-1-0", "getinfo").stdout)
     lncli("lnd-regtest", "lnd-0-0", "connect", f'{peer_info["identity_pubkey"]}@lnd-1:9735', check=False)
     healthy = wait_for(
@@ -147,8 +153,12 @@ def lightning_fault():
     )
     cleared = wait_alert_clear(alert, 'namespace="lnd-regtest"', {"namespace": "lnd-regtest"})
     return {"fault": "deny internal LND peer traffic", "injected_at": injected, "signal_at": signal,
-            "alert_at": fired, "runbook": runbook, "restored": restored, "healthy_at": healthy,
-            "alert_cleared_at": cleared}
+            "alert_at": fired, "runbook": runbook, "runbook_mapping_verified": True,
+            "prometheus_alert_observed": True, "alertmanager_observed": True,
+            "precheck": {"active_channels": 1, "networkpolicy_spec_sha256": policy_hash},
+            "recovery": "restored exact NetworkPolicy spec and reconnected peer", "restored": restored,
+            "post_check": {"active_channels": 1, "networkpolicy_spec_sha256": restored_hash},
+            "healthy_at": healthy, "alert_cleared_at": cleared}
 
 
 def kubernetes_fault():
@@ -156,6 +166,8 @@ def kubernetes_fault():
     runbook = "docs/runbooks/pod-not-ready.md"
     require_runbook(alert, runbook)
     pod = "phase6-crashloop"
+    if kubectl("-n", "lnd-regtest", "get", "pod", pod, check=False).returncode == 0:
+        raise Failure(f"refusing to replace pre-existing Pod {pod}")
     manifest = {
         "apiVersion": "v1", "kind": "Pod", "metadata": {"name": pod, "namespace": "lnd-regtest", "labels": {"app.kubernetes.io/name": "phase6-crashloop"}},
         "spec": {"automountServiceAccountToken": False, "restartPolicy": "Always", "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
@@ -183,8 +195,10 @@ def kubernetes_fault():
     cleared = wait_alert_clear(alert, f'namespace="lnd-regtest",pod="{pod}"',
                                {"namespace": "lnd-regtest", "pod": pod}, timeout=300)
     return {"fault": "disposable compliant CrashLoop Pod", "injected_at": injected, "signal_at": signal,
-            "alert_at": fired, "runbook": runbook, "recovery": "deleted disposable Pod",
-            "healthy_at": healthy, "alert_cleared_at": cleared}
+            "alert_at": fired, "runbook": runbook, "runbook_mapping_verified": True,
+            "prometheus_alert_observed": True, "alertmanager_observed": True,
+            "precheck": {"fixture_pod_absent": True}, "recovery": "deleted disposable Pod",
+            "post_check": {"fixture_pod_absent": True}, "healthy_at": healthy, "alert_cleared_at": cleared}
 
 
 def security_fault():
@@ -193,6 +207,11 @@ def security_fault():
     require_runbook(alert, runbook)
     before = prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
     baseline = float(before[0]["value"][1]) if before else 0
+    daemonset_before = kubectl_json("-n", "falco", "get", "daemonset", "falco")
+    desired_before = daemonset_before["status"].get("desiredNumberScheduled", -1)
+    ready_before = daemonset_before["status"].get("numberReady", 0)
+    if ready_before != desired_before or desired_before < 1:
+        raise Failure("Falco is not healthy before the event")
     injected = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     kubectl("-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "payment-metrics", "--", "python3", "-c", "print('lnd-ops-falco-test')")
     signal = wait_for(
@@ -208,7 +227,12 @@ def security_fault():
         raise Failure("Falco is not healthy after the event")
     cleared = wait_alert_clear(alert, timeout=540)
     return {"fault": "authorized Falco runtime marker", "injected_at": injected, "signal_at": signal,
-            "alert_at": fired, "runbook": runbook, "recovery": "event window expired; no workload mutation required",
+            "alert_at": fired, "runbook": runbook, "runbook_mapping_verified": True,
+            "prometheus_alert_observed": True, "alertmanager_observed": True,
+            "precheck": {"falco_ready": ready_before, "falco_desired": desired_before},
+            "recovery": "event window expired; no workload mutation required",
+            "post_check": {"falco_ready": daemonset["status"].get("numberReady", 0),
+                           "falco_desired": daemonset["status"].get("desiredNumberScheduled", -1)},
             "healthy_at": cleared, "alert_cleared_at": cleared}
 
 

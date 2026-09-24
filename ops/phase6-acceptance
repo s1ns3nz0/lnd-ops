@@ -44,6 +44,10 @@ def main(arguments):
         if datetime.now(timezone.utc) - checked > timedelta(hours=24):
             print("ACTION: Phase 6 fault evidence is older than 24 hours", file=sys.stderr)
             return 10
+        current_commit = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
+        if evidence.get("git_commit") != current_commit:
+            print("ACTION: rerun Phase 6 faults on the current Git revision", file=sys.stderr)
+            return 10
         for kind in ("lightning", "kubernetes", "security"):
             scenario = evidence.get("scenarios", {}).get(kind, {})
             for field in ("fault", "signal_at", "alert_at", "runbook", "healthy_at", "alert_cleared_at"):
@@ -51,6 +55,11 @@ def main(arguments):
                     raise RuntimeError(f"{kind} fault evidence lacks {field}")
             if not (REPO / scenario["runbook"]).is_file():
                 raise RuntimeError(f"{kind} runbook is absent")
+            for proof in ("runbook_mapping_verified", "prometheus_alert_observed", "alertmanager_observed"):
+                if scenario.get(proof) is not True:
+                    raise RuntimeError(f"{kind} fault evidence lacks {proof}")
+            if not scenario.get("precheck") or not scenario.get("post_check"):
+                raise RuntimeError(f"{kind} fault evidence lacks before/after state")
         phase5 = [str(REPO / "ops/phase5-acceptance")]
         if defer:
             phase5.append("--acknowledge-host-encryption-deferred")
@@ -63,7 +72,7 @@ def main(arguments):
         result = {
             "schema": "lnd-ops/phase6-acceptance/v1", "result": "pass",
             "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "git_commit": run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip(),
+            "git_commit": current_commit,
             "fault_evidence": path.name, "phase5_continuity": "pass",
             "host_encryption": "deferred-by-operator" if defer else "pass",
         }

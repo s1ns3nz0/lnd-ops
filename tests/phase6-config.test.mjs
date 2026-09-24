@@ -14,6 +14,9 @@ test('Phase 6 uses real production alerts and restores every injected fault', as
   assert.match(exercise, /finally:[\s\S]*original_spec/);
   assert.match(exercise, /delete["'], ["']pod["']/);
   assert.match(exercise, /wait_alert_clear/);
+  assert.match(exercise, /networkpolicy_spec_sha256/);
+  assert.match(exercise, /refusing to replace pre-existing Pod/);
+  assert.match(exercise, /runbook_mapping_verified/);
   assert.match(exercise, /lnd-ops\/phase6-faults\/v1/);
 });
 
@@ -21,6 +24,8 @@ test('Phase 6 acceptance requires three fault classes and Phase 5 continuity', a
   const acceptance = await readFile(resolve(repo, 'ops/phase6-acceptance'), 'utf8');
   for (const kind of ['lightning', 'kubernetes', 'security']) assert.match(acceptance, new RegExp(kind));
   assert.match(acceptance, /phase5-acceptance/);
+  assert.match(acceptance, /evidence\.get\("git_commit"\) != current_commit/);
+  assert.match(acceptance, /prometheus_alert_observed/);
   assert.match(acceptance, /signal_at.*alert_at.*runbook.*healthy_at.*alert_cleared_at/s);
   assert.match(acceptance, /lnd-ops\/phase6-acceptance\/v1/);
 });
