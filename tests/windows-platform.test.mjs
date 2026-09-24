@@ -43,6 +43,14 @@ test('windows-drive discovers its distribution name in SSH sessions', async () =
   assert.match(source, /wsl\.localhost/);
 });
 
+test('windows-preflight discovers its distribution name in SSH sessions', async () => {
+  const source = await readFile(resolve(repo, 'ops/windows-preflight'), 'utf8');
+  assert.match(source, /distro_name=\$\{WSL_DISTRO_NAME:-\}/);
+  assert.match(source, /wslpath -w \/[^\n]*tr -d/);
+  assert.match(source, /-DistroName "\$distro_name"/);
+  assert.doesNotMatch(source, /WSL_DISTRO_NAME is unavailable/);
+});
+
 test('WSL K3s permits in-cluster API access and requires the Windows firewall gate', async () => {
   const source = await readFile(path.join(repo, 'ops/bootstrap'), 'utf8');
   assert.doesNotMatch(source, /bind-address: 127\.0\.0\.1/);
