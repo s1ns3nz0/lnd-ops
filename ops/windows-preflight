@@ -15,9 +15,14 @@ esac
   echo 'FAIL: WSL systemd is inactive; enable [boot] systemd=true in /etc/wsl.conf' >&2
   exit 1
 }
-for tool in powershell.exe wslpath systemctl sudo; do
+for tool in wslpath systemctl sudo; do
   command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is unavailable in WSL" >&2; exit 1; }
 done
+powershell=$(command -v powershell.exe 2>/dev/null || true)
+if [[ -z "$powershell" && -x /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe ]]; then
+  powershell=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+fi
+[[ -n "$powershell" ]] || { echo 'FAIL: powershell.exe is unavailable in WSL' >&2; exit 1; }
 distro_name=${WSL_DISTRO_NAME:-}
 if [[ -z "$distro_name" ]]; then
   windows_root=$(wslpath -w / | tr -d '\r')
@@ -25,7 +30,7 @@ if [[ -z "$distro_name" ]]; then
 fi
 [[ "$distro_name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo 'FAIL: cannot determine the current WSL distribution name' >&2; exit 1; }
 script=$(wslpath -w "$repo_dir/ops/windows-host-state.ps1")
-state=$(powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+state=$("$powershell" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
   -File "$script" -DistroName "$distro_name" | tr -d '\r')
 printf '%s' "$state" | python3 -c '
 import json, sys

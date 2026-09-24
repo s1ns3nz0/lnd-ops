@@ -48,6 +48,7 @@ test('windows-preflight discovers its distribution name in SSH sessions', async 
   assert.match(source, /distro_name=\$\{WSL_DISTRO_NAME:-\}/);
   assert.match(source, /wslpath -w \/[^\n]*tr -d/);
   assert.match(source, /-DistroName "\$distro_name"/);
+  assert.match(source, /\/mnt\/c\/Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe/);
   assert.doesNotMatch(source, /WSL_DISTRO_NAME is unavailable/);
 });
 
