@@ -83,9 +83,10 @@ def main():
         response_path = EVIDENCE / f"phase7-kagent-response-{stamp}.txt"
         descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         task = (
-            "Diagnose the current inactive-channel scenario. Call diagnose_incident and "
-            "get_versioned_runbook for channel-inactive.md. Use live tool results only and "
-            "return the six required headings exactly. Do not perform an action."
+            "Diagnose the current inactive-channel scenario. Call diagnose_incident with "
+            "the exact argument scenario=channel_inactive, then call get_versioned_runbook "
+            "with the exact argument name=channel-inactive.md. Use live tool results only. "
+            "Return the six required headings exactly and do not perform an action."
         )
         with os.fdopen(descriptor, "w") as stream:
             invoked = run([
@@ -96,6 +97,12 @@ def main():
         if invoked.returncode:
             raise RuntimeError((invoked.stderr or "kagent invocation failed").strip().splitlines()[-1])
         response = response_path.read_text(errors="replace")
+        try:
+            invocation = json.loads(response)
+            if invocation.get("status", {}).get("state") != "completed":
+                raise RuntimeError("kagent invocation returned a non-completed task")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("kagent CLI did not return its JSON task contract") from exc
         headings = ["Observed facts", "Likely cause", "Confidence", "Matching runbook", "Recommended command", "Automation eligibility"]
         if not all(heading.lower() in response.lower() for heading in headings):
             raise RuntimeError("kagent response does not contain the required diagnosis contract")
