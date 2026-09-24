@@ -20,7 +20,7 @@ The `lnd-ops-workload-baseline` ClusterPolicy selects only namespaces labeled `l
 - `RuntimeDefault` seccomp;
 - no privileged containers, host namespaces, or hostPath volumes.
 
-The pinned upstream LND, lndmon, Bitcoin Core, and Python images currently start as UID 0. `runAsNonRoot` is therefore a documented compatibility exception. LND and the monitoring sidecars run without added capabilities. Bitcoin Core adds only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` because its upstream entrypoint recursively normalizes `/home/bitcoin` and a reused local-path PVC before dropping to UID 101; all other capabilities remain dropped and privilege escalation stays disabled. Removing these exceptions requires a tested non-root Bitcoin image or entrypoint and a reviewed migration of existing volume ownership.
+The pinned upstream LND, lndmon, and Python images currently start as UID 0. `runAsNonRoot` is therefore a documented compatibility exception for those containers; they still run without added capabilities or privilege escalation. Bitcoin Core runs directly as UID/GID 101 with `fsGroup` 101, bypassing the upstream root entrypoint while retaining the digest-pinned upstream binary. Removing the remaining exceptions requires tested non-root LND and collector images and a reviewed migration of existing wallet volume ownership.
 
 Kyverno and Falco charts are vendored with checksums. A repository Helm 4 post-renderer rewrites runtime image tags to verified multi-architecture OCI digests. The lock contains manifests supporting linux/amd64 and linux/arm64.
 

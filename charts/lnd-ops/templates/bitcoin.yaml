@@ -29,11 +29,17 @@ spec:
       serviceAccountName: bitcoin-node
       automountServiceAccountToken: false
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: bitcoin
           image: {{ .Values.bitcoin.image | quote }}
           imagePullPolicy: IfNotPresent
+          command: [bitcoind]
           args:
             - -regtest
             - -server
@@ -53,12 +59,7 @@ spec:
             {{- toYaml .Values.bitcoin.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
-            # The upstream entrypoint recursively normalizes /home/bitcoin and
-            # the reused PVC before dropping to uid 101. These are the minimum
-            # compatibility capabilities for that startup path.
-            capabilities:
-              drop: [ALL]
-              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+            capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: data, mountPath: /home/bitcoin/.bitcoin}
   volumeClaimTemplates:
