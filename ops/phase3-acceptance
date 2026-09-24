@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Read-only acceptance gate for the Phase 3 integrated operations view."""
+
+import json
+import os
+import pathlib
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+
+
+class ManualGate(Exception):
+    pass
+
+
+class Failure(Exception):
+    pass
+
+
+def run(name, arguments):
+    result = subprocess.run([str(REPO / "ops" / name), *arguments], text=True, capture_output=True, timeout=600)
+    if result.returncode == 10:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise ManualGate(detail[-1] if detail else f"manual gate: {name}")
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise Failure(detail[-1] if detail else f"failed: {name}")
+    return result.stdout.strip()
+
+
+def write_result(payload, now):
+    EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    EVIDENCE.chmod(0o700)
+    path = EVIDENCE / f"phase3-acceptance-{now.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/phase3-acceptance", file=sys.stderr)
+        return 2
+    os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+    try:
+        phase1 = run("acceptance", ["testnet"])
+        monitoring = run("verify-monitoring", ["--profile", "testnet"])
+        backup = run("backup-status-encrypted", ["testnet", "lnd-0"])
+        dashboards = run("verify-dashboards", [])
+        commit = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True, capture_output=True, check=True, timeout=30
+        ).stdout.strip()
+        now = datetime.now(timezone.utc)
+        payload = {
+            "schema": "lnd-ops/phase3-acceptance/v1",
+            "result": "pass",
+            "checked_at": now.isoformat().replace("+00:00", "Z"),
+            "host": {"system": platform.system(), "machine": platform.machine()},
+            "profile": "testnet",
+            "git_commit": commit,
+            "checks": {
+                "phase1_continuity": "pass",
+                "live_monitoring": "pass",
+                "current_encrypted_scb": "pass",
+                "six_dashboards_and_live_queries": "pass",
+                "alerts_and_runbooks": "pass",
+            },
+            "summaries": {
+                "phase1": phase1.splitlines()[0],
+                "monitoring": monitoring.splitlines()[-1],
+                "backup": backup.splitlines()[-1],
+                "dashboards": dashboards.splitlines()[-1],
+            },
+        }
+        path = write_result(payload, now)
+        print(f"OK Phase 3 acceptance: {payload['summaries']['dashboards']}")
+        print(f"Evidence: {path}")
+        return 0
+    except ManualGate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (Failure, OSError, subprocess.SubprocessError, subprocess.TimeoutExpired, IndexError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -8,16 +8,16 @@ This document records the agreed monitoring scope. Metric names and queries must
 - lndmon: chain sync, channel state, liquidity, peers, and wallet data. The pinned v0.2.15 source emits `lnd_chain_synced` and `lnd_graph_synced` (the repository's `metrics.md` lists older `lnd_synced_to_chain` and `lnd_synced_to_graph` names), plus channel inbound/outbound bandwidth, active/inactive channels, pending HTLCs, and peer count.
 - Kubernetes: kube-state-metrics for object state; kubelet and node exporter for workload, volume, and host resource usage. Verify the selected K3s and local-path storage combination exposes volume capacity metrics.
 - Wallet state: the project collector reads LND's TLS-protected, macaroon-free `/v1/state` endpoint and exposes a fixed one-hot state metric on `/wallet-state`. On the pinned Mac regtest LND image, this returned `NON_EXISTING` before wallet creation. The collector is enabled after manual wallet setup, so live `LOCKED` and `SERVER_ACTIVE` transitions still need verification.
-- Host-specific backup jobs: copy each SCB outside its K3s data volume, to the Windows folder or a macOS host folder. Backup freshness monitoring is deferred.
+- Host-specific backup jobs: copy each SCB outside its K3s data volume, to the Windows folder or a macOS host folder. The collector exports presence, size, recorded-backup, current-backup, and age gauges without exposing hashes or backup bytes.
 - Logs and events: kagent reads current Pod logs and Kubernetes events. Add long-term log storage only after a runbook needs history that these sources cannot provide.
 
 Sources: [LND configuration](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf), [LND GetState](https://lightning.engineering/api-docs/api/lnd/state/get-state/index.html), [lndmon v0.2.15 chain collector](https://github.com/lightninglabs/lndmon/blob/v0.2.15/collectors/chain_collector.go), [lndmon metrics](https://github.com/lightninglabs/lndmon/blob/v0.2.15/metrics.md), [Kubernetes node metrics](https://kubernetes.io/docs/reference/instrumentation/node-metrics/), [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics).
 
 ## Dashboard
 
-Create one Grafana operations overview and three detail views in the first dashboard release: node/channel, payment/liquidity, and Kubernetes.
+The integrated operations view consists of six Git-provisioned dashboards: overview, node/channel, payment/liquidity, Kubernetes, security, and backup/recovery.
 
-The initial Git-provisioned dashboard set has all four views. The pinned lndmon source emits aggregate **outgoing** payment outcome and HTLC-attempt counters (`lnd_total_payments`, `lnd_total_htlc_attempts`) plus per-channel inbound/outbound bandwidth. `collector/payment_metrics.py` computes trailing-hour outgoing outcomes, successful-payment fees and observed HTLC resolution latency, plus settled incoming invoice count from paginated LND REST responses. The chart mounts that source from a ConfigMap and runs it on a digest-pinned Python image whose OCI index supports linux/arm64 and linux/amd64. This avoids a privileged node-local image import during deployment. A canceled invoice is not a failed incoming payment, so receive failures remain an explicit gap. Existing panels must be tested with live wallet/channel/payment samples before the dashboard set is accepted.
+The Git-provisioned dashboard set has all six views. The pinned lndmon source emits aggregate **outgoing** payment outcome and HTLC-attempt counters (`lnd_total_payments`, `lnd_total_htlc_attempts`) plus per-channel inbound/outbound bandwidth. `collector/payment_metrics.py` computes trailing-hour outgoing outcomes, successful-payment fees and observed HTLC resolution latency, plus settled incoming invoice count from paginated LND REST responses. The chart mounts that source from a ConfigMap and runs it on a digest-pinned Python image whose OCI index supports linux/arm64 and linux/amd64. This avoids a privileged node-local image import during deployment. A canceled invoice is not a failed incoming payment, so receive failures remain an explicit gap. Existing panels must be tested with live wallet/channel/payment samples before the dashboard set is accepted.
 
 | Area | Show |
 | --- | --- |
@@ -26,7 +26,10 @@ The initial Git-provisioned dashboard set has all four views. The pinned lndmon 
 | Liquidity | Per-channel and aggregate inbound/outbound available balance; ability to send and receive the configured target amount |
 | Payments | Aggregate send/receive success and failure counts, latency, and fees; verify the actual collector before defining queries |
 | Kubernetes | Node Ready and pressure conditions, Pod readiness/restarts, CPU/memory, LND volume and Linux guest disk free space, Prometheus health |
-| Security | Falco event and alert status after sensor compatibility is verified |
+| Security | NetworkPolicy coverage, LND ServiceAccounts, firing alerts, namespace state, and security telemetry scrape status |
+| Backup and recovery | Live SCB presence and size, encrypted backup recorded/current state and age, and LND PVC capacity |
+
+Falco events and certificate-expiry data become mandatory when their producers are installed in Phase 4. Until then, the security dashboard shows the real Kubernetes policy and identity baseline and the telemetry target status; it does not fabricate Falco or certificate series.
 
 Use aggregate payment metrics. Do not add invoice contents, payment hashes, macaroons, or peer identifiers to custom payment metric labels or LLM diagnostic input. Review the labels emitted by upstream exporters before granting access to their raw metrics.
 

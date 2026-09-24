@@ -138,11 +138,12 @@ At least Loop is enabled through versioned Helm values, uses a restricted LND cr
 - local and remote balances, inbound and outbound liquidity, and channel capacity;
 - payment and invoice outcomes, HTLC failures, latency, and fees;
 - Pod readiness, restart count, resource usage, PVC capacity, disk pressure, and StatefulSet rollout;
-- certificate expiry, SCB freshness, policy violations, and Falco events.
+- SCB freshness, Kubernetes policy coverage, service identity, firing alerts, and security telemetry target health;
+- certificate expiry and Falco events once their Phase 4 producers are installed.
 
 ### Exit check
 
-Every panel query parses, every required panel shows real regtest or testnet data, and each alert links to a versioned runbook. Empty or fixture-only panels remain visibly pending.
+`ops/phase3-acceptance` proves that all six provisioned dashboards match Git, every current-phase panel query parses and returns real regtest or testnet data, all required alerts are healthy and link to versioned runbooks, the encrypted SCB is current, and Phase 1 continuity still passes. Falco and certificate panels remain a Phase 4 gate and must not be represented with fixture data.
 
 ## Phase 4: enforce the Kubernetes security baseline
 
