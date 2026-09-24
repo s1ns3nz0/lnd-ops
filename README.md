@@ -90,6 +90,9 @@ ops/phase4-acceptance
 
 The security deployment uses vendored, checksummed Kyverno and Falco charts. A Helm 4 post-renderer pins their runtime images to verified linux/amd64 and linux/arm64 OCI digests. The acceptance gate proves admission allow/deny decisions, token-free RBAC, real NetworkPolicy isolation, a modern eBPF Falco event reaching Alertmanager, live LND certificate expiry, and continued Phase 3 operation. See [the security baseline](docs/security-baseline.md).
 
+The Windows Phase 4 gate passed with all 57 dashboard queries and 16 alert
+rules live; see the [secret-free security evidence](docs/evidence/windows-phase4-security-2026-09-24.md).
+
 ## Repository harness
 
 A small, repository-local harness for predictable Codex work. It keeps only
