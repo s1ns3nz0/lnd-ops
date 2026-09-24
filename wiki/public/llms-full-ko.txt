@@ -6,8 +6,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/01-foundations/lnd-architecture
 
 LND 구조와 상태
 
-
-
 앞 장 LND의 사용 사례와 전체 흐름에서는 노드를 준비하고 채널을 열어 반복해서 지급하는 과정을 살펴봤다. 이 장에서는 그 과정이 내부에서 어떻게 성립하고 어떤 상태를 남기는지 설명한다. 처음 읽는다면 사용 흐름부터 읽는다.
 
 아주 쉽게 비유하면: 계산 도우미의 서랍
@@ -267,8 +265,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/02-requirements/operational-requireme
 # 운영 요구 도출
 
 운영 요구 도출
-
-
 이 장에서는 “LND를 Kubernetes에 올린다”는 목표를 실제로 검사할 수 있는 요구사항으로 바꾼다. 출발점은 서버의 개수가 아니라, 재시작하거나 장애를 겪어도 사용자가 계속 같은 노드를 운영할 수 있는가다. 앞 장에서 본 지갑과 채널 상태가 여기서는 저장소, 네트워크, 검증 정책의 입력이 된다.
 
 아주 쉽게 비유하면: 가게 문만 열렸다고 장사를 할 수 있을까
@@ -337,8 +333,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/03-kubernetes/stateful-design
 # StatefulSet과 PVC
 
 StatefulSet과 PVC
-
-
 
 아주 쉽게 비유하면: 도우미는 바뀌어도 서랍은 보관하기
 
@@ -449,8 +443,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/04-deployment/reproducible-helm
 # Helm과 재현 가능한 배포
 
 Helm과 재현 가능한 배포
-
-
 처음 설치할 때는 파일 몇 개와 명령 순서를 기억하는 것으로 충분해 보인다. 하지만 Mac에서 성공한 설치를 Windows에서 반복하거나, 지갑이 있는 환경에 새 설정을 적용하면 그 기억은 배포 계약이 되지 못한다. 이 장은 설치 과정에서 무엇을 고정하고 무엇을 환경별 입력으로 남겼는지 설명한다.
 
 아주 쉽게 비유하면: 가게 준비 설명서
@@ -517,8 +509,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/05-wallet/wallet-boundaries
 # 지갑과 복구 경계
 
 지갑과 복구 경계
-
-
 LND 설치 중 “passphrase를 입력하라”는 안내를 여러 번 만나면 같은 비밀번호를 다시 묻는다고 생각하기 쉽다. 실제로는 로컬 지갑을 여는 암호, seed를 해독하는 암호, SCB 백업 파일을 해독하는 암호가 서로 다른 자산을 보호한다. 운영 자동화를 설계하려면 먼저 이 역할을 분리해야 한다.
 
 아주 쉽게 비유하면: 서로 다른 문을 여는 열쇠
@@ -585,8 +575,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/06-payments/channel-liquidity
 # 채널·유동성·결제
 
 채널·유동성·결제
-
-
 지갑에 잔액이 있고 peer에 연결돼 있는데 결제가 실패할 수 있다. 그 이유를 이해하려면 온체인 지갑 잔액, 채널의 총 capacity, 방향별 liquidity를 따로 생각해야 한다. 이 장에서는 단순한 두 노드 예시로 시작해 실제 대시보드가 왜 여러 신호를 함께 보여주는지 설명한다.
 
 아주 쉽게 비유하면: 상자 안에서 누구 구슬인가
@@ -663,8 +651,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/07-observability/signals-to-decisions
 # 신호에서 판단까지
 
 신호에서 판단까지
-
-
 
 좋은 대시보드는 수치를 많이 보여주는 화면이 아니라 **운영자가 다음 행동을 결정하는 데 필요한 상관관계**를 보존한다. 이 프로젝트는 LND 자체 exporter, lndmon, 제한된 custom collector, Kubernetes와 host 신호를 함께 사용한다.
 
@@ -797,8 +783,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/08-incidents/runbook-lifecycle
 # 장애 대응 수명주기
 
 장애 대응 수명주기
-
-
 채널 비활성 경보를 받았다고 즉시 LND를 재시작하면 잠긴 wallet이라는 문제가 추가될 수 있다. 같은 증상은 peer 종료, 네트워크 차단, 체인 상태, 의도된 정비에서 모두 나타난다. runbook은 이러한 여러 가능성 사이에서 다음 확인 대상을 고르는 절차다.
 
 아주 쉽게 비유하면: 불이 안 켜질 때 순서대로 살펴보기
@@ -865,8 +849,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/09-security/defense-in-depth
 # Kubernetes 심층 방어
 
 Kubernetes 심층 방어
-
-
 LND의 wallet 볼륨에 접근할 수 있는 프로세스와 Kubernetes 리소스를 변경할 수 있는 계정은 서로 다른 권한을 가진다. 한 가지 보안 도구를 설치했다는 이유로 두 경계가 모두 보호되지는 않는다. 이 장에서는 잘못된 Pod가 배포되고, 실행된 프로세스가 통신하거나 API를 호출하는 순서로 통제를 따라간다.
 
 아주 쉽게 비유하면: 명찰, 문, 경보기
@@ -945,8 +927,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/09-security/scb-recovery
 # SCB와 복구
 
 SCB와 복구
-
-
 Pod 재시작으로 돌아오는 장애와 지갑 볼륨 자체를 잃은 장애는 복구 입력이 다르다. 전자에는 기존 데이터가 있고, 후자에는 그 데이터가 없다. 이 장은 SCB가 어떤 상황을 위한 도구이며, 왜 복구 실습에서 원래 노드를 먼저 중지하는지 설명한다.
 
 아주 쉽게 비유하면: 비상 연락처와 놀이 장부는 다르다
@@ -1005,8 +985,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/10-automation/observe-to-act
 # Observe에서 Verify까지
 
 Observe에서 Verify까지
-
-
 LLM은 판단 보조 계층이며 권한의 근원이 아니다. 모델이 무엇을 말하든 MCP gateway의 도구 allowlist, Kubernetes RBAC, NetworkPolicy가 실행 가능 범위를 결정한다.
 
 
@@ -1113,8 +1091,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/11-validation/evidence
 # 증거 기반 검증
 
 증거 기반 검증
-
-
 “내 컴퓨터에서 됐다”는 말에는 어느 커밋인지, 새 환경이었는지, 이미 만든 지갑을 썼는지, 무엇을 확인했는지가 빠져 있다. 이 프로젝트의 evidence는 그 조건을 기록해 성공 주장을 다시 평가할 수 있게 만드는 자료다.
 
 아주 쉽게 비유하면: 자전거 사진과 실제로 타 본 것은 다르다
@@ -1181,8 +1157,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/12-retrospective/tradeoffs
 # 한계와 다음 단계
 
 한계와 다음 단계
-
-
 이 프로젝트의 가치는 도구 수보다 선택한 운영 계약을 두 플랫폼에서 재현하고 실패를 설명할 수 있다는 데 있다. 동시에 단일 사용자 홈 환경에서 합리적인 선택이 여러 운영자와 실제 서비스에서도 충분한지는 별도 질문이다. 이 장에서는 기존 설계가 어느 조건에서 재검토되어야 하는지 살펴본다.
 
 아주 쉽게 비유하면: 한 가방 안의 여러 주머니
@@ -1243,8 +1217,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/decisions
 # ADR 색인
 
 ADR 색인
-
-
 이 페이지는 설치된 도구의 목록을 반복하기보다, 어떤 요구 때문에 선택했으며 어느 조건에서 다시 판단할지를 기록한다. 아래 기록은 현재 구현을 해석한 설계 메모다. 별도 승인 절차를 거친 상세 ADR 전체가 작성되었다는 뜻은 아니다.
 
 ADR-001: 로컬 단일 노드 K3s
@@ -1317,8 +1289,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/roadmap
 
 학습 지도
 
-
-
 기술 이름을 외우는 대신 노드의 생명주기를 따라간다. 앞 단계의 요구가 다음 단계의 설계 입력이 된다.
 
 
@@ -1358,8 +1328,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/start-here
 # 안전하게 시작하기
 
 안전하게 시작하기
-
-
 배경지식부터 읽는 순서
 
 클러스터가 없어도 읽을 수 있다. 첫 페이지는 LND의 사용 사례와 전체 흐름이다. 송금·수신·중계가 무엇인지 보고, 두 노드가 지갑 준비부터 invoice 지급과 정산까지 가는 과정을 따라간다. 여기서는 Kubernetes나 채널 내부 거래를 먼저 알 필요가 없다.
@@ -1392,19 +1360,6 @@ Source: https://s1ns3nz0.github.io/lnd-ops/start-here
 3. `delete`, wallet unlock, payment, channel open/close, recovery 명령은 해당 runbook의 선행 조건을 확인한 뒤 실행한다.
 4. testnet에서는 명령이 읽기 전용인지 확인하고, 자금 이동은 운영자가 금액과 목적지를 직접 검토한다.
 5. recovery namespace나 같은 pubkey의 두 LND가 보이면 추측해서 정리하지 않는다.
-
-페이지 메타데이터 읽기
-
-| 항목 | 의미 |
-| --- | --- |
-| 관련 버전 | 설명과 검증에 사용한 핵심 버전 |
-| 검증 플랫폼 | 실제로 수행했거나 자동 검사한 환경 |
-| 마지막 검증 | 코드 작성일이 아니라 근거를 다시 확인한 날짜 |
-| 근거 커밋 | 설명한 acceptance/evidence가 통과한 Git revision; 문서 수정마다 자동 변경하지 않음 |
-| 설계됨 | 의도와 경계가 문서화됐지만 실행 증거가 없음 |
-| 자동 검증됨 | CI나 결정적 테스트가 통과함 |
-| 실제 환경 검증됨 | 대상 Mac/Windows 클러스터에서 acceptance를 통과함 |
-| 적용 범위 | regtest, testnet 중 어느 환경에 근거가 있는지 표시 |
 
 완료 조건
 

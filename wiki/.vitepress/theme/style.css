@@ -8,11 +8,6 @@
   --vp-home-hero-image-background-image: radial-gradient(circle,#9c67ff55 0%,#13d8c522 45%,transparent 70%);
 }
 .VPNavBarTitle .logo { width: 94px; height: 28px; object-fit: contain; }
-.metadata-card { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; padding:1px; background:var(--vp-c-divider); border-radius:12px; overflow:hidden; }
-.metadata-card div { background:var(--vp-c-bg-soft); padding:12px; }
-.metadata-card dt { color:var(--vp-c-text-2); font-size:.76rem; }
-.metadata-card dd { margin:4px 0 0; font-weight:600; font-size:.88rem; }
-.status-dot { display:inline-block; width:8px; height:8px; margin-right:7px; border-radius:50%; background:#32d583; box-shadow:0 0 9px #32d583; }
 .mermaid-frame { margin:24px 0; padding:18px; overflow:auto; border:1px solid var(--vp-c-divider); border-radius:14px; background:#0b0d12; text-align:center; }
 .mermaid-frame figcaption { color:#aeb4c0; font-size:.82rem; margin-top:10px; }
 .ops-flow { border:1px solid var(--vp-c-divider); border-radius:14px; overflow:hidden; margin:24px 0; }
@@ -26,4 +21,4 @@
 .decision-table th:first-child { min-width:120px; }
 .risk-high { color:#ff6464; font-weight:700; }
 details.quiz { border-left:3px solid var(--vp-c-brand-2); padding:8px 14px; margin:12px 0; background:var(--vp-c-bg-soft); }
-@media (max-width:760px) { .metadata-card {grid-template-columns:1fr 1fr} .ops-flow-buttons {grid-template-columns:repeat(3,1fr)} }
+@media (max-width:760px) { .ops-flow-buttons {grid-template-columns:repeat(3,1fr)} }

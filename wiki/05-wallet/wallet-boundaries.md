@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # 지갑과 복구 경계
-<MetadataCard versions="LND pinned image" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 LND 설치 중 “passphrase를 입력하라”는 안내를 여러 번 만나면 같은 비밀번호를 다시 묻는다고 생각하기 쉽다. 실제로는 로컬 지갑을 여는 암호, seed를 해독하는 암호, SCB 백업 파일을 해독하는 암호가 서로 다른 자산을 보호한다. 운영 자동화를 설계하려면 먼저 이 역할을 분리해야 한다.
 
 ## 아주 쉽게 비유하면: 서로 다른 문을 여는 열쇠

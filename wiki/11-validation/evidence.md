@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # 증거 기반 검증
-<MetadataCard versions="Phase 8 · Phase 9" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-25" commit="2a2e0f5" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 “내 컴퓨터에서 됐다”는 말에는 어느 커밋인지, 새 환경이었는지, 이미 만든 지갑을 썼는지, 무엇을 확인했는지가 빠져 있다. 이 프로젝트의 evidence는 그 조건을 기록해 성공 주장을 다시 평가할 수 있게 만드는 자료다.
 
 ## 아주 쉽게 비유하면: 자전거 사진과 실제로 타 본 것은 다르다

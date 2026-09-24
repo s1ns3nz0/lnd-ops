@@ -11,8 +11,6 @@ scope: regtest · testnet
 
 # 신호에서 판단까지
 
-<MetadataCard versions="lndmon 0.2.15 · kube-prometheus-stack 91.4.1" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 좋은 대시보드는 수치를 많이 보여주는 화면이 아니라 **운영자가 다음 행동을 결정하는 데 필요한 상관관계**를 보존한다. 이 프로젝트는 LND 자체 exporter, lndmon, 제한된 custom collector, Kubernetes와 host 신호를 함께 사용한다.
 
 <ClientOnly>

@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # 장애 대응 수명주기
-<MetadataCard versions="Prometheus · Alertmanager · Kubernetes 1.36" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 채널 비활성 경보를 받았다고 즉시 LND를 재시작하면 잠긴 wallet이라는 문제가 추가될 수 있다. 같은 증상은 peer 종료, 네트워크 차단, 체인 상태, 의도된 정비에서 모두 나타난다. runbook은 이러한 여러 가능성 사이에서 다음 확인 대상을 고르는 절차다.
 
 ## 아주 쉽게 비유하면: 불이 안 켜질 때 순서대로 살펴보기

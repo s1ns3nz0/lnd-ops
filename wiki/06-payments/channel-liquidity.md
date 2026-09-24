@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # 채널·유동성·결제
-<MetadataCard versions="LND · lndmon 0.2.15" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 지갑에 잔액이 있고 peer에 연결돼 있는데 결제가 실패할 수 있다. 그 이유를 이해하려면 온체인 지갑 잔액, 채널의 총 capacity, 방향별 liquidity를 따로 생각해야 한다. 이 장에서는 단순한 두 노드 예시로 시작해 실제 대시보드가 왜 여러 신호를 함께 보여주는지 설명한다.
 
 ## 아주 쉽게 비유하면: 상자 안에서 누구 구슬인가

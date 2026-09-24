@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # Kubernetes 심층 방어
-<MetadataCard versions="Kubernetes 1.36 · Kyverno 3.9.1 · Falco 9.2.0 chart" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 LND의 wallet 볼륨에 접근할 수 있는 프로세스와 Kubernetes 리소스를 변경할 수 있는 계정은 서로 다른 권한을 가진다. 한 가지 보안 도구를 설치했다는 이유로 두 경계가 모두 보호되지는 않는다. 이 장에서는 잘못된 Pod가 배포되고, 실행된 프로세스가 통신하거나 API를 호출하는 순서로 통제를 따라간다.
 
 ## 아주 쉽게 비유하면: 명찰, 문, 경보기

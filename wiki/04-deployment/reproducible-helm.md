@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # Helm과 재현 가능한 배포
-<MetadataCard versions="Helm 4.1.4 · K3s 1.36.4" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 처음 설치할 때는 파일 몇 개와 명령 순서를 기억하는 것으로 충분해 보인다. 하지만 Mac에서 성공한 설치를 Windows에서 반복하거나, 지갑이 있는 환경에 새 설정을 적용하면 그 기억은 배포 계약이 되지 못한다. 이 장은 설치 과정에서 무엇을 고정하고 무엇을 환경별 입력으로 남겼는지 설명한다.
 
 ## 아주 쉽게 비유하면: 가게 준비 설명서

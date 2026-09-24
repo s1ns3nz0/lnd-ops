@@ -11,8 +11,6 @@ scope: regtest · testnet
 
 # 학습 지도
 
-<MetadataCard versions="K3s 1.36.4 · Helm 4.1.4 · kagent 0.9.12" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-25" commit="2a2e0f5" status="자동 검증됨" scope="regtest · testnet" />
-
 기술 이름을 외우는 대신 노드의 생명주기를 따라간다. 앞 단계의 요구가 다음 단계의 설계 입력이 된다.
 
 ```text

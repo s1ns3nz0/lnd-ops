@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest
 ---
 # Observe에서 Verify까지
-<MetadataCard versions="kagent 0.9.12 · Ollama gpt-oss:20b tested" platforms="Windows WSL2 amd64 + macOS Ollama" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest" />
-
 LLM은 판단 보조 계층이며 권한의 근원이 아니다. 모델이 무엇을 말하든 MCP gateway의 도구 allowlist, Kubernetes RBAC, NetworkPolicy가 실행 가능 범위를 결정한다.
 
 <OpsFlow />

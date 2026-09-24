@@ -3,8 +3,6 @@
 > kagent와 Ollama가 runbook을 사용하되 권한 경계를 넘지 않는 자동 대응 구조
 
 Observe에서 Verify까지
-
-
 LLM은 판단 보조 계층이며 권한의 근원이 아니다. 모델이 무엇을 말하든 MCP gateway의 도구 allowlist, Kubernetes RBAC, NetworkPolicy가 실행 가능 범위를 결정한다.
 
 

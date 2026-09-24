@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # 운영 요구 도출
-<MetadataCard versions="LND pinned image · K3s 1.36.4" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 이 장에서는 “LND를 Kubernetes에 올린다”는 목표를 실제로 검사할 수 있는 요구사항으로 바꾼다. 출발점은 서버의 개수가 아니라, 재시작하거나 장애를 겪어도 사용자가 계속 같은 노드를 운영할 수 있는가다. 앞 장에서 본 지갑과 채널 상태가 여기서는 저장소, 네트워크, 검증 정책의 입력이 된다.
 
 ## 아주 쉽게 비유하면: 가게 문만 열렸다고 장사를 할 수 있을까

@@ -9,8 +9,6 @@ status: 설계됨
 scope: regtest · testnet
 ---
 # ADR 색인
-<MetadataCard versions="Project architecture" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-25" commit="2a2e0f5" status="설계됨" scope="regtest · testnet" />
-
 이 페이지는 설치된 도구의 목록을 반복하기보다, 어떤 요구 때문에 선택했으며 어느 조건에서 다시 판단할지를 기록한다. 아래 기록은 현재 구현을 해석한 설계 메모다. 별도 승인 절차를 거친 상세 ADR 전체가 작성되었다는 뜻은 아니다.
 
 ## ADR-001: 로컬 단일 노드 K3s

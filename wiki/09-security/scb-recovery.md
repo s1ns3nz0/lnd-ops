@@ -9,8 +9,6 @@ status: 실제 환경 검증됨
 scope: regtest · testnet
 ---
 # SCB와 복구
-<MetadataCard versions="LND pinned image · GPG" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 Pod 재시작으로 돌아오는 장애와 지갑 볼륨 자체를 잃은 장애는 복구 입력이 다르다. 전자에는 기존 데이터가 있고, 후자에는 그 데이터가 없다. 이 장은 SCB가 어떤 상황을 위한 도구이며, 왜 복구 실습에서 원래 노드를 먼저 중지하는지 설명한다.
 
 ## 아주 쉽게 비유하면: 비상 연락처와 놀이 장부는 다르다

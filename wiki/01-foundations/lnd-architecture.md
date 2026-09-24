@@ -11,8 +11,6 @@ scope: regtest · testnet
 
 # LND 구조와 상태
 
-<MetadataCard versions="LND digest pinned · Bitcoin regtest/testnet" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
-
 앞 장 [LND의 사용 사례와 전체 흐름](/01-foundations/lnd-workflow)에서는 노드를 준비하고 채널을 열어 반복해서 지급하는 과정을 살펴봤다. 이 장에서는 그 과정이 내부에서 어떻게 성립하고 어떤 상태를 남기는지 설명한다. 처음 읽는다면 사용 흐름부터 읽는다.
 
 ## 아주 쉽게 비유하면: 계산 도우미의 서랍
