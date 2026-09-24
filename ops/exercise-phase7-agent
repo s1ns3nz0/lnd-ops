@@ -141,6 +141,7 @@ def main():
         policy_hash = hashlib.sha256(json.dumps(original_spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         injected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         signal_at = recovered_at = None
+        signal_before_agent_at = signal_after_agent_at = None
         try:
             denied_spec = {"spec": {"podSelector": original_spec["podSelector"], "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
             run(["kubectl", "-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", json.dumps(denied_spec)])
@@ -153,6 +154,13 @@ def main():
             signal_at = wait_for("gateway inactive-channel signal", inactive)
             if diagnosis.get("matching_runbook") != "channel-inactive.md" or "observed_facts" not in diagnosis:
                 raise RuntimeError("gateway diagnosis is not grounded in the injected live evidence")
+
+            # Bracket the model invocation with live checks so the evidence proves
+            # that the injected channel fault did not clear while kagent ran.
+            before_agent = pod_tool("diagnose_incident", {"scenario": "channel_inactive"})
+            if before_agent.get("signal_active") is not True:
+                raise RuntimeError("injected fault cleared before kagent invocation")
+            signal_before_agent_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
             descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             task = (
@@ -187,10 +195,22 @@ def main():
                 raise RuntimeError("kagent response does not contain the required diagnosis contract")
             if any(term in response.lower() for term in ("payment_request", "wallet_password", "cipher_seed")):
                 raise RuntimeError("kagent response contains a forbidden secret field name")
+            after_agent = pod_tool("diagnose_incident", {"scenario": "channel_inactive"})
+            if after_agent.get("signal_active") is not True:
+                raise RuntimeError("injected fault cleared during kagent invocation")
+            signal_after_agent_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         finally:
-            run(["kubectl", "-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", json.dumps({"spec": original_spec})], check=False)
-            peer_info = json.loads(lncli("lnd-1-0", "getinfo").stdout)
-            lncli("lnd-0-0", "connect", f'{peer_info["identity_pubkey"]}@lnd-1:9735', check=False)
+            restore = run(["kubectl", "-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", json.dumps({"spec": original_spec})], check=False)
+            reconnect_error = None
+            try:
+                peer_info = json.loads(lncli("lnd-1-0", "getinfo").stdout)
+                lncli("lnd-0-0", "connect", f'{peer_info["identity_pubkey"]}@lnd-1:9735', check=False)
+            except (RuntimeError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+                reconnect_error = str(exc)
+            if restore.returncode:
+                raise RuntimeError("failed to restore regtest NetworkPolicy after fault")
+            if reconnect_error:
+                raise RuntimeError(f"failed to request peer reconnection after fault: {reconnect_error}")
         restored_spec = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")["spec"]
         restored_hash = hashlib.sha256(json.dumps(restored_spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if restored_hash != policy_hash:
@@ -222,6 +242,8 @@ def main():
             "provider": "Ollama", "diagnosis_scenario": "channel_inactive",
             "fault_injected": True, "fault": "deny internal LND peer traffic",
             "injected_at": injected_at, "signal_at": signal_at, "recovered_at": recovered_at,
+            "signal_before_agent_at": signal_before_agent_at,
+            "signal_after_agent_at": signal_after_agent_at,
             "networkpolicy_spec_sha256_before": policy_hash,
             "networkpolicy_spec_sha256_after": restored_hash,
             "live_evidence_grounded": True, "active_fault_observed_by_kagent": True,

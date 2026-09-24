@@ -68,7 +68,10 @@ def main():
         }.items():
             if exercise.get(key) != expected:
                 raise RuntimeError(f"Phase 7 exercise lacks {key}={expected!r}")
-        if not all(exercise.get(key) for key in ("injected_at", "signal_at", "recovered_at")):
+        if not all(exercise.get(key) for key in (
+            "injected_at", "signal_at", "signal_before_agent_at",
+            "signal_after_agent_at", "recovered_at",
+        )):
             raise RuntimeError("Phase 7 exercise lacks fault lifecycle timestamps")
         if exercise.get("networkpolicy_spec_sha256_before") != exercise.get("networkpolicy_spec_sha256_after"):
             raise RuntimeError("Phase 7 exercise did not restore the exact NetworkPolicy")

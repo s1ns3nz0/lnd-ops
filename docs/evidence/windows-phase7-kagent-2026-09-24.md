@@ -4,8 +4,8 @@ Date: 2026-09-24
 Host: Windows 11 Home, WSL 2 Ubuntu, K3s linux/amd64  
 Ollama server: separate LAN endpoint on Mac arm64  
 Model: `gpt-oss:20b`  
-Exercise revision: `326203495b872363086c59aa189987e53ce40fa4`  
-Acceptance revision: `44d9491cf71c268bd506a16ee4a1c0e3bdffc301`
+Exercise revision: `f331e41add0381c8b9e520e1d91ccc59617ac73e`
+Acceptance revision: `f331e41add0381c8b9e520e1d91ccc59617ac73e`
 
 ## Result
 
@@ -27,10 +27,14 @@ Kubernetes token with namespace Roles.
 
 ## Live diagnosis
 
-`ops/exercise-phase7-agent` invoked the real kagent Agent through a local
+`ops/exercise-phase7-agent` first saved the exact regtest peer NetworkPolicy,
+denied ingress and egress, and disconnected the one active channel. The
+gateway observed the real inactive-channel signal at 11:40:17 UTC. While that
+fault was active, the exercise invoked the real kagent Agent through a local
 controller port-forward. The model called `diagnose_incident` with the fixed
-`channel_inactive` scenario and read `channel-inactive.md` through the MCP
-gateway. Its completed response contained all required fields:
+`channel_inactive` scenario, received `signal_active=true`, and read
+`channel-inactive.md` through the MCP gateway. Its completed response contained
+all required fields:
 
 1. Observed facts
 2. Likely cause
@@ -39,7 +43,10 @@ gateway. Its completed response contained all required fields:
 5. Recommended command
 6. Automation eligibility
 
-The exercise stored the complete response privately with mode `0600`. Public
+The exact NetworkPolicy was restored in a `finally` path, its canonical SHA256
+was identical before and after, the peer reconnected, the channel returned
+active, and the gateway signal returned healthy at 11:41:02 UTC. The exercise
+stored the complete response privately with mode `0600`. Public
 evidence records only its SHA256 digest and contract checks; it contains no
 invoice, payment hash, preimage, macaroon, wallet password, or seed.
 
@@ -74,10 +81,10 @@ after the cooldown runtime ConfigMap was separated from Helm ownership.
 
 Private evidence:
 
-- `phase7-exercise-20260924T112738.923243Z.json`, mode `0600`, SHA256
-  `ee8e738a459f7c63efc5ee0ac263452b42ecf759d12ab7175fff13e5e2ede3c0`
-- `phase7-acceptance-20260924T112836.650048Z.json`, mode `0600`, SHA256
-  `70e6963ded859ab6cc497860244d49a8d95031452996a6394fa60fb5fadc315e`
+- `phase7-exercise-20260924T114012.974152Z.json`, mode `0600`, SHA256
+  `59d302950af083007241a4fd7aa1161f4e788c34aaa6d4110f970ed5415909eb`
+- `phase7-acceptance-20260924T114111.327656Z.json`, mode `0600`, SHA256
+  `f50db9d6b4cf6d2405af9e57eaef3bc0b915d0f0c755a0f0b191a81455ff46cb`
 
 ## Limitations
 

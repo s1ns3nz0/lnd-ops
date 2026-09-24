@@ -112,8 +112,9 @@ Phase 7 installs pinned kagent with a fixed external Ollama endpoint and binds
 only the project MCP gateway. Run `ops/deploy-agent` as described in the
 [Phase 7 runbook](docs/phase7-runbook.md), then run
 `ops/exercise-phase7-agent` and `ops/phase7-acceptance`. The Windows gate passed
-with a real `gpt-oss:20b` diagnosis, one audited probe restart, cooldown denial,
-forbidden wallet-action denial, and negative RBAC checks. See the
+with a real peer-isolation fault diagnosed by `gpt-oss:20b`, exact policy and
+channel recovery, one audited probe restart, cooldown denial, forbidden
+wallet-action denial, and negative RBAC checks. See the
 [Windows Phase 7 evidence](docs/evidence/windows-phase7-kagent-2026-09-24.md).
 
 After creating and unlocking a wallet, run `ops/deploy regtest --monitoring` or `ops/deploy testnet --monitoring` to enable lndmon and the payment collector. The command requires each node's read-only macaroon and a responding LND RPC before changing the chart. Helm mounts the collector source from a ConfigMap and runs it with a digest-pinned multi-architecture Python image, so Mac arm64 and Windows amd64 need no node-local image build or privileged K3s import. Adding sidecars rolls the Pod; unlock the wallet again if LND asks, then run `ops/verify <profile>` and `ops/verify-monitoring --profile <profile>`. Later ordinary `ops/deploy <profile>` invocations keep monitoring enabled.
