@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+"""Safely clean owned demo residue, Phase 9 evidence, or a wallet-free profile."""
+
+import argparse
+import json
+import os
+import pathlib
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+PODS = (
+    ("lnd-regtest", "phase6-crashloop", "label", "phase6-crashloop"),
+    ("lnd-regtest", "lnd-ops-alert-fixture", "label", "lnd-ops-alert-fixture"),
+    ("lnd-regtest", "lnd-ops-wallet-fixture", "label", "lnd-ops-wallet-fixture"),
+    ("lnd-testnet", "lnd-ops-network-probe", "container", "probe"),
+    ("lnd-testnet", "lnd-ops-falco-probe", "container", "probe"),
+)
+SERVICES = (
+    ("lnd-regtest", "lnd-ops-alert-fixture", "lnd-ops-alert-fixture"),
+    ("lnd-regtest", "lnd-ops-wallet-fixture", "lnd-ops-wallet-fixture"),
+)
+POLICIES = (
+    ("lnd-regtest", "allow-alert-fixture-scrape", "lnd-ops-alert-fixture"),
+    ("lnd-regtest", "allow-wallet-fixture-scrape", "lnd-ops-wallet-fixture"),
+)
+PORT_FORWARD = ("kubectl", "-n", "kagent", "port-forward", "service/kagent-controller", "18083:8083")
+
+
+class CleanupError(Exception):
+    pass
+
+
+class OperatorAction(Exception):
+    pass
+
+
+def command(args, check=True, timeout=180):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise CleanupError(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def kubectl(*args, check=True, timeout=180):
+    return command(["kubectl", *args], check=check, timeout=timeout)
+
+
+def kubectl_json(*args):
+    result = kubectl(*args, "-o", "json", check=False)
+    if result.returncode:
+        return None
+    return json.loads(result.stdout)
+
+
+def expected_peer_policy():
+    selector = {
+        "matchExpressions": [{
+            "key": "app.kubernetes.io/name",
+            "operator": "In",
+            "values": ["lnd-0", "lnd-1"],
+        }]
+    }
+    peer = {"podSelector": selector}
+    port = {"port": 9735, "protocol": "TCP"}
+    return {
+        "podSelector": selector,
+        "policyTypes": ["Ingress", "Egress"],
+        "ingress": [{"from": [peer], "ports": [port]}],
+        "egress": [{"to": [peer], "ports": [port]}],
+    }
+
+
+def owned_pod(namespace, name, kind, expected):
+    pod = kubectl_json("-n", namespace, "get", "pod", name)
+    if pod is None:
+        return False
+    if kind == "label":
+        actual = pod.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name")
+    else:
+        containers = pod.get("spec", {}).get("containers", [])
+        actual = containers[0].get("name") if len(containers) == 1 else None
+        if pod.get("spec", {}).get("automountServiceAccountToken") is not False:
+            actual = None
+    if actual != expected:
+        raise CleanupError(f"refusing unowned Pod with reserved name: {namespace}/{name}")
+    return pod
+
+
+def owned_service(namespace, name, expected):
+    service = kubectl_json("-n", namespace, "get", "service", name)
+    if service is None:
+        return False
+    if service.get("spec", {}).get("selector", {}).get("app.kubernetes.io/name") != expected:
+        raise CleanupError(f"refusing unowned Service with reserved name: {namespace}/{name}")
+    return service
+
+
+def owned_policy(namespace, name, expected):
+    policy = kubectl_json("-n", namespace, "get", "networkpolicy", name)
+    if policy is None:
+        return False
+    labels = policy.get("spec", {}).get("podSelector", {}).get("matchLabels", {})
+    if labels.get("app.kubernetes.io/name") != expected:
+        raise CleanupError(f"refusing unowned NetworkPolicy with reserved name: {namespace}/{name}")
+    return policy
+
+
+def matching_port_forwards():
+    result = command(["ps", "-Ao", "pid=,uid=,command="])
+    matches = []
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
+            continue
+        pid, uid, raw = int(fields[0]), int(fields[1]), fields[2]
+        if uid != os.getuid():
+            continue
+        try:
+            tokens = tuple(shlex.split(raw))
+        except ValueError:
+            continue
+        suffix = tokens[-len(PORT_FORWARD):]
+        if len(tokens) >= len(PORT_FORWARD) and pathlib.Path(suffix[0]).name == "kubectl" and suffix[1:] == PORT_FORWARD[1:]:
+            fingerprint = command(["ps", "-p", str(pid), "-o", "lstart=", "-o", "command="]).stdout.strip()
+            matches.append((pid, fingerprint))
+    return matches
+
+
+def identity(resource):
+    metadata = resource.get("metadata", {})
+    uid, version = metadata.get("uid"), metadata.get("resourceVersion")
+    if not uid or not version:
+        raise CleanupError("Kubernetes object lacks UID or resourceVersion; refusing cleanup")
+    return uid, version
+
+
+def mark_for_deletion(kind, namespace, name, uid, version, token):
+    current = kubectl_json("-n", namespace, "get", kind, name)
+    if current is None or identity(current) != (uid, version):
+        raise CleanupError(f"{kind} changed after planning; rerun cleanup: {namespace}/{name}")
+    labels = current.get("metadata", {}).get("labels")
+    path = "/metadata/labels/lnd-ops.dev~1cleanup-token" if labels is not None else "/metadata/labels"
+    value = token if labels is not None else {"lnd-ops.dev/cleanup-token": token}
+    patch = [
+        {"op": "test", "path": "/metadata/uid", "value": uid},
+        {"op": "test", "path": "/metadata/resourceVersion", "value": version},
+        {"op": "add", "path": path, "value": value},
+    ]
+    kubectl("-n", namespace, "patch", kind, name, "--type=json", "-p", json.dumps(patch))
+    return uid
+
+
+def delete_marked(kind, namespace, token, uid):
+    kubectl("-n", namespace, "delete", kind, "-l", f"lnd-ops.dev/cleanup-token={token}", "--wait=true")
+    observed = kubectl_json("-n", namespace, "get", kind, "-l", f"lnd-ops.dev/cleanup-token={token}")
+    if observed is not None and any(item.get("metadata", {}).get("uid") == uid for item in observed.get("items", [])):
+        raise CleanupError(f"planned {kind} UID remains after cleanup: {uid}")
+
+
+def reconnect_regtest(required, inspect_only=False):
+    info = kubectl("-n", "lnd-regtest", "exec", "lnd-1-0", "-c", "lnd", "--",
+                   "lncli", "--lnddir=/data/.lnd", "--network=regtest", "getinfo", check=False)
+    channels = kubectl("-n", "lnd-regtest", "exec", "lnd-0-0", "-c", "lnd", "--",
+                       "lncli", "--lnddir=/data/.lnd", "--network=regtest", "listchannels", check=False)
+    if info.returncode or channels.returncode:
+        if required:
+            raise OperatorAction("unlock both regtest wallets, then rerun cleanup to verify channel recovery")
+        print("SKIP: regtest wallets are locked; no peer-policy or port-forward residue required channel recovery")
+        return False
+    peer = json.loads(info.stdout).get("identity_pubkey")
+    current = json.loads(channels.stdout).get("channels", [])
+    if not peer or not current:
+        raise OperatorAction("regtest peer or channel is absent; inspect before further cleanup")
+    if inspect_only:
+        return True
+    if not all(item.get("active") for item in current):
+        kubectl("-n", "lnd-regtest", "exec", "lnd-0-0", "-c", "lnd", "--",
+                "lncli", "--lnddir=/data/.lnd", "--network=regtest", "connect", f"{peer}@lnd-1:9735", check=False)
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            result = kubectl("-n", "lnd-regtest", "exec", "lnd-0-0", "-c", "lnd", "--",
+                             "lncli", "--lnddir=/data/.lnd", "--network=regtest", "listchannels", check=False)
+            if result.returncode == 0:
+                observed = json.loads(result.stdout).get("channels", [])
+                if observed and all(item.get("active") for item in observed):
+                    return True
+            time.sleep(3)
+        raise OperatorAction("regtest channel did not return active within 180 seconds")
+    return True
+
+
+def cleanup_demo(dry_run):
+    kubectl("version", "--request-timeout=5s")
+    context = command(["kubectl", "config", "current-context"]).stdout.strip()
+    server = command(["kubectl", "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}"]).stdout.strip()
+    cluster_uid = kubectl("get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}").stdout.strip()
+    if not context or not server or not cluster_uid:
+        raise CleanupError("cannot establish Kubernetes context, server, and cluster identity")
+    for namespace in ("lnd-regtest", "lnd-testnet"):
+        protected = kubectl("get", "namespace", namespace, "-o", "jsonpath={.metadata.labels.lnd-ops-security}").stdout.strip()
+        if protected != "protected":
+            raise CleanupError(f"{namespace} lacks the project security identity label")
+    plan = []
+    for namespace, name, kind, expected in PODS:
+        resource = owned_pod(namespace, name, kind, expected)
+        if resource:
+            plan.append({"display": "Pod", "kind": "pod", "namespace": namespace, "name": name,
+                         "uid": identity(resource)[0], "version": identity(resource)[1]})
+    for namespace, name, expected in SERVICES:
+        resource = owned_service(namespace, name, expected)
+        if resource:
+            plan.append({"display": "Service", "kind": "service", "namespace": namespace, "name": name,
+                         "uid": identity(resource)[0], "version": identity(resource)[1]})
+    for namespace, name, expected in POLICIES:
+        resource = owned_policy(namespace, name, expected)
+        if resource:
+            plan.append({"display": "NetworkPolicy", "kind": "networkpolicy", "namespace": namespace, "name": name,
+                         "uid": identity(resource)[0], "version": identity(resource)[1]})
+    pids = matching_port_forwards()
+    for pid, fingerprint in pids:
+        plan.append({"display": "Process", "kind": "process", "namespace": "local", "name": str(pid),
+                     "fingerprint": fingerprint})
+    peer_policy = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")
+    restore_policy = peer_policy is not None and peer_policy.get("spec") != expected_peer_policy()
+    if restore_policy:
+        metadata = peer_policy.get("metadata", {})
+        if metadata.get("labels", {}).get("app.kubernetes.io/managed-by") != "Helm" or \
+                metadata.get("annotations", {}).get("meta.helm.sh/release-name") != "lnd-ops" or \
+                metadata.get("annotations", {}).get("meta.helm.sh/release-namespace") != "lnd-regtest":
+            raise CleanupError("refusing to restore lnd-peer-traffic without its Helm ownership identity")
+        peer_uid, peer_version = identity(peer_policy)
+        plan.append({"display": "NetworkPolicy restore", "kind": "policy-restore", "namespace": "lnd-regtest",
+                     "name": "lnd-peer-traffic", "uid": peer_uid, "version": peer_version})
+
+    print("Cleanup plan:")
+    print(f"  Cluster: context={context} server={server} uid={cluster_uid}")
+    if not plan:
+        print("  - no owned demo residue found")
+    for item in plan:
+        suffix = f" uid={item['uid']}" if item.get("uid") else ""
+        print(f"  - {item['display']}: {item['namespace']}/{item['name']}{suffix}")
+    if dry_run:
+        print("DRY RUN: no resource was changed")
+        return 0
+
+    if restore_policy or pids:
+        reconnect_regtest(required=True, inspect_only=True)
+
+    deletion_token = uuid.uuid4().hex
+    for item in plan:
+        if item["kind"] == "process":
+            current = command(["ps", "-p", item["name"], "-o", "lstart=", "-o", "command="], check=False).stdout.strip()
+            if current != item["fingerprint"]:
+                raise CleanupError(f"port-forward process changed after planning: {item['name']}")
+            os.kill(int(item["name"]), signal.SIGTERM)
+        elif item["kind"] == "policy-restore":
+            patch = [
+                {"op": "test", "path": "/metadata/uid", "value": item["uid"]},
+                {"op": "test", "path": "/metadata/resourceVersion", "value": item["version"]},
+                {"op": "replace", "path": "/spec", "value": expected_peer_policy()},
+            ]
+            kubectl("-n", item["namespace"], "patch", "networkpolicy", item["name"], "--type=json", "-p", json.dumps(patch))
+        else:
+            uid = mark_for_deletion(item["kind"], item["namespace"], item["name"], item["uid"], item["version"], deletion_token)
+            delete_marked(item["kind"], item["namespace"], deletion_token, uid)
+    for pid, _ in pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        raise CleanupError(f"port-forward process still exists after SIGTERM: {pid}")
+    for namespace, name, _, _ in PODS:
+        if kubectl_json("-n", namespace, "get", "pod", name) is not None:
+            raise CleanupError(f"Pod remains after cleanup: {namespace}/{name}")
+    for namespace, name, _ in SERVICES:
+        if kubectl_json("-n", namespace, "get", "service", name) is not None:
+            raise CleanupError(f"Service remains after cleanup: {namespace}/{name}")
+    for namespace, name, _ in POLICIES:
+        if kubectl_json("-n", namespace, "get", "networkpolicy", name) is not None:
+            raise CleanupError(f"NetworkPolicy remains after cleanup: {namespace}/{name}")
+    current_policy = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")
+    if current_policy is not None and current_policy.get("spec") != expected_peer_policy():
+        raise CleanupError("lnd-regtest/lnd-peer-traffic still differs from the canonical demo policy")
+
+    recovery_namespace = kubectl_json("get", "namespace", "lnd-regtest-recovery")
+    original = kubectl_json("get", "namespace", "lnd-regtest")
+    recovery_state = (original or {}).get("metadata", {}).get("labels", {}).get("lnd-ops-recovery")
+    if recovery_namespace is not None or recovery_state:
+        raise OperatorAction("recovery state is present; use ops/finish-regtest-recovery or ops/abort-regtest-recovery")
+    channel_verified = reconnect_regtest(required=restore_policy or bool(pids), inspect_only=False)
+    if channel_verified:
+        print("OK: owned demo residue removed; peer policy and regtest channel are healthy")
+    else:
+        print("OK: owned demo residue removed; peer policy is healthy; channel check was not required")
+    return 0
+
+
+def safe_phase9_files():
+    if not EVIDENCE.exists():
+        return []
+    directory = EVIDENCE.stat()
+    if EVIDENCE.is_symlink() or directory.st_uid != os.getuid() or directory.st_mode & 0o077:
+        raise CleanupError("Phase 9 evidence directory must be owner-controlled and mode 0700")
+    files = []
+    for path in EVIDENCE.glob("phase9-demo-*.json"):
+        descriptor = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            status = os.fstat(descriptor)
+            content = os.read(descriptor, min(status.st_size + 1, 1024 * 1024 + 1))
+        except OSError as exc:
+            raise CleanupError(f"refusing unreadable Phase 9 evidence: {path.name}") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if not path.is_file() or status.st_uid != os.getuid() or status.st_mode & 0o777 != 0o600 or status.st_nlink != 1:
+            raise CleanupError(f"refusing unsafe Phase 9 evidence path: {path.name}")
+        if status.st_size > 1024 * 1024:
+            raise CleanupError(f"refusing oversized Phase 9 evidence: {path.name}")
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise CleanupError(f"refusing malformed Phase 9 evidence: {path.name}") from exc
+        if payload.get("schema") != "lnd-ops/phase9-demo/v1" or payload.get("result") != "pass":
+            raise CleanupError(f"refusing unknown Phase 9 evidence contract: {path.name}")
+        checked = datetime.fromisoformat(payload["checked_at"].replace("Z", "+00:00"))
+        files.append((path, payload, checked, status.st_dev, status.st_ino))
+    return sorted(files, key=lambda item: (item[2], item[0].name), reverse=True)
+
+
+def cleanup_evidence(days, confirm):
+    now = datetime.now(timezone.utc)
+    files = safe_phase9_files()
+    newest = files[0][2] if files else None
+    protected = {item[0] for item in files if item[2] == newest}
+    candidates = []
+    identities = {}
+    for path, payload, checked, device, inode in files:
+        if path in protected:
+            continue
+        if now - checked > timedelta(days=days):
+            candidates.append(path)
+            identities[path] = (device, inode)
+    print(f"Evidence cleanup plan: older than {days} day(s)")
+    for path in sorted(protected):
+        print(f"  KEEP newest passing evidence: {path.name}")
+    for path in candidates:
+        print(f"  DELETE: {path.name}")
+    if not candidates:
+        print("  - no eligible Phase 9 evidence")
+        return 0
+    if not confirm:
+        print("PREVIEW ONLY: rerun with --confirm to delete the listed files")
+        return 0
+    for path in candidates:
+        current = path.lstat()
+        if (current.st_dev, current.st_ino) != identities[path] or current.st_nlink != 1:
+            raise CleanupError(f"Phase 9 evidence changed after planning; refusing deletion: {path.name}")
+        path.unlink()
+    print(f"OK: deleted {len(candidates)} old Phase 9 evidence file(s); newest pass preserved")
+    return 0
+
+
+def cleanup_environment(profile, confirm_unfunded):
+    if not confirm_unfunded:
+        raise CleanupError("environment cleanup requires --confirm-unfunded")
+    return subprocess.run([str(REPO / "ops/reset-disposable"), profile, "--confirm-unfunded"], cwd=REPO).returncode
+
+
+def parse_args(arguments):
+    if not arguments:
+        arguments = ["demo"]
+    elif arguments == ["--dry-run"]:
+        arguments = ["demo", "--dry-run"]
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="scope")
+    demo = subparsers.add_parser("demo", help="remove only owned transient demo residue")
+    demo.add_argument("--dry-run", action="store_true")
+    evidence = subparsers.add_parser("evidence", help="preview or delete old Phase 9 evidence")
+    evidence.add_argument("--older-than-days", type=int, default=30)
+    evidence.add_argument("--confirm", action="store_true")
+    environment = subparsers.add_parser("environment", help="delete one verified wallet-free profile")
+    environment.add_argument("profile", choices=("regtest", "testnet"))
+    environment.add_argument("--confirm-unfunded", action="store_true")
+    args = parser.parse_args(arguments)
+    if getattr(args, "older_than_days", 1) < 1:
+        parser.error("--older-than-days must be at least 1")
+    return args
+
+
+def main(arguments):
+    args = parse_args(arguments)
+    try:
+        if args.scope == "demo":
+            return cleanup_demo(args.dry_run)
+        if args.scope == "evidence":
+            return cleanup_evidence(args.older_than_days, args.confirm)
+        return cleanup_environment(args.profile, args.confirm_unfunded)
+    except OperatorAction as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (CleanupError, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

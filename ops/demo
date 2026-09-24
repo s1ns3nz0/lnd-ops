@@ -211,6 +211,8 @@ def parse_args(arguments):
 
 
 def main(arguments):
+    if arguments and arguments[0] == "cleanup":
+        return subprocess.run([str(REPO / "ops/demo-cleanup"), *arguments[1:]], cwd=REPO).returncode
     args = parse_args(arguments)
     color = not args.no_color and "NO_COLOR" not in os.environ and (sys.stdout.isatty() or os.environ.get("FORCE_COLOR") == "1")
     print_catalog(color)

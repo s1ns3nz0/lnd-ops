@@ -93,3 +93,80 @@ and interrupted runs do not write a passing demo evidence record.
 `NO_COLOR` takes precedence over `FORCE_COLOR=1`. `--list` prints the catalog
 and exits even when other execution flags are present. With no terminal input,
 use `--to N`; otherwise the prompt exits with an input error.
+
+## Delicate cleanup
+
+The default cleanup removes only exact, project-owned transient resources. Run
+the preview first:
+
+```sh
+ops/demo cleanup --dry-run
+ops/demo cleanup
+```
+
+The command recognizes only these fixed resources:
+
+- the Phase 6 CrashLoop Pod;
+- the two alert fixture Pods, Services, and scrape NetworkPolicies;
+- the two Phase 4 security probe Pods;
+- the internal Phase 7 controller port-forward on local port `18083`;
+- a changed `lnd-regtest/lnd-peer-traffic` policy.
+
+Every Kubernetes object must match its expected label, selector, container, or
+service ownership marker. A reserved name with different ownership fails
+closed. The plan prints the current Kubernetes context, API server, cluster
+identity, and object UIDs. Immediately before deletion, each object must retain
+its planned UID and resourceVersion. The tool then attaches a random cleanup
+label using an atomic JSON Patch and deletes only that label. A replacement
+under the same name is detected rather than deleted. Peer-policy restoration
+requires the expected Helm ownership metadata and atomically tests its UID and
+resourceVersion before replacing the spec.
+
+The cleanup deletes Pods before their Services and policies, verifies every
+planned UID is gone, detects same-name replacements, and reconnects the existing
+regtest channel. Channel prerequisites are checked before the first mutation
+whenever peer policy or port-forward residue exists. A locked wallet or unresolved
+recovery namespace returns exit `10` with the required operator action when
+policy or port-forward residue could have affected the channel. When no such
+residue exists, locked regtest wallets are reported and skipped. The cleanup
+never infers how to finish or abort a wallet recovery.
+
+### Phase 9 evidence retention
+
+Evidence cleanup defaults to a 30-day threshold and preview mode:
+
+```sh
+ops/demo cleanup evidence
+ops/demo cleanup evidence --older-than-days 7
+ops/demo cleanup evidence --older-than-days 30 --confirm
+```
+
+Only owner-owned, non-symlink, mode `0600` files matching the
+`lnd-ops/phase9-demo/v1` passing schema are eligible. Malformed or unknown files
+stop the operation. The evidence directory must be owner-controlled, files must
+have one hard link and be no larger than 1 MiB, and the inode must remain the
+same between planning and unlink. Embedded `checked_at` timestamps determine
+age and ordering; every record tied for newest is retained regardless of age.
+Phase 0 through Phase 8 evidence, SCBs, kagent responses, and other files are
+outside this cleanup scope.
+
+### Wallet-free profile deletion
+
+Environment cleanup delegates to the existing wallet absence verifier and
+requires both the profile and literal confirmation flag:
+
+```sh
+ops/demo cleanup environment regtest --confirm-unfunded
+ops/demo cleanup environment testnet --confirm-unfunded
+```
+
+It deletes one profile namespace and its PVCs only after every expected LND Pod
+and data directory is inspectable and `wallet.db` is confirmed absent. The PVC
+inventory must exactly equal the profile contract, each Pod must mount its
+expected claim, and the namespace and PVC UIDs must remain unchanged through
+the preflight. Missing or unexpected PVCs, missing Pods, unreadable data, a
+wallet, or any uncertainty causes refusal before namespace deletion. Namespace
+deletion removes every namespaced resource and its PVCs; a reclaim policy may
+also remove their backing volumes. Monitoring, security, agent namespaces, the
+K3s cluster, the Lima VM, Docker images, host backups, and evidence are never
+deleted by this command.

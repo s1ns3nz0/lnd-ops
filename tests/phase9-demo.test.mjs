@@ -67,3 +67,16 @@ test('Phase 9 validates public pass markers and the seven-day evidence window', 
   assert.notEqual(stale.status, 0);
   assert.match(stale.stderr, /seven-day rehearsal window/);
 });
+
+test('README embeds the project banner and links the cleanup runbook', async () => {
+  const readme = await readFile(resolve(repo, 'README.md'), 'utf8');
+  const runbook = await readFile(resolve(repo, 'docs/phase9-demo-runbook.md'), 'utf8');
+  assert.match(readme, /docs\/assets\/lnd-ops-banner\.png/);
+  for (const command of ['ops/demo cleanup --dry-run', 'ops/demo cleanup evidence', 'ops/demo cleanup environment']) {
+    assert.match(`${readme}\n${runbook}`, new RegExp(command.replaceAll('/', '\\/')));
+  }
+  const banner = await readFile(resolve(repo, 'docs/assets/lnd-ops-banner.png'));
+  assert.equal(banner.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(banner.readUInt32BE(16), 984);
+  assert.equal(banner.readUInt32BE(20), 228);
+});

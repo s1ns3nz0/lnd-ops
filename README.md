@@ -1,5 +1,7 @@
 # lnd-ops
 
+![LND Ops terminal banner](docs/assets/lnd-ops-banner.png)
+
 Reproducible Lightning node operator portfolio project for Mac arm64 Lima K3s and Windows WSL 2 K3s. Both run the same Helm chart with separate testnet wallets and a disposable regtest profile. The [demo execution plan](docs/demo-execution-plan.md) is the working path from the current state to the final portfolio demo. The [implementation roadmap](docs/implementation-roadmap.md) defines the MVP, multi-platform images, and repeat-deployment contract. The [operator plan](docs/operator-plan.md) records the target architecture, while the [observability plan](docs/observability-plan.md) records dashboards, alerts, and runbook priorities. The [regtest runbook](docs/regtest-runbook.md) covers the manual wallet and channel exercise. The [Windows runbook](docs/windows-runbook.md) is the exact Windows 11 Home acceptance path.
 
 Phase 7 uses a fixed operator-selected Ollama server rather than assuming the
@@ -45,6 +47,12 @@ Start the Phase 9 rehearsal with `ops/demo`. It presents seven color-coded
 cumulative stages, asks which final stage to run, and writes a private,
 secret-free result. Use `ops/demo --to 7 --dry-run` to preview the complete
 sequence. See the [Phase 9 demo runbook](docs/phase9-demo-runbook.md).
+
+Use `ops/demo cleanup --dry-run` to inspect owned transient residue and
+`ops/demo cleanup` to remove it, restore the regtest peer policy, and verify the
+channel. Evidence and wallet-free environment deletion use separate explicit
+subcommands documented in the runbook; funded wallets and PVCs are never part
+of the default cleanup.
 
 The [clean-start runbook](docs/clean-start-runbook.md) gives the guarded deletion, fresh deployment, repeat deployment, and evidence procedure for both target hosts. Both target hosts have completed their Phase 8 runtime proof.
 

@@ -13,6 +13,29 @@ if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
   exit 0
 fi
 
+namespace_uid=$(kubectl get namespace "$namespace" -o jsonpath='{.metadata.uid}')
+[[ -n "$namespace_uid" ]] || { echo "Cannot record $namespace identity; refusing reset" >&2; exit 1; }
+
+if [[ "$profile" == regtest ]]; then
+  expected_pvcs=(data-bitcoin-0 data-lnd-0-0 data-lnd-1-0)
+else
+  expected_pvcs=(data-lnd-0-0)
+fi
+
+pvc_inventory() {
+  kubectl -n "$namespace" get pvc -o jsonpath='{range .items[*]}{.metadata.name}{":"}{.metadata.uid}{"\n"}{end}' | LC_ALL=C sort
+}
+
+expected_names=$(printf '%s\n' "${expected_pvcs[@]}" | LC_ALL=C sort)
+actual_names=$(pvc_inventory | cut -d: -f1)
+[[ "$actual_names" == "$expected_names" ]] || {
+  echo "PVC inventory differs from the exact wallet-free profile contract; refusing reset" >&2
+  printf 'Expected:\n%s\nObserved:\n%s\n' "$expected_names" "$actual_names" >&2
+  exit 1
+}
+pvc_snapshot=$(pvc_inventory)
+[[ -n "$pvc_snapshot" ]] || { echo "Cannot record PVC identities; refusing reset" >&2; exit 1; }
+
 nodes=(lnd-0)
 if [[ "$profile" == regtest ]]; then
   nodes+=(lnd-1)
@@ -27,7 +50,25 @@ for name in "${nodes[@]}"; do
   if ! kubectl -n "$namespace" exec "$name-0" -- test ! -e "/data/.lnd/data/chain/bitcoin/$profile/wallet.db" >/dev/null 2>&1; then
     echo "$name wallet absence was not confirmed; refusing reset" >&2; exit 1
   fi
+  claim=$(kubectl -n "$namespace" get pod "$name-0" -o jsonpath='{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}')
+  [[ "$claim" == "data-$name-0" ]] || {
+    echo "$name data volume does not reference the expected PVC; refusing reset" >&2; exit 1;
+  }
 done
+
+if [[ "$profile" == regtest ]]; then
+  bitcoin_claim=$(kubectl -n "$namespace" get pod bitcoin-0 -o jsonpath='{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}')
+  [[ "$bitcoin_claim" == data-bitcoin-0 ]] || {
+    echo 'bitcoin data volume does not reference the expected PVC; refusing reset' >&2; exit 1;
+  }
+fi
+
+[[ "$(kubectl get namespace "$namespace" -o jsonpath='{.metadata.uid}')" == "$namespace_uid" ]] || {
+  echo 'Namespace identity changed during reset preflight; refusing deletion' >&2; exit 1;
+}
+[[ "$(pvc_inventory)" == "$pvc_snapshot" ]] || {
+  echo 'PVC inventory changed during reset preflight; refusing deletion' >&2; exit 1;
+}
 
 echo "Deleting disposable, wallet-free namespace $namespace (including its PVCs)"
 kubectl delete namespace "$namespace" --wait=true
