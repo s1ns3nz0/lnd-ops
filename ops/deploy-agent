@@ -141,6 +141,12 @@ def main(argv):
              "--set", f"ollama.port={port}",
              "--set-string", f"kubeApi.serverCIDR={api_addresses[0]}/32",
              "--set", f"kubeApi.port={api_ports[0]}", "--wait", "--timeout", "10m"])
+        if subprocess.run(
+            ["kubectl", "-n", "lnd-agent", "get", "configmap", "runbook-action-state"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode:
+            run(["kubectl", "-n", "lnd-agent", "create", "configmap", "runbook-action-state",
+                 "--from-literal=lastRestartEpoch=0"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "restart", "deployment/runbook-gateway"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
