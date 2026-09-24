@@ -124,8 +124,11 @@ ops/exercise-phase7-agent
 ops/phase7-acceptance
 ```
 
-The exercise invokes kagent through a local port-forward. The model must use the
-live inactive-channel diagnostic and the versioned runbook, then return:
+The exercise saves the exact regtest peer NetworkPolicy, denies peer traffic,
+disconnects the active disposable channel, and waits for the live inactive
+metric. While that fault is active, it invokes kagent through a local
+port-forward. The model must use the live inactive-channel diagnostic and the
+versioned runbook, then return:
 
 1. Observed facts
 2. Likely cause
@@ -134,7 +137,9 @@ live inactive-channel diagnostic and the versioned runbook, then return:
 5. Recommended command
 6. Automation eligibility
 
-It then calls the policy gateway directly to prove the deterministic controls:
+The fault is restored in a `finally` path. The exercise requires the exact
+NetworkPolicy hash, active channel, and healthy diagnostic signal to return
+before it calls the policy gateway to prove the deterministic controls:
 the probe restart succeeds and is audited, an immediate repeat is denied by the
 cooldown, and `unlock_wallet` is denied and audited. Private response and JSON
 evidence files use mode `0600`; the JSON stores only the response hash and

@@ -61,12 +61,17 @@ def main():
         if datetime.now(timezone.utc) - checked > timedelta(hours=24):
             raise RuntimeError("Phase 7 exercise evidence is older than 24 hours")
         for key, expected in {
-            "live_evidence_grounded": True, "allowlisted_response": "pass",
+            "fault_injected": True, "live_evidence_grounded": True,
+            "active_fault_observed_by_kagent": True, "allowlisted_response": "pass",
             "forbidden_response": "denied", "cooldown": "enforced",
             "audit_events": "pass", "secrets_recorded": False,
         }.items():
             if exercise.get(key) != expected:
                 raise RuntimeError(f"Phase 7 exercise lacks {key}={expected!r}")
+        if not all(exercise.get(key) for key in ("injected_at", "signal_at", "recovered_at")):
+            raise RuntimeError("Phase 7 exercise lacks fault lifecycle timestamps")
+        if exercise.get("networkpolicy_spec_sha256_before") != exercise.get("networkpolicy_spec_sha256_after"):
+            raise RuntimeError("Phase 7 exercise did not restore the exact NetworkPolicy")
 
         phase6_path, phase6 = owner_evidence("phase6-acceptance-*.json")
         if phase6.get("schema") != "lnd-ops/phase6-acceptance/v1" or phase6.get("result") != "pass":
@@ -109,7 +114,7 @@ def main():
             "git_commit": head, "phase6_continuity": phase6_path.name,
             "exercise_evidence": exercise_path.name, "provider": "Ollama",
             "mcp_gateway_accepted": True, "least_privilege_rbac": "pass",
-            "live_diagnosis": "pass", "allowed_response": "pass",
+            "injected_fault_diagnosis": "pass", "live_diagnosis": "pass", "allowed_response": "pass",
             "forbidden_response": "denied", "cooldown": "enforced",
         }
         output = EVIDENCE / f"phase7-acceptance-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}.json"

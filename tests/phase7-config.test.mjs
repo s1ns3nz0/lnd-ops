@@ -27,6 +27,17 @@ test('Phase 7 gateway has one named mutation and explicit forbidden checks', asy
   }
 });
 
+test('Phase 7 exercise injects and restores a real channel fault around Ollama diagnosis', async () => {
+  const exercise = await read('ops/exercise-phase7-agent');
+  const acceptance = await read('ops/phase7-acceptance');
+  assert.match(exercise, /patch.*networkpolicy.*lnd-peer-traffic/s);
+  assert.match(exercise, /signal_active.*True/s);
+  assert.match(exercise, /networkpolicy_spec_sha256_before/);
+  assert.match(exercise, /finally:/);
+  assert.match(acceptance, /active_fault_observed_by_kagent/);
+  assert.match(acceptance, /networkpolicy_spec_sha256_before.*networkpolicy_spec_sha256_after/s);
+});
+
 test('Phase 7 uses pinned kagent artifacts and external Ollama input', async () => {
   const deploy = await read('ops/deploy-agent');
   const sums = await read('charts/vendor/SHA256SUMS');

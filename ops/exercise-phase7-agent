@@ -27,6 +27,26 @@ def run(args, check=True, timeout=600, stdout=subprocess.PIPE):
     return result
 
 
+def kubectl_json(*args):
+    return json.loads(run(["kubectl", *args, "-o", "json"]).stdout)
+
+
+def lncli(pod, *args, check=True):
+    return run([
+        "kubectl", "-n", "lnd-regtest", "exec", pod, "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", "--network=regtest", *args,
+    ], check=check, timeout=120)
+
+
+def wait_for(description, predicate, timeout=180):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        time.sleep(3)
+    raise RuntimeError(f"timed out waiting for {description}")
+
+
 def wait_port(port, process):
     for _ in range(100):
         if process.poll() is not None:
@@ -96,40 +116,74 @@ def main():
         )
         wait_port(18083, controller)
         pod_mcp("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
-        diagnosis = pod_tool("diagnose_incident", {"scenario": "channel_inactive"})
-        if diagnosis.get("matching_runbook") != "channel-inactive.md" or "observed_facts" not in diagnosis:
-            raise RuntimeError("gateway diagnosis is not grounded in the expected live evidence")
-
         EVIDENCE.mkdir(parents=True, exist_ok=True, mode=0o700)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         response_path = EVIDENCE / f"phase7-kagent-response-{stamp}.txt"
-        descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        task = (
-            "Diagnose the current inactive-channel scenario. Call diagnose_incident with "
-            "the exact argument scenario=channel_inactive, then call get_versioned_runbook "
-            "with the exact argument name=channel-inactive.md. Use live tool results only. "
-            "Return the six required headings exactly and do not perform an action."
-        )
-        with os.fdopen(descriptor, "w") as stream:
-            invoked = run([
-                str(REPO / "ops/kagent-cli"), "--kagent-url", "http://127.0.0.1:18083",
-                "--namespace", "kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
-                "--task", task, "--timeout", "8m",
-            ], check=False, timeout=540, stdout=stream)
-        if invoked.returncode:
-            raise RuntimeError((invoked.stderr or "kagent invocation failed").strip().splitlines()[-1])
-        response = response_path.read_text(errors="replace")
+        channels = json.loads(lncli("lnd-0-0", "listchannels").stdout).get("channels", [])
+        active = [channel for channel in channels if channel.get("active")]
+        if len(active) != 1:
+            raise RuntimeError("Phase 7 fault requires exactly one active regtest channel")
+        peer = active[0]["remote_pubkey"]
+        policy = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")
+        original_spec = policy["spec"]
+        policy_hash = hashlib.sha256(json.dumps(original_spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        injected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        signal_at = recovered_at = None
         try:
-            invocation = json.loads(response)
-            if invocation.get("status", {}).get("state") != "completed":
-                raise RuntimeError("kagent invocation returned a non-completed task")
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("kagent CLI did not return its JSON task contract") from exc
-        headings = ["Observed facts", "Likely cause", "Confidence", "Matching runbook", "Recommended command", "Automation eligibility"]
-        if not all(heading.lower() in response.lower() for heading in headings):
-            raise RuntimeError("kagent response does not contain the required diagnosis contract")
-        if any(term in response.lower() for term in ("payment_request", "wallet_password", "cipher_seed")):
-            raise RuntimeError("kagent response contains a forbidden secret field name")
+            denied_spec = {"spec": {"podSelector": original_spec["podSelector"], "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
+            run(["kubectl", "-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", json.dumps(denied_spec)])
+            lncli("lnd-0-0", "disconnect", peer, check=False)
+            diagnosis = None
+            def inactive():
+                nonlocal diagnosis
+                diagnosis = pod_tool("diagnose_incident", {"scenario": "channel_inactive"})
+                return diagnosis.get("signal_active") is True
+            signal_at = wait_for("gateway inactive-channel signal", inactive)
+            if diagnosis.get("matching_runbook") != "channel-inactive.md" or "observed_facts" not in diagnosis:
+                raise RuntimeError("gateway diagnosis is not grounded in the injected live evidence")
+
+            descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            task = (
+                "A channel fault is active now. Diagnose it. Call diagnose_incident with the exact "
+                "argument scenario=channel_inactive, then call get_versioned_runbook with the exact "
+                "argument name=channel-inactive.md. Use live tool results only. Return the six "
+                "required headings exactly and do not perform an action."
+            )
+            with os.fdopen(descriptor, "w") as stream:
+                invoked = run([
+                    str(REPO / "ops/kagent-cli"), "--kagent-url", "http://127.0.0.1:18083",
+                    "--namespace", "kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
+                    "--task", task, "--timeout", "8m",
+                ], check=False, timeout=540, stdout=stream)
+            if invoked.returncode:
+                raise RuntimeError((invoked.stderr or "kagent invocation failed").strip().splitlines()[-1])
+            response = response_path.read_text(errors="replace")
+            try:
+                invocation = json.loads(response)
+                if invocation.get("status", {}).get("state") != "completed":
+                    raise RuntimeError("kagent invocation returned a non-completed task")
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("kagent CLI did not return its JSON task contract") from exc
+            if '"signal_active":true' not in json.dumps(invocation, separators=(",", ":")):
+                raise RuntimeError("kagent did not receive the active injected fault signal")
+            headings = ["Observed facts", "Likely cause", "Confidence", "Matching runbook", "Recommended command", "Automation eligibility"]
+            if not all(heading.lower() in response.lower() for heading in headings):
+                raise RuntimeError("kagent response does not contain the required diagnosis contract")
+            if any(term in response.lower() for term in ("payment_request", "wallet_password", "cipher_seed")):
+                raise RuntimeError("kagent response contains a forbidden secret field name")
+        finally:
+            run(["kubectl", "-n", "lnd-regtest", "patch", "networkpolicy", "lnd-peer-traffic", "--type=merge", "-p", json.dumps({"spec": original_spec})], check=False)
+            peer_info = json.loads(lncli("lnd-1-0", "getinfo").stdout)
+            lncli("lnd-0-0", "connect", f'{peer_info["identity_pubkey"]}@lnd-1:9735', check=False)
+        restored_spec = kubectl_json("-n", "lnd-regtest", "get", "networkpolicy", "lnd-peer-traffic")["spec"]
+        restored_hash = hashlib.sha256(json.dumps(restored_spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if restored_hash != policy_hash:
+            raise RuntimeError("regtest NetworkPolicy did not return to its exact pre-fault spec")
+        def healthy():
+            current = json.loads(lncli("lnd-0-0", "listchannels").stdout).get("channels", [])
+            signal = pod_tool("diagnose_incident", {"scenario": "channel_inactive"})
+            return bool(current) and all(channel.get("active") for channel in current) and signal.get("signal_active") is False
+        recovered_at = wait_for("active regtest channel and healthy gateway signal", healthy)
 
         allowed = pod_tool("execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
         if not allowed.get("allowed") or not allowed.get("audit_recorded"):
@@ -150,7 +204,12 @@ def main():
             "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "git_commit": run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip(),
             "provider": "Ollama", "diagnosis_scenario": "channel_inactive",
-            "live_evidence_grounded": True, "required_headings": headings,
+            "fault_injected": True, "fault": "deny internal LND peer traffic",
+            "injected_at": injected_at, "signal_at": signal_at, "recovered_at": recovered_at,
+            "networkpolicy_spec_sha256_before": policy_hash,
+            "networkpolicy_spec_sha256_after": restored_hash,
+            "live_evidence_grounded": True, "active_fault_observed_by_kagent": True,
+            "required_headings": headings,
             "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
             "allowlisted_response": "pass", "forbidden_response": "denied",
             "cooldown": "enforced", "audit_events": "pass", "secrets_recorded": False,
