@@ -32,5 +32,17 @@ jobs:
             npm install
           fi
 
+      - name: Install pinned Helm
+        shell: bash
+        run: |
+          . ops/versions.env
+          archive=$(mktemp)
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o "$archive"
+          echo "$HELM_LINUX_AMD64_SHA256  $archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          install "$RUNNER_TEMP/linux-amd64/helm" "$RUNNER_TEMP/helm"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Run harness checks
         run: npm run harness:verify
