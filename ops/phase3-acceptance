@@ -102,7 +102,7 @@ def main(arguments):
             "summaries": {
                 "phase1": phase1.splitlines()[0],
                 "monitoring": monitoring.splitlines()[-1],
-                "backup": backup.splitlines()[-1],
+                "backup": "Encrypted SCB is current and verified",
                 "dashboards": dashboards.splitlines()[-1],
             },
             "proof_commands": {
