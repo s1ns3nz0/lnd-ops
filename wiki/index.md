@@ -11,7 +11,7 @@ layout: home
 hero:
   name: LND Ops Wiki
   text: Lightning 노드를 운영 가능한 플랫폼으로 번역하기
-  tagline: LND의 상태와 실패 모델에서 출발해 Kubernetes, 관측, 보안, runbook, kagent 설계의 이유를 추적합니다.
+  tagline: LND의 사용 사례와 첫 결제 흐름에서 출발해 Kubernetes, 관측, 보안, runbook, kagent 설계의 이유를 추적합니다.
   image:
     src: /banner.png
     alt: LND Ops 색상 배너
@@ -33,15 +33,16 @@ features:
 
 ## 이 Wiki를 읽는 법
 
-각 장은 **LND의 특성 → 운영 위험 → 플랫폼 설계 → 관측 신호 → 보안 통제 → 대응 → 검증** 순서로 전개됩니다. Linux와 Kubernetes 기본 사용 경험은 가정하지만 LND의 개념은 처음부터 설명합니다. 장 후반의 선택 비교와 면접 질문은 플랫폼 엔지니어 수준의 검토를 목표로 합니다.
+먼저 **사용 사례 → 노드 준비 → 채널 개설 → 송수신과 정산**을 따라갑니다. 그다음 내부 구조를 이해하고 **운영 요구 → 플랫폼 설계 → 관측 → 보안 → 대응 → 검증**으로 이어갑니다. Linux와 Kubernetes 기본 사용 경험은 가정하지만 LND의 개념은 처음부터 설명합니다. 장 후반의 선택 비교와 면접 질문은 플랫폼 엔지니어 수준의 검토를 목표로 합니다.
 
 ::: tip 사실의 종류
 `공식 원리`는 외부 1차 자료, `프로젝트 판단`은 이 저장소의 선택, `구현 근거`는 코드, `검증`은 테스트와 실행 증거, `제약`은 아직 증명하지 못한 범위를 뜻합니다.
 :::
 
-## 세 개의 출발점
+## 어디서 시작할까
 
 - 처음 실행한다면 [안전하게 시작하기](/start-here)
-- 처음부터 이해하려면 [학습 지도](/roadmap)
+- LND가 처음이라면 [사용 사례와 전체 흐름](/01-foundations/lnd-workflow)
+- 전체 순서를 보려면 [학습 지도](/roadmap)
 - 상태 보존이 궁금하면 [LND 구조와 상태](/01-foundations/lnd-architecture)
 - 운영 자동화가 궁금하면 [신호에서 판단까지](/07-observability/signals-to-decisions)

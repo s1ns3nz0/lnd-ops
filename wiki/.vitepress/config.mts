@@ -16,13 +16,13 @@ export default defineConfig({
     search: {provider: 'local'},
     nav: [
       {text: '시작하기', link: '/start-here'},
-      {text: 'LND 구조', link: '/01-foundations/lnd-architecture'},
+      {text: 'LND 사용 흐름', link: '/01-foundations/lnd-workflow'},
       {text: 'Kubernetes 설계', link: '/03-kubernetes/stateful-design'},
       {text: '자동 대응', link: '/10-automation/observe-to-act'},
     ],
     sidebar: [
       {text: '시작', items: [{text: 'Wiki 소개', link: '/'}, {text: '안전하게 시작하기', link: '/start-here'}, {text: '학습 지도', link: '/roadmap'}]},
-      {text: '1. Lightning과 LND', items: [{text: 'LND 구조와 상태', link: '/01-foundations/lnd-architecture'}]},
+      {text: '1. Lightning과 LND', items: [{text: '사용 사례와 전체 흐름', link: '/01-foundations/lnd-workflow'}, {text: 'LND 구조와 상태', link: '/01-foundations/lnd-architecture'}]},
       {text: '2. 플랫폼 요구사항', items: [{text: '운영 요구 도출', link: '/02-requirements/operational-requirements'}]},
       {text: '3. Kubernetes 아키텍처', items: [{text: 'StatefulSet과 PVC', link: '/03-kubernetes/stateful-design'}]},
       {text: '4. 재현 가능한 배포', items: [{text: 'Helm과 멱등성', link: '/04-deployment/reproducible-helm'}]},

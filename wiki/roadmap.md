@@ -16,13 +16,14 @@ scope: regtest · testnet
 기술 이름을 외우는 대신 노드의 생명주기를 따라간다. 앞 단계의 요구가 다음 단계의 설계 입력이 된다.
 
 ```text
-LND 상태 이해 → 요구사항 → Kubernetes → Helm → 지갑 → 채널과 결제
+LND 사용 사례와 첫 결제 → 내부 구조와 유동성 → 요구사항 → Kubernetes
+      → Helm → 지갑과 권한 → 채널과 결제 심화
       → 관측 → 장애 대응 → 보안과 복구 → kagent → 검증 → 회고
 ```
 
 | 단계 | 답해야 할 질문 | 완료 기준 |
 | --- | --- | --- |
-| 1 | LND가 어떤 상태를 만들고 어떤 프로토콜과 통신하는가? | wallet, channel.db, macaroon, TLS, SCB 역할을 구분한다 |
+| 1 | LND로 무엇을 하며 첫 결제까지 어떻게 진행하는가? | 송금·수신·중계를 구분하고 지갑 준비→채널→invoice→지급→정산을 설명한다 |
 | 2 | 그 상태 때문에 플랫폼에 무엇이 필요한가? | 영속성·신원·네트워크·복구 요구를 적는다 |
 | 3 | 왜 StatefulSet과 PVC인가? | Pod 교체와 노드 신원 보존을 연결한다 |
 | 4 | 왜 Helm과 멱등 스크립트인가? | 빈 환경과 재배포 계약을 설명한다 |
@@ -37,9 +38,13 @@ LND 상태 이해 → 요구사항 → Kubernetes → Helm → 지갑 → 채널
 
 ## 추천 경로
 
-1. [LND 구조와 상태](/01-foundations/lnd-architecture)
-2. [StatefulSet과 PVC](/03-kubernetes/stateful-design)
-3. [채널·유동성·결제](/06-payments/channel-liquidity)
-4. [신호에서 판단까지](/07-observability/signals-to-decisions)
-5. [Observe에서 Verify까지](/10-automation/observe-to-act)
+처음 읽을 때는 사용 흐름과 지급 원리를 먼저 이해하고 플랫폼 설계로 넘어간다. 왼쪽 목차의 12개 분야는 주제별 분류이며, 아래는 초보 독자를 위한 읽기 순서다.
 
+1. [사용 사례와 전체 흐름](/01-foundations/lnd-workflow): 누가 왜 노드를 쓰고, 무엇을 해야 결제가 되는가?
+2. [LND 구조와 상태](/01-foundations/lnd-architecture): 그 흐름을 어떤 구성과 데이터가 뒷받침하는가?
+3. [채널·유동성·결제](/06-payments/channel-liquidity): 잔액이 있는데도 보내거나 받지 못하는 이유는 무엇인가?
+4. [운영 요구](/02-requirements/operational-requirements)와 [Kubernetes 설계](/03-kubernetes/stateful-design): 이 노드를 계속 운영하려면 무엇을 보존하고 관리해야 하는가?
+5. [배포](/04-deployment/reproducible-helm)와 [지갑](/05-wallet/wallet-boundaries): 무엇을 재실행하고 어떤 비밀을 보호하는가?
+6. [관측](/07-observability/signals-to-decisions)과 [장애 대응](/08-incidents/runbook-lifecycle): 어느 단계가 막혔는지 어떻게 확인하는가?
+7. [보안](/09-security/defense-in-depth)과 [복구](/09-security/scb-recovery): 잘못된 접근과 상태 손실을 어떻게 다루는가?
+8. [자동 대응](/10-automation/observe-to-act), [검증](/11-validation/evidence), [회고](/12-retrospective/tradeoffs): 어디까지 자동화했고 무엇으로 증명하는가?

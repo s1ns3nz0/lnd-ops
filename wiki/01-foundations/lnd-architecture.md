@@ -13,6 +13,14 @@ scope: regtest · testnet
 
 <MetadataCard versions="LND digest pinned · Bitcoin regtest/testnet" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
 
+앞 장 [LND의 사용 사례와 전체 흐름](/01-foundations/lnd-workflow)에서는 노드를 준비하고 채널을 열어 반복해서 지급하는 과정을 살펴봤다. 이 장에서는 그 과정이 내부에서 어떻게 성립하고 어떤 상태를 남기는지 설명한다. 처음 읽는다면 사용 흐름부터 읽는다.
+
+## 아주 쉽게 비유하면: 계산 도우미의 서랍
+
+놀이 가게의 계산 도우미에게는 서로 다른 서랍이 있다. 하나에는 내 돈을 쓸 열쇠가 있고, 다른 하나에는 친구와 마지막으로 맞춘 장부가 있다. 도우미가 잠깐 자리를 비웠다가 돌아와도 서랍이 그대로라면 일을 이어갈 수 있다. 하지만 열쇠만 가지고 옛 장부를 새 장부라고 우기면 문제가 생긴다.
+
+**실제 시스템에 연결하면:** LND는 계산 도우미, 영속 데이터는 서랍에 해당한다. 키를 복원하는 것과 최신 채널 상태를 되찾는 것은 별개다. 실제 파일에는 여러 종류의 정보가 들어 있으므로 서랍 하나와 파일 하나가 정확히 대응하는 비유는 아니다.
+
 ## 배경 1: 지갑에 Bitcoin이 있다는 말의 의미
 
 Bitcoin은 계좌의 잔액을 직접 갱신하는 방식이 아니라, 아직 사용하지 않은 거래 출력인 **UTXO(Unspent Transaction Output)**를 다음 거래의 입력으로 소비하는 방식으로 동작한다. 지갑은 자신이 사용할 수 있는 출력과 그 사용 조건을 추적한다. 개인키는 그 조건을 만족하는 서명을 만드는 데 필요하다. 코인 자체가 지갑 파일 안에 들어 있는 것은 아니다. [Bitcoin 거래 구조](https://developer.bitcoin.org/devguide/transactions.html)

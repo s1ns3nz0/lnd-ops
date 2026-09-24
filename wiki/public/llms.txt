@@ -5,6 +5,7 @@
 ## Docs (한국어)
 
 - [LND 구조와 상태](https://s1ns3nz0.github.io/lnd-ops/llms/ko/01-foundations/lnd-architecture.md): LND가 Bitcoin, Lightning peer, wallet, channel 상태를 어떻게 연결하는지 설명한다
+- [LND로 무엇을 하고 어떻게 사용하는가](https://s1ns3nz0.github.io/lnd-ops/llms/ko/01-foundations/lnd-workflow.md): 송금·결제 수신·중계 사례에서 출발해 노드 준비부터 첫 결제와 일상 운영까지 따라간다
 - [운영 요구 도출](https://s1ns3nz0.github.io/lnd-ops/llms/ko/02-requirements/operational-requirements.md): LND의 상태와 실패 모델을 플랫폼 요구사항으로 번역한다
 - [StatefulSet과 PVC](https://s1ns3nz0.github.io/lnd-ops/llms/ko/03-kubernetes/stateful-design.md): LND의 영속성과 신원 요구를 Kubernetes 리소스로 번역한다
 - [Helm과 재현 가능한 배포](https://s1ns3nz0.github.io/lnd-ops/llms/ko/04-deployment/reproducible-helm.md): 빈 환경, 반복 배포, 다중 아키텍처를 하나의 계약으로 다룬다
