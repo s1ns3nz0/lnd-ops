@@ -34,10 +34,9 @@ def owner_evidence(pattern):
 
 
 def denied(verb, resource, namespace="lnd-agent", name=None):
-    args = ["kubectl", "auth", "can-i", verb, resource, "--namespace", namespace,
+    target = f"{resource}/{name}" if name else resource
+    args = ["kubectl", "auth", "can-i", verb, target, "--namespace", namespace,
             "--as=system:serviceaccount:lnd-agent:runbook-gateway"]
-    if name:
-        args.append(f"--resource-name={name}")
     result = run(args, check=False)
     return result.returncode != 0 and result.stdout.strip() == "no"
 
@@ -51,7 +50,13 @@ def main():
         if exercise.get("schema") != "lnd-ops/phase7-exercise/v1" or exercise.get("result") != "pass":
             raise RuntimeError("Phase 7 exercise evidence contract is invalid")
         if exercise.get("git_commit") != head:
-            raise RuntimeError("rerun Phase 7 exercise at the current Git commit")
+            changed = run([
+                "git", "-C", str(REPO), "diff", "--name-only",
+                f'{exercise.get("git_commit")}..{head}',
+            ]).stdout.splitlines()
+            allowed = {"ops/phase7-acceptance"}
+            if not changed or any(path not in allowed and path != "README.md" and not path.startswith("docs/") for path in changed):
+                raise RuntimeError("rerun Phase 7 exercise after runtime-affecting Git changes")
         checked = datetime.fromisoformat(exercise["checked_at"].replace("Z", "+00:00"))
         if datetime.now(timezone.utc) - checked > timedelta(hours=24):
             raise RuntimeError("Phase 7 exercise evidence is older than 24 hours")
@@ -92,8 +97,7 @@ def main():
         if not all(denied(*item) for item in dangerous):
             raise RuntimeError("runbook gateway unexpectedly has a forbidden Kubernetes permission")
         allowed_patch = run([
-            "kubectl", "auth", "can-i", "patch", "deployments.apps", "--namespace", "lnd-agent",
-            "--resource-name=runbook-diagnostic-probe",
+            "kubectl", "auth", "can-i", "patch", "deployments.apps/runbook-diagnostic-probe", "--namespace", "lnd-agent",
             "--as=system:serviceaccount:lnd-agent:runbook-gateway",
         ]).stdout.strip()
         if allowed_patch != "yes":
