@@ -1,0 +1,15 @@
+admissionController:
+  replicas: 1
+  serviceMonitor:
+    enabled: true
+    additionalLabels: {release: lnd-ops-monitoring}
+backgroundController:
+  replicas: 1
+  serviceMonitor:
+    enabled: true
+    additionalLabels: {release: lnd-ops-monitoring}
+cleanupController:
+  replicas: 1
+reportsController:
+  replicas: 1
+

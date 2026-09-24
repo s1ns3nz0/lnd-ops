@@ -123,3 +123,21 @@ spec:
           annotations:
             summary: "Encrypted SCB is missing, stale, or differs from live LND state for {{ $labels.namespace }}/{{ $labels.service }}"
             runbook: docs/runbooks/scb-backup-stale.md
+    - name: lnd-ops-security
+      rules:
+        - alert: LndOpsFalcoRuntimeEvent
+          expr: increase(falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"}[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Falco detected the LND Ops runtime test marker"
+            runbook: docs/runbooks/falco-runtime-event.md
+        - alert: LndOpsTLSCertificateExpiring
+          expr: lnd_ops_tls_certificate_expiry_timestamp_seconds - time() < 2592000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LND TLS certificate expires within 30 days for {{ $labels.namespace }}/{{ $labels.service }}"
+            runbook: docs/runbooks/tls-certificate-expiring.md

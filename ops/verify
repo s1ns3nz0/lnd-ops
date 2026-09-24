@@ -10,16 +10,20 @@ esac
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
 namespace=lnd-$profile
 
-kubectl -n "$namespace" get serviceaccount lnd-ops -o jsonpath='{.automountServiceAccountToken}' | grep -Fxq false
-kubectl -n "$namespace" get networkpolicy default-deny-ingress >/dev/null
+kubectl -n "$namespace" get serviceaccount lnd-node -o jsonpath='{.automountServiceAccountToken}' | grep -Fxq false
+kubectl -n "$namespace" get networkpolicy default-deny allow-dns >/dev/null
 kubectl -n "$namespace" get namespace "$namespace" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -Fxq baseline
 
 if [[ "$profile" == regtest ]]; then
-  kubectl -n "$namespace" get networkpolicy regtest-peer-traffic lnd-to-bitcoin >/dev/null
+  kubectl -n "$namespace" get serviceaccount bitcoin-node -o jsonpath='{.automountServiceAccountToken}' | grep -Fxq false
+  kubectl -n "$namespace" get networkpolicy regtest-peer-traffic lnd-to-bitcoin lnd-bitcoin-egress >/dev/null
   kubectl -n "$namespace" rollout status statefulset/bitcoin --timeout=5m
   kubectl -n "$namespace" exec bitcoin-0 -- bitcoin-cli -regtest \
     -rpcuser=regtest -rpcpassword=local-regtest-only getblockchaininfo | \
     python3 -c 'import json,sys; assert json.load(sys.stdin)["chain"] == "regtest"'
+fi
+if [[ "$profile" == testnet ]]; then
+  kubectl -n "$namespace" get networkpolicy testnet-public-traffic >/dev/null
 fi
 
 pending=0

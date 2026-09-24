@@ -36,8 +36,10 @@ spec:
       labels:
         app.kubernetes.io/name: lnd-{{ $i }}
     spec:
-      serviceAccountName: lnd-ops
+      serviceAccountName: lnd-node
       automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: lnd
           image: {{ $root.Values.lnd.image | quote }}
@@ -72,6 +74,9 @@ spec:
             {{- end }}
           resources:
             {{- toYaml $root.Values.lnd.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: data, mountPath: /data}
         {{- if $root.Values.monitoring.enabled }}
@@ -88,6 +93,11 @@ spec:
             - --prometheus.logdir=/tmp/lndmon
           ports:
             - {name: lndmon, containerPort: 9092}
+          resources:
+            {{- toYaml $root.Values.monitoring.lndmonResources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: data, mountPath: /data, readOnly: true}
         {{- if $root.Values.monitoring.paymentCollectorImage }}
@@ -104,7 +114,10 @@ spec:
             - {name: payment-metrics, containerPort: 9093}
           resources:
             requests: {cpu: 25m, memory: 64Mi}
-            limits: {memory: 256Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: data, mountPath: /data, readOnly: true}
             - {name: payment-collector-source, mountPath: /app/payment_metrics.py, subPath: payment_metrics.py, readOnly: true}

@@ -62,6 +62,17 @@ def backup_metrics(source_path, status_path, now):
     return "\n".join(lines) + "\n"
 
 
+def certificate_metrics(cert_path):
+    """Expose only the LND TLS certificate expiry timestamp."""
+    decoded = ssl._ssl._test_decode_cert(cert_path)
+    expiry = int(ssl.cert_time_to_seconds(decoded["notAfter"]))
+    return "\n".join([
+        "# HELP lnd_ops_tls_certificate_expiry_timestamp_seconds LND TLS certificate expiry as a Unix timestamp.",
+        "# TYPE lnd_ops_tls_certificate_expiry_timestamp_seconds gauge",
+        f"lnd_ops_tls_certificate_expiry_timestamp_seconds {expiry}",
+    ]) + "\n"
+
+
 def read_wallet_state(base_url, context):
     """Read LND's unauthenticated state endpoint without a macaroon."""
     with urlopen(f"{base_url}/v1/state", context=context, timeout=10) as response:
@@ -165,7 +176,11 @@ def main():
                     now = int(time.time())
                     payments = read_pages(base_url, "/v1/payments", "payments", "last_index_offset", macaroon, context)
                     invoices = read_pages(base_url, "/v1/invoices", "invoices", "last_index_offset", macaroon, context)
-                    body = (aggregate(payments, invoices, now) + backup_metrics(scb_source, backup_status, now)).encode()
+                    body = (
+                        aggregate(payments, invoices, now)
+                        + backup_metrics(scb_source, backup_status, now)
+                        + certificate_metrics(cert)
+                    ).encode()
             except (OSError, ValueError, KeyError, TimeoutError, URLError) as error:
                 self.log_error("collection failed: %s", error)
                 self.send_error(503)

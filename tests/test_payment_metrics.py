@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from collector.payment_metrics import PAGE_SIZE, aggregate, backup_metrics, read_pages, read_wallet_state, wallet_state_metrics
+from collector.payment_metrics import PAGE_SIZE, aggregate, backup_metrics, certificate_metrics, read_pages, read_wallet_state, wallet_state_metrics
 
 
 class PaymentMetricsTest(unittest.TestCase):
@@ -107,6 +107,13 @@ class PaymentMetricsTest(unittest.TestCase):
             missing = backup_metrics(source, pathlib.Path(directory) / "missing", 10000)
         self.assertIn("lnd_ops_scb_backup_current 0", stale)
         self.assertIn("lnd_ops_scb_backup_recorded 0", missing)
+
+    def test_certificate_metrics_export_only_expiry(self):
+        decoded = {"notAfter": "Sep 24 06:48:34 2027 GMT", "subject": ((('commonName', 'private-node'),),)}
+        with patch("collector.payment_metrics.ssl._ssl._test_decode_cert", return_value=decoded):
+            output = certificate_metrics("/private/tls.cert")
+        self.assertIn("lnd_ops_tls_certificate_expiry_timestamp_seconds 1821768514", output)
+        self.assertNotIn("private-node", output)
 
 
 if __name__ == "__main__":

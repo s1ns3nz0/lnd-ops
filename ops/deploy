@@ -53,7 +53,7 @@ if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
   echo "Creating namespace $namespace"
   kubectl create namespace "$namespace"
 fi
-kubectl label namespace "$namespace" pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
+kubectl label namespace "$namespace" lnd-ops-security=protected pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
 
 echo "Applying $profile chart to $namespace"
 helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"

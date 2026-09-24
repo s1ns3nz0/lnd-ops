@@ -1,0 +1,86 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: lnd-ops-workload-baseline
+  annotations:
+    policies.kyverno.io/title: LND Ops workload baseline
+    policies.kyverno.io/description: Enforce the portable controls supported by the pinned LND stack.
+spec:
+  admission: true
+  background: true
+  validationFailureAction: Enforce
+  rules:
+    - name: require-digest-pinned-approved-images
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: {lnd-ops-security: protected}
+      validate:
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              image: "docker.io/*@sha256:*"
+    - name: require-resources
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: {lnd-ops-security: protected}
+      validate:
+        message: Every container requires CPU and memory requests and limits.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              resources:
+                requests: {cpu: "?*", memory: "?*"}
+                limits: {cpu: "?*", memory: "?*"}
+    - name: require-container-confinement
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: {lnd-ops-security: protected}
+      validate:
+        message: Containers must block privilege escalation and drop every Linux capability.
+        foreach:
+          - list: request.object.spec.containers
+            pattern:
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+    - name: require-runtime-default-seccomp
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: {lnd-ops-security: protected}
+      validate:
+        message: Pods must use the RuntimeDefault seccomp profile.
+        pattern:
+          spec:
+            securityContext:
+              seccompProfile: {type: RuntimeDefault}
+    - name: deny-host-and-privileged-access
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: {lnd-ops-security: protected}
+      validate:
+        message: Host namespaces, privileged containers, and hostPath volumes are forbidden.
+        deny:
+          conditions:
+            any:
+              - {key: "{{ request.object.spec.hostNetwork || `false` }}", operator: Equals, value: true}
+              - {key: "{{ request.object.spec.hostPID || `false` }}", operator: Equals, value: true}
+              - {key: "{{ request.object.spec.hostIPC || `false` }}", operator: Equals, value: true}
+              - {key: "{{ request.object.spec.volumes[?hostPath] | length(@) }}", operator: GreaterThan, value: 0}
+              - {key: "{{ request.object.spec.containers[?securityContext.privileged] | length(@) }}", operator: GreaterThan, value: 0}
+

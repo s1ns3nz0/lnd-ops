@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Verify Phase 4 admission, RBAC, isolation, runtime detection, and certificate controls."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.parse
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+os.environ.setdefault("KUBECONFIG", str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"))
+
+
+class Failure(Exception):
+    pass
+
+
+def command(args, check=True, timeout=180):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    if check and result.returncode:
+        raise Failure((result.stderr or result.stdout).strip().splitlines()[-1])
+    return result
+
+
+def kubectl(*args, check=True, timeout=180):
+    return command(["kubectl", *args], check=check, timeout=timeout)
+
+
+def manifest(name, image, resources=True, confined=True, privileged=False):
+    container = {"name": "probe", "image": image, "command": ["python3", "-c", "import time; time.sleep(300)"]}
+    if resources:
+        container["resources"] = {"requests": {"cpu": "5m", "memory": "16Mi"}, "limits": {"cpu": "50m", "memory": "64Mi"}}
+    if confined:
+        container["securityContext"] = {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}}
+    if privileged:
+        container["securityContext"] = {"privileged": True}
+    return {
+        "apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "namespace": "lnd-testnet"},
+        "spec": {"automountServiceAccountToken": False, "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}}, "containers": [container]},
+    }
+
+
+def server_dry_run(document, should_pass):
+    result = subprocess.run(
+        ["kubectl", "apply", "--dry-run=server", "-f", "-"], input=json.dumps(document), text=True, capture_output=True, timeout=60
+    )
+    if (result.returncode == 0) != should_pass:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise Failure(f"unexpected Kyverno decision: {detail[-1] if detail else result.returncode}")
+
+
+def prometheus(query):
+    encoded = urllib.parse.urlencode({"query": query})
+    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
+    data = json.loads(kubectl("get", "--raw", path).stdout)
+    return data.get("data", {}).get("result", [])
+
+
+def main(arguments):
+    if arguments:
+        print("Usage: ops/verify-security", file=sys.stderr)
+        return 2
+    image = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+    try:
+        policy = json.loads(kubectl("get", "clusterpolicy", "lnd-ops-workload-baseline", "-o", "json").stdout)
+        if policy.get("status", {}).get("ready") is not True:
+            raise Failure("Kyverno policy is not Ready")
+        server_dry_run(manifest("security-positive", image), True)
+        server_dry_run(manifest("security-unpinned", "docker.io/library/python:3.13"), False)
+        server_dry_run(manifest("security-no-resources", image, resources=False), False)
+        server_dry_run(manifest("security-privileged", image, confined=False, privileged=True), False)
+
+        for namespace, account in (("lnd-testnet", "lnd-node"), ("lnd-regtest", "lnd-node"), ("lnd-regtest", "bitcoin-node")):
+            allowed = kubectl("auth", "can-i", "get", "secrets", "--as", f"system:serviceaccount:{namespace}:{account}").stdout.strip()
+            if allowed != "no":
+                raise Failure(f"{namespace}/{account} can read Secrets")
+        pod = json.loads(kubectl("-n", "lnd-testnet", "get", "pod", "lnd-0-0", "-o", "json").stdout)
+        if any("service-account-token" in volume.get("name", "") for volume in pod["spec"].get("volumes", [])):
+            raise Failure("LND Pod mounts a ServiceAccount token")
+
+        probe = manifest("lnd-ops-network-probe", image)
+        applied = subprocess.run(["kubectl", "apply", "-f", "-"], input=json.dumps(probe), text=True, capture_output=True, timeout=60)
+        if applied.returncode:
+            raise Failure((applied.stderr or applied.stdout).strip().splitlines()[-1])
+        try:
+            kubectl("-n", "lnd-testnet", "wait", "--for=condition=Ready", "pod/lnd-ops-network-probe", "--timeout=3m")
+            script = "import socket; socket.setdefaulttimeout(3); socket.create_connection(('lnd-0',10009)); raise SystemExit(9)"
+            blocked = kubectl("-n", "lnd-testnet", "exec", "lnd-ops-network-probe", "--", "python3", "-c", script, check=False, timeout=30)
+            if blocked.returncode == 9:
+                raise Failure("NetworkPolicy allowed the probe to reach LND RPC")
+        finally:
+            kubectl("-n", "lnd-testnet", "delete", "pod", "lnd-ops-network-probe", "--ignore-not-found", "--wait=true", check=False)
+
+        daemonset = json.loads(kubectl("-n", "falco", "get", "daemonset", "falco", "-o", "json").stdout)
+        if daemonset["status"].get("numberReady", 0) != daemonset["status"].get("desiredNumberScheduled", -1):
+            raise Failure("Falco DaemonSet is not Ready")
+        logs = kubectl("-n", "falco", "logs", "daemonset/falco", "-c", "falco", "--tail=200").stdout
+        if "modern_ebpf" not in logs.lower() and "modern ebpf" not in logs.lower():
+            raise Failure("Falco logs do not prove the modern eBPF driver is active")
+
+        before = prometheus('sum(falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
+        baseline = float(before[0]["value"][1]) if before else 0
+        kubectl("-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "payment-metrics", "--", "python3", "-c", "print('lnd-ops-falco-test')")
+        observed = False
+        for _ in range(18):
+            time.sleep(5)
+            result = prometheus('sum(falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
+            if result and float(result[0]["value"][1]) > baseline:
+                observed = True
+                break
+        if not observed:
+            raise Failure("Falco test event did not reach Prometheus through Falcosidekick")
+        if not prometheus("lnd_ops_tls_certificate_expiry_timestamp_seconds > time()"):
+            raise Failure("live LND certificate expiry metric is absent or expired")
+        print("OK Phase 4 security: Kyverno allow/deny, RBAC, NetworkPolicy, modern eBPF Falco event, and TLS expiry")
+        return 0
+    except (Failure, OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

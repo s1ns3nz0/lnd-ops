@@ -24,7 +24,7 @@ REQUIRED_ALERTS = {
     "LndOpsWalletLocked", "LndOpsWalletStateUnavailable", "LndOpsChainSyncStalled",
     "LndOpsChannelInactive", "LndOpsLndmonUnavailable", "LndOpsPaymentCollectorUnavailable",
     "LndOpsOutgoingLiquidityLow", "LndOpsIncomingLiquidityLow", "LndOpsRepeatedPaymentFailures",
-    "LndOpsSCBBackupStale",
+    "LndOpsSCBBackupStale", "LndOpsFalcoRuntimeEvent", "LndOpsTLSCertificateExpiring",
 }
 os.environ.setdefault(
     "KUBECONFIG",

@@ -8,6 +8,7 @@ lnd:
       cpu: 100m
       memory: 256Mi
     limits:
+      cpu: 2
       memory: 2Gi
 bitcoin:
   enabled: true
@@ -16,7 +17,13 @@ bitcoin:
   storage: 10Gi
   rpcUser: regtest
   rpcPassword: local-regtest-only
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: 2, memory: 2Gi}
 monitoring:
   enabled: false
   lndmonImage: docker.io/lightninglabs/lndmon@sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5
   paymentCollectorImage: docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
+  lndmonResources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 256Mi}

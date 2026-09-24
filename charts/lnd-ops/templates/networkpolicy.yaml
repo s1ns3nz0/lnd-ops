@@ -1,10 +1,25 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: default-deny-ingress
+  name: default-deny
 spec:
   podSelector: {}
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
 {{- if .Values.monitoring.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -47,6 +62,27 @@ spec:
       ports:
         - {protocol: TCP, port: 9735}
 {{- end }}
+{{- if eq .Values.profile "testnet" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: testnet-public-traffic
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lnd-0
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 9735}
+  egress:
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0}
+      ports:
+        - {protocol: TCP, port: 9735}
+        - {protocol: TCP, port: 18333}
+{{- end }}
 {{- if eq .Values.profile "regtest" }}
 {{- if .Values.bitcoin.enabled }}
 ---
@@ -64,6 +100,25 @@ spec:
         - podSelector:
             matchExpressions:
               - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
+      ports:
+        - {protocol: TCP, port: 18443}
+        - {protocol: TCP, port: 28332}
+        - {protocol: TCP, port: 28333}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lnd-bitcoin-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [lnd-0, lnd-1]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bitcoin
       ports:
         - {protocol: TCP, port: 18443}
         - {protocol: TCP, port: 28332}

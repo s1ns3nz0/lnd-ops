@@ -1,0 +1,39 @@
+driver:
+  kind: modern_ebpf
+metrics:
+  enabled: true
+  interval: 15s
+  service:
+    create: true
+serviceMonitor:
+  create: true
+  labels: {release: lnd-ops-monitoring}
+falcosidekick:
+  enabled: true
+  replicaCount: 1
+  serviceMonitor:
+    enabled: true
+    additionalLabels: {release: lnd-ops-monitoring}
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 256Mi}
+falcoctl:
+  artifact:
+    follow:
+      enabled: false
+  config:
+    artifact:
+      install:
+        refs: [falco-rules:5.1.0]
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 1, memory: 1Gi}
+customRules:
+  lnd-ops-rules.yaml: |-
+    - rule: LND Ops Runtime Test Event
+      desc: Detect the explicit, harmless Phase 4 runtime test marker.
+      condition: spawned_process and container and proc.cmdline contains "lnd-ops-falco-test"
+      output: LND Ops runtime test event (container=%container.name proc=%proc.name)
+      priority: WARNING
+      tags: [lnd-ops, runtime-test]
+

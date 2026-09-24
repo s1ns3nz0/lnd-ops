@@ -26,8 +26,10 @@ spec:
       labels:
         app.kubernetes.io/name: bitcoin
     spec:
-      serviceAccountName: lnd-ops
+      serviceAccountName: bitcoin-node
       automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: bitcoin
           image: {{ .Values.bitcoin.image | quote }}
@@ -47,6 +49,11 @@ spec:
             - {name: rpc, containerPort: 18443}
             - {name: zmq-block, containerPort: 28332}
             - {name: zmq-tx, containerPort: 28333}
+          resources:
+            {{- toYaml .Values.bitcoin.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: data, mountPath: /home/bitcoin/.bitcoin}
   volumeClaimTemplates:
