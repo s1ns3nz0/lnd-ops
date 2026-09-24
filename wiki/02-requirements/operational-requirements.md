@@ -11,17 +11,43 @@ scope: regtest · testnet
 # 운영 요구 도출
 <MetadataCard versions="LND pinned image · K3s 1.36.4" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
 
-| LND 특성 | 플랫폼 요구 | 실패 시 확인할 불변 조건 |
-| --- | --- | --- |
-| 장기 노드 신원과 wallet/channel DB | 안정된 PVC와 이름 | pubkey와 PVC UID가 유지됨 |
-| wallet 잠금 상태 | 수동 unlock 경계와 상태 관측 | 자동화가 암호를 저장하지 않음 |
-| peer·체인 연결 | 최소 허용 egress와 동기화 지표 | sync, peer, channel을 따로 확인 |
-| 방향성 있는 채널 잔액 | inbound/outbound 별도 관측 | 목표 금액 송수신 가능 여부 |
-| SCB 변경 | PVC 밖 암호화 백업과 최신성 | live SCB와 기록된 백업 일치 |
-| 운영 자동화 | 읽기 우선, 작은 mutation allowlist | 거부와 실행 모두 감사 가능 |
+이 장에서는 “LND를 Kubernetes에 올린다”는 목표를 실제로 검사할 수 있는 요구사항으로 바꾼다. 출발점은 서버의 개수가 아니라, 재시작하거나 장애를 겪어도 사용자가 계속 같은 노드를 운영할 수 있는가다. 앞 장에서 본 지갑과 채널 상태가 여기서는 저장소, 네트워크, 검증 정책의 입력이 된다.
 
-요구사항은 리소스 목록이 아니라 **복구 후에도 참이어야 할 조건**으로 쓴다. 이 원칙이 `ops/redeploy-check`, phase acceptance, evidence schema로 이어진다.
+## 재배포 후 새 지갑이 나타난다면 성공인가
 
-## 점검
-<details class="quiz"><summary>“Pod Ready”가 노드 정상 운영을 증명하지 못하는 이유는?</summary>프로세스가 떠 있어도 wallet lock, chain sync 지연, peer 단절, channel inactive, 부족한 유동성이 남을 수 있기 때문이다.</details>
+Helm 설치가 성공하고 Pod가 Running이어도 빈 디렉터리를 마운트했다면 LND는 기존 채널을 이어서 운영할 수 없다. 이때 필요한 요구는 “PVC를 하나 만든다”보다 구체적이어야 한다. **기존 노드의 공개키, 채널 식별 정보, PVC의 UID가 재배포 전후에 유지돼야 한다.** 이름이 같은 새 PVC도 만들어질 수 있으므로 이름만 비교해서는 부족하다.
 
+이 조건을 불변 조건(invariant)이라고 부른다. [`ops/redeploy-check`](https://github.com/s1ns3nz0/lnd-ops/blob/master/ops/redeploy-check)는 이러한 비교를 실행하고, SCB와 Prometheus의 과거 샘플도 함께 확인한다. 노드 데이터뿐 아니라 운영자가 장애 전 상황을 판단할 관측 이력도 보존해야 하기 때문이다. 다만 PVC UID가 같다는 사실은 저장소 객체의 연속성만 보여주며, 데이터베이스 전체가 무결하다는 증명은 아니다.
+
+## 정상 상태를 여러 단계로 나누는 이유
+
+운영자는 먼저 프로세스가 실행되는지 확인하고, 다음으로 지갑이 열렸는지, 체인을 따라가는지, peer와 연결됐는지, 채널이 활성인지, 원하는 금액을 보낼 수 있는지 확인해야 한다. 이 단계들은 서로 다르다. 지갑 잠금은 CPU나 메모리를 늘려도 해결되지 않고, 유동성 부족은 Pod를 재시작해도 해결되지 않는다.
+
+따라서 Kubernetes의 Ready와 Lightning의 서비스 가능 상태를 분리한다. 현재 LND 템플릿에는 wallet·sync·channel을 종합하는 readiness probe가 없다. 이 간격을 `ops/verify`와 관측 지표로 확인한다. 향후 probe를 추가해도 외부 peer 장애 때문에 LND를 반복 재시작하는 정책은 피해야 한다. 네트워크가 회복되기를 기다려야 하는 상태와 프로세스 자체가 복구 불가능한 상태를 먼저 구분해야 한다.
+
+## 장애를 어느 경계까지 견딜 것인가
+
+이 프로젝트는 컨테이너 교체와 Helm 재적용을 반복할 수 있도록 설계했다. 하지만 단일 K3s 노드의 local-path 볼륨은 호스트 디스크를 공유한다. Pod 장애를 견디는 것과 디스크 상실을 견디는 것은 다른 요구다. 전자는 기존 PVC 재연결로, 후자는 seed와 별도 SCB를 사용하는 복구 절차로 다룬다.
+
+Mac과 Windows에 같은 배포를 만든다는 목표 역시 동일한 실행 결과의 재현성을 뜻한다. 두 머신이 하나의 LND를 자동으로 인계하는 HA 구성은 아니다. 각 환경은 독립적인 노드와 지갑을 가지며, 같은 신원을 두 호스트에서 동시에 실행하는 failover는 검증하지 않았다.
+
+## 보안 요구는 자동화 범위를 결정한다
+
+“언제든 재배포”를 위해 지갑 암호까지 저장하면 운영은 편해지지만 클러스터 관리자나 탈취된 자동화 계정이 지갑을 여는 경로가 추가된다. 현재는 지갑 생성과 unlock을 운영자의 대화형 단계로 남긴다. 자동화는 이 대기를 실패 원인과 구별해서 알리고, 운영자가 완료한 뒤 다시 실행할 수 있어야 한다.
+
+같은 이유로 kagent에 필요한 요구는 “모든 장애를 고친다”가 아니다. 관측 근거와 runbook을 연결하고, 허용된 작은 조치만 실행하며, 거부된 요청도 감사 가능해야 한다. 이 요구가 나중에 별도 gateway와 RBAC 설계로 이어진다.
+
+## 요구를 확인하는 읽기 전용 연습
+
+준비된 클러스터에서 다음을 실행한다. kubeconfig 설정은 [시작하기](/start-here)를 따른다.
+
+```sh
+kubectl -n lnd-regtest get pods,pvc
+kubectl -n lnd-regtest get statefulset lnd-0 -o yaml
+```
+
+Pod의 상태와 PVC의 Bound 여부를 먼저 읽고, StatefulSet의 `/data` 마운트와 claim template을 연결해 본다. 여기까지 통과해도 결제를 보낼 수 있다고 결론내리지 않는다. “아직 wallet, sync, channel, liquidity는 확인하지 않았다”고 설명할 수 있어야 이 연습을 마친 것이다.
+
+<details class="quiz"><summary>면접에서 “복구 가능하게 만들었다”는 주장에 어떤 질문을 덧붙여야 할까?</summary>어느 실패 경계까지 견디는지, 무엇이 보존되는지, 어떤 입력으로 복구하는지, 얼마나 걸리는지, 실제로 어떤 검증을 했는지 묻는다. Pod 재생성 증거를 디스크 상실 복구 증거로 사용하면 안 된다.</details>
+
+다음 [StatefulSet과 PVC](/03-kubernetes/stateful-design)에서는 이 요구를 Kubernetes 객체로 옮긴다.

@@ -16,9 +16,23 @@ LND의 컨테이너 이미지는 교체 가능하지만 `/data/.lnd`는 노드 �
 
 Deployment도 PVC를 붙일 수 있다. 그러나 replica별 안정된 identity와 claim 관계를 기본 계약으로 제공하지 않는다. 이 프로젝트는 노드마다 `lnd-0-0 → data-lnd-0-0` 관계를 검사하고, regtest의 두 노드를 명시적으로 구분한다. StatefulSet의 순서 보장보다 **안정된 이름과 전용 storage identity**가 핵심 이유다.
 
+이 chart의 두 노드는 replicas 두 개와 다르다
+
+템플릿은 `lnd-0`, `lnd-1`이라는 두 StatefulSet을 만들고 각각 replicas를 1로 둔다. 그래서 Pod는 `lnd-0-0`, `lnd-1-0`이며 claim은 각각 따로 생긴다. 이는 한 노드를 복제해 가용성을 늘리는 구성이 아니라 서로 결제하는 독립 노드 두 개를 만드는 방식이다.
+
+Kubernetes의 이름은 운영 대상의 위치를 정하고, Lightning의 pubkey는 프로토콜상 노드 신원을 정한다. 이름이 같아도 빈 지갑이면 다른 상태이고, 같은 지갑을 두 workload에 붙여도 안전한 HA가 되지 않는다. Kubernetes identity와 Lightning identity를 구분해야 scale이라는 단어를 잘못 적용하지 않는다.
+
+현재 Service는 일반 ClusterIP이며, Service 이름으로 해당 노드에 접근한다. StatefulSet에서 흔히 사용하는 headless Service와 Pod별 DNS가 이 chart에 구현됐다고 가정하면 안 된다. 필요한 계약은 노드별 Service와 단일 replica의 대응 관계다.
+
 sidecar가 같은 Pod에 있는 이유
 
 `lndmon`과 payment collector는 loopback RPC와 readonly macaroon을 사용한다. 같은 Pod와 PVC의 read-only mount를 쓰면 macaroon을 Kubernetes Secret으로 복제하거나 네트워크에 별도 RPC 경로를 열지 않아도 된다. 반면 sidecar 장애가 Pod readiness와 자원 경합에 영향을 줄 수 있고, upstream 이미지가 UID 0으로 시작하는 호환성 예외가 Pod 전체 보안 설계에 남는다.
+
+read-only라는 말의 두 범위
+
+관측 프로그램이 사용하는 readonly macaroon은 LND API 호출 권한을 줄인다. read-only volume mount는 파일 수정을 막는다. 그러나 현재 전체 `/data`를 마운트하므로 sidecar가 읽을 수 있는 다른 민감 파일까지 모두 숨겨지는 것은 아니다. 별도 프로세스라고 완전한 보안 격리가 있다고 가정하지 않는다.
+
+또한 LND 템플릿에 업무 상태를 검사하는 readiness probe는 현재 없다. Kubernetes Ready를 wallet·channel readiness와 동일시하지 않고 별도 verifier와 metric을 사용한다. 이 예외는 운영 요구에서 도출한 요구가 어느 계층에서 검사되는지 보여준다.
 
 NetworkPolicy의 역할
 

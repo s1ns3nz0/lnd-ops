@@ -9,6 +9,20 @@ LLM은 판단 보조 계층이며 권한의 근원이 아니다. 모델이 무�
 
 
 
+한 번의 진단 요청은 어디를 지나가는가
+
+운영자가 실행하는 Phase 7 exercise가 regtest fault를 만들고 kagent 진단을 호출한다. 모델은 외부 Ollama에서 실행되고, Kubernetes와 Prometheus 데이터는 프로젝트 MCP gateway의 제한된 도구를 통해 조회한다. 모델에게 kubeconfig 파일을 전달하는 구조가 아니다.
+
+모델이 inactive channel을 봤다고 “NetworkPolicy가 원인이다”를 자동 확정할 수는 없다. versioned runbook과 허용된 관측 자료를 연결해 가능 원인과 추가 확인을 설명해야 한다. 모델의 자연어 진단은 해석이고, 정책 hash와 active channel을 비교하는 검증은 결정적 코드의 역할이다.
+
+현재 실습을 Alertmanager가 자동으로 모든 incident마다 호출하는 상시 자율 대응 시스템으로 읽으면 안 된다. alert 전달 시험과 운영자가 실행하는 agent exercise가 있으며, 일반적인 event-triggered remediation loop는 별도 확장 과제다.
+
+모델의 권고와 실험 코드의 복구를 구분하기
+
+Phase 7에서 원래 peer 정책을 저장하고 `finally`에서 복원하는 주체는 exercise 스크립트다. 모델에 NetworkPolicy 수정 권한이 있는 것이 아니다. 진단 뒤 probe restart와 cooldown, 금지 요청을 검증하는 것도 gateway 정책의 결정적 시험이다.
+
+따라서 이 데모가 보여주는 것은 live fault의 진단과 작은 조치 권한의 통제다. “LLM이 LND 채널을 스스로 수리했다”는 설명은 현재 구현보다 넓다. 이런 역할 구분이 있어야 실패했을 때 모델, tool gateway, RBAC, 실험 수명주기 중 어느 계층을 조사할지 정할 수 있다.
+
 현재 검증된 기능
 
 - allowlist에 포함된 Pod, StatefulSet, PVC, Event 조회

@@ -11,12 +11,42 @@ scope: regtest · testnet
 # 장애 대응 수명주기
 <MetadataCard versions="Prometheus · Alertmanager · Kubernetes 1.36" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
 
-runbook은 명령 모음이 아니라 판단의 순서다: 증상을 확인하고, 파생 경보를 제거하고, 원인을 좁힌 뒤, 가장 작은 조치를 수행하고, 원래 불변 조건의 회복을 검증한다.
+채널 비활성 경보를 받았다고 즉시 LND를 재시작하면 잠긴 wallet이라는 문제가 추가될 수 있다. 같은 증상은 peer 종료, 네트워크 차단, 체인 상태, 의도된 정비에서 모두 나타난다. runbook은 이러한 여러 가능성 사이에서 다음 확인 대상을 고르는 절차다.
 
-```text
-Alert → affected scope → evidence → likely causes → safe checks
-      → approval boundary → action → rollback → health verification
+## 경보가 원인을 말해주지는 않는다
+
+`LndOpsChannelInactive`는 inactive 채널이 있다는 신호가 일정 시간 유지됐다는 뜻이다. 어느 네트워크 장비가 패킷을 버렸는지까지 증명하지 않는다. 따라서 첫 단계는 경보의 namespace와 workload를 확인하고, wallet과 exporter가 상태를 제대로 보고하는지 확인하는 것이다.
+
+다음으로 peer 연결과 최근 변경을 본다. 직전에 NetworkPolicy를 바꿨다면 연결 장애의 유력한 단서지만, 변경 시점만으로 원인을 확정하지 않는다. 실제 적용된 정책, 대상 Pod, Event와 로그를 연결한다. [`channel-inactive` runbook](https://github.com/s1ns3nz0/lnd-ops/blob/master/docs/runbooks/channel-inactive.md)은 읽기, 가설, 수동 조치와 종료 기준을 한 흐름으로 묶는다.
+
+## 사례: peer 정책 변경 뒤 채널이 inactive가 됨
+
+학습용 시나리오에서 wallet과 chain sync는 정상인데 channel만 inactive로 변했다고 가정하자. 이 경우 지갑 복구보다 peer 통신을 먼저 확인할 근거가 있다. 최근 정책 변경과 일치한다면 원래 정책을 복원하는 것이 작은 조치다. channel force close는 연결 문제에 비해 훨씬 큰 영속 상태 변경이다.
+
+정책을 복원한 뒤에도 incident는 끝나지 않는다. API가 patch를 수락했는지, peer가 재연결됐는지, 채널이 active로 돌아왔는지, exporter가 새 값을 수집했는지 순서대로 확인한다. alert가 사라졌더라도 scrape가 끊겨 시계열이 없어졌다면 서비스 회복으로 해석하면 안 된다.
+
+## 장애 주입으로 무엇을 시험했는가
+
+[`ops/exercise-phase6-faults`](https://github.com/s1ns3nz0/lnd-ops/blob/master/ops/exercise-phase6-faults)는 regtest 채널 격리, 일회성 CrashLoop Pod, Falco marker를 사용한다. metric이나 event가 생기는 것뿐 아니라 실제 경보 지속 시간, Alertmanager 전달, runbook 연결, 원복 후 상태까지 확인하는 시험이다.
+
+Falco marker 성공은 해당 탐지·전달 경로가 작동한다는 증거다. 가능한 모든 침해를 탐지했다는 증거는 아니다. 마찬가지로 regtest의 정책 차단 실습은 테스트넷 peer의 장기 장애나 모든 네트워크 실패를 대표하지 않는다. [공개 Phase 6 증거](https://github.com/s1ns3nz0/lnd-ops/blob/master/docs/evidence/windows-phase6-faults-2026-09-24.md)는 시험 범위를 확인할 때 사용한다.
+
+## 실행 취소와 원복을 미리 설계하는 이유
+
+장애를 넣는 코드보다 원래 상태를 기억하는 코드가 먼저 필요하다. 정책을 “허용으로 바꾸기”만 하면 사고 전 정책의 좁은 범위가 사라질 수 있다. 원본을 저장하고 정확히 되돌리는 것과, 일반적인 기본 정책을 재적용하는 것은 다르다.
+
+`finally`는 정상 예외나 처리 가능한 중단에서 원복을 돕지만 전원 단절까지 보장하지 않는다. 그래서 별도의 정리 절차와 사후 검증이 필요하다. [`ops/demo cleanup`](https://github.com/s1ns3nz0/lnd-ops/blob/master/ops/demo-cleanup)은 정해진 잔여물만 대상으로 하며, 이를 지갑 복구나 전체 환경 초기화에 대신 사용하지 않는다.
+
+## 변경 없이 대응 흐름 읽기
+
+```sh
+kubectl -n lnd-regtest get networkpolicy
+kubectl -n lnd-regtest get events --sort-by=.lastTimestamp
+ops/demo --to 7 --dry-run --no-color
 ```
 
-Phase 6은 channel 격리, CrashLoop, Falco marker를 실제로 주입하고 alert 전달과 복구를 검증했다. 상태 변경 실습은 [`docs/phase9-demo-runbook.md`](https://github.com/s1ns3nz0/lnd-ops/blob/master/docs/phase9-demo-runbook.md)를 따른다.
+이 출력으로 정책 이름, 최근 Event, 데모가 변경하는 단계와 검증하는 단계를 구분한다. 실제 fault 실행은 선행 조건과 원복 절차가 있는 [데모 runbook](https://github.com/s1ns3nz0/lnd-ops/blob/master/docs/phase9-demo-runbook.md)에서 수행한다.
 
+<details class="quiz"><summary>면접 질문: alert가 cleared인데 incident를 닫지 않을 이유는?</summary>telemetry가 사라졌거나 rule이 삭제됐을 수도 있다. 업무 신호가 정상으로 돌아왔고 관측도 계속 정상이라는 두 조건을 확인해야 한다.</details>
+
+다음 [심층 방어](/09-security/defense-in-depth)는 장애 대응 이전에 잘못된 변경과 불필요한 접근을 줄이는 통제를 설명한다.
