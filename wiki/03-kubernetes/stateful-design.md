@@ -129,3 +129,7 @@ kubectl -n lnd-testnet get networkpolicy
 
 ### 면접 질문
 > 단일 노드 local-path에서 StatefulSet을 썼다는 사실만으로 고가용성을 주장할 수 없는 이유와, 다중 노드로 옮길 때 먼저 바꿔야 할 계약은 무엇인가?
+
+## 이 설계가 정해진 과정
+
+[플랫폼 포트폴리오에 K3s를 선택한 이유](/decisions/#adr-001) · [노드별 StatefulSet과 PVC의 경계](/decisions/#adr-002). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

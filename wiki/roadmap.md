@@ -46,3 +46,7 @@ LND 사용 사례와 첫 결제 → 내부 구조와 유동성 → 요구사항 
 6. [관측](/07-observability/signals-to-decisions)과 [장애 대응](/08-incidents/runbook-lifecycle): 어느 단계가 막혔는지 어떻게 확인하는가?
 7. [보안](/09-security/defense-in-depth)과 [복구](/09-security/scb-recovery): 잘못된 접근과 상태 손실을 어떻게 다루는가?
 8. [자동 대응](/10-automation/observe-to-act), [검증](/11-validation/evidence), [회고](/12-retrospective/tradeoffs): 어디까지 자동화했고 무엇으로 증명하는가?
+
+## 설계 결정을 함께 읽기
+
+각 장 마지막의 결정 링크는 대화에서 요구가 어떻게 바뀌었는지 설명한다. 전체 기록은 [우리가 내린 엔지니어링 결정](/decisions/)에서 읽는다. Mac 동등 지원, 지갑 재사용, 같은 PC 백업, 로컬 접속, 제한된 AI 대응, 세밀한 삭제가 각각 어떤 비용과 검증 범위를 갖는지 연결한다.

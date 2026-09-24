@@ -157,3 +157,6 @@ kubectl -n lnd-monitoring get prometheusrule lnd-ops-infrastructure -o yaml
 ### 면접 질문
 > 결제 실패율 alert를 설계할 때 낮은 트래픽, 라우팅 실패의 정상 변동, 방향별 liquidity를 어떻게 함께 다룰 것인가?
 
+## 이 설계가 정해진 과정
+
+[실제 결제 데이터부터 통합하기로 한 결정](/decisions/#adr-004). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

@@ -83,3 +83,7 @@ kubectl get clusterpolicy lnd-ops-workload-baseline
 <details class="quiz"><summary>면접 질문: Kyverno와 Falco를 둘 다 두는 이유를 한 사건으로 설명한다면?</summary>Kyverno는 hostPath나 privilege 같은 배포 조건 위반을 막는다. 그 조건을 만족한 이미지의 프로세스가 침해된 뒤 나타나는 runtime 행위는 별도의 탐지 대상이다. 두 도구의 관측 시점과 책임이 다르다.</details>
 
 다음 [SCB와 복구](/09-security/scb-recovery)에서는 예방과 탐지가 실패하거나 disk를 잃었을 때의 경계를 다룬다.
+
+## 이 설계가 정해진 과정
+
+[별도 방화벽 제품을 빼고 Kubernetes 통제를 택한 이유](/decisions/#adr-005) · [관리 화면의 로컬 접속 원칙](/decisions/#adr-011). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

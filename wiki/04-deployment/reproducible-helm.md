@@ -71,3 +71,7 @@ kubectl -n kube-system get pods
 <details class="quiz"><summary>Helm 재실행이 성공했는데 왜 PVC UID와 노드 공개키를 다시 확인할까?</summary>선언된 리소스를 적용하는 성공과 기존 애플리케이션 상태를 보존하는 성공이 다르기 때문이다. 잘못된 claim을 붙여도 프로세스는 정상 기동할 수 있다.</details>
 
 다음 [지갑과 키](/05-wallet/wallet-boundaries)에서는 배포 자동화가 멈추는 지점을 설명한다.
+
+## 이 설계가 정해진 과정
+
+[Mac을 동등한 실행 대상으로 바꾼 결정](/decisions/#adr-008) · [두 종류의 재배포 검증](/decisions/#adr-009). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

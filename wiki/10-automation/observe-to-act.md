@@ -107,3 +107,7 @@ Phase 7은 regtest peer NetworkPolicy를 임시 차단해 inactive channel 신�
 
 ### 면접 질문
 > 자동 remediation 범위를 넓힐 때 위험도를 어떤 기준으로 분류하고, 승인과 rollback을 어떤 상태 머신으로 표현할 것인가?
+
+## 이 설계가 정해진 과정
+
+[Mac Ollama 재사용과 자동 조치의 제한](/decisions/#adr-006). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

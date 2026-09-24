@@ -80,3 +80,7 @@ kubectl -n lnd-regtest exec lnd-0-0 -c lnd -- \
 <details class="quiz"><summary>1,000,000 sat capacity의 채널인데 10,000 sat를 받지 못한다면 무엇부터 볼까?</summary>채널이 active인지, 상대 방향의 가용 잔액이 있는지, 경로와 HTLC 제약은 무엇인지 확인한다. 총 capacity 하나로 수신 능력을 판단하지 않는다.</details>
 
 다음 [관측과 경보](/07-observability/signals-to-decisions)는 이 판단 순서를 metric과 alert로 옮긴다.
+
+## 이 설계가 정해진 과정
+
+[채널 관측에서 송수신·유동성으로 넓어진 범위](/decisions/#adr-004). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

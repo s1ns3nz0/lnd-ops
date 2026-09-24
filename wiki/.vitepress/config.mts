@@ -33,7 +33,7 @@ export default defineConfig({
       {text: '9. 보안과 복구', items: [{text: '심층 방어', link: '/09-security/defense-in-depth'}, {text: 'SCB 복구', link: '/09-security/scb-recovery'}]},
       {text: '10. kagent 자동 대응', items: [{text: 'Observe에서 Verify까지', link: '/10-automation/observe-to-act'}]},
       {text: '11. 운영 검증', items: [{text: '증거 기반 검증', link: '/11-validation/evidence'}]},
-      {text: '12. 설계 회고', items: [{text: '한계와 다음 단계', link: '/12-retrospective/tradeoffs'}, {text: 'ADR 색인', link: '/decisions/'}]},
+      {text: '12. 설계 회고', items: [{text: '한계와 다음 단계', link: '/12-retrospective/tradeoffs'}, {text: '우리가 내린 결정', link: '/decisions/'}]},
     ],
     socialLinks: [{icon: 'github', link: repo}],
     editLink: {pattern: `${repo}/edit/master/wiki/:path`, text: 'GitHub에서 이 페이지 편집'},

@@ -18,7 +18,7 @@
 - [Observe에서 Verify까지](https://s1ns3nz0.github.io/lnd-ops/llms/ko/10-automation/observe-to-act.md): kagent와 Ollama가 runbook을 사용하되 권한 경계를 넘지 않는 자동 대응 구조
 - [증거 기반 검증](https://s1ns3nz0.github.io/lnd-ops/llms/ko/11-validation/evidence.md): 커밋, 플랫폼, 불변 조건을 비밀 없는 evidence로 연결한다
 - [한계와 다음 단계](https://s1ns3nz0.github.io/lnd-ops/llms/ko/12-retrospective/tradeoffs.md): 현재 로컬 단일 노드 설계가 증명한 것과 증명하지 않은 것을 구분한다
-- [ADR 색인](https://s1ns3nz0.github.io/lnd-ops/llms/ko/decisions.md): 시스템 전체에 영향을 주는 기술 선택과 대안
+- [우리가 내린 엔지니어링 결정](https://s1ns3nz0.github.io/lnd-ops/llms/ko/decisions.md): 대화에서 정한 요구와 변경 이력을 현재 설계·구현·검증·보류 과제에 연결한다
 - [LND Ops Wiki](https://s1ns3nz0.github.io/lnd-ops/llms/ko/index.md): LND 운영 요구를 Kubernetes 설계와 연결하는 학습 Wiki
 - [학습 지도](https://s1ns3nz0.github.io/lnd-ops/llms/ko/roadmap.md): LND 운영 생명주기를 따라가는 12단계 학습 경로
 - [안전하게 시작하기](https://s1ns3nz0.github.io/lnd-ops/llms/ko/start-here.md): 읽기 전용 학습, 기존 클러스터 관찰, regtest 실습의 시작 조건과 안전 경계

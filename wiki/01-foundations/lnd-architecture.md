@@ -148,3 +148,7 @@ kubectl -n lnd-regtest exec lnd-0-0 -c lnd -- \
 ### 면접 질문
 
 > LND를 일반적인 stateless Deployment로 운영했을 때 가장 위험한 실패 모드는 무엇이며, readiness probe만으로 왜 막을 수 없는가?
+
+## 이 설계가 정해진 과정
+
+[같은 노드 신원을 보존하기로 한 결정](/decisions/#adr-002) · [regtest와 testnet을 나눈 결정](/decisions/#adr-003). 대화에서 정한 방향과 현재 구현·보류 범위를 함께 읽는다.

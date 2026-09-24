@@ -45,4 +45,5 @@ features:
 - LND가 처음이라면 [사용 사례와 전체 흐름](/01-foundations/lnd-workflow)
 - 전체 순서를 보려면 [학습 지도](/roadmap)
 - 상태 보존이 궁금하면 [LND 구조와 상태](/01-foundations/lnd-architecture)
+- 설계 이유와 논의 이력은 [우리가 내린 엔지니어링 결정](/decisions/)
 - 운영 자동화가 궁금하면 [신호에서 판단까지](/07-observability/signals-to-decisions)
