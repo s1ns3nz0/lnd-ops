@@ -11,6 +11,14 @@ scope: regtest · testnet
 # 안전하게 시작하기
 <MetadataCard versions="K3s 1.36.4 · kubectl 1.36.2 · Helm 4.1.4" platforms="macOS arm64 · Windows WSL2 amd64" verified="2026-09-24" commit="841692b" status="실제 환경 검증됨" scope="regtest · testnet" />
 
+## 배경지식부터 읽는 순서
+
+클러스터가 없어도 본문은 읽을 수 있다. 먼저 [LND 구조](/01-foundations/lnd-architecture)에서 UTXO, funding transaction, commitment를 읽고 “키 복원과 최신 채널 상태 복원은 왜 다른가”를 설명해 본다. 이어서 [채널과 유동성](/06-payments/channel-liquidity)의 두 노드 잔액 계산을 해 보면 총 capacity와 송수신 가능량을 구분할 수 있다.
+
+그다음 [Kubernetes 설계](/03-kubernetes/stateful-design)에서 선언이 Pod와 디스크로 연결되는 과정을 따라간다. [관측](/07-observability/signals-to-decisions)은 그 상태를 어떤 시간 표본으로 읽는지, [보안](/09-security/defense-in-depth)은 누가 어느 경로로 접근하는지, [자동 대응](/10-automation/observe-to-act)은 그 관측과 권한을 모델에 어떻게 제공하는지를 설명한다.
+
+각 장의 수치 예시는 계산 원리를 배우기 위한 것이다. 현재 코드의 실제 임계값과 검증 결과는 본문에서 별도로 표시한다. 기초 설명을 읽은 뒤 구현 근거를 열어 “이 원리가 이 파일의 어떤 설정으로 표현됐는가”를 연결하는 방식으로 공부한다.
+
 ## 먼저 모드를 고른다
 
 | 모드 | 필요한 환경 | 상태 변경 | 시작점 |

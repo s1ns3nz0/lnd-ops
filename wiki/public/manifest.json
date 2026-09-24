@@ -11,8 +11,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/01-foundations/lnd-architecture",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/01-foundations/lnd-architecture.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "1719d38e9f4c3bc634a894868c246b5e360e3523d0116bd8f267f77ca5aea51b",
-      "bytes": 6854,
+      "sha256": "ff489173dd42295a39ab9e8330c975aafc7b4736d5fce4acd419e17c8b5282a3",
+      "bytes": 11022,
       "source": "wiki/01-foundations/lnd-architecture.md"
     },
     {
@@ -24,8 +24,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/02-requirements/operational-requirements",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/02-requirements/operational-requirements.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "dec5524d49d1ad6edcdb79b155f5588ff9fb7db34e7dd0eedbe74944f01909bc",
-      "bytes": 4809,
+      "sha256": "796c95ba5f231ba06205256adcba703a5817ff24382a3a13e95ca6319b95023c",
+      "bytes": 7628,
       "source": "wiki/02-requirements/operational-requirements.md"
     },
     {
@@ -37,8 +37,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/03-kubernetes/stateful-design",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/03-kubernetes/stateful-design.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "20b6b49e319a9a3c542747bfd4ed9a2ddeefff44ab5bfde046448ea3b4d4a536",
-      "bytes": 6275,
+      "sha256": "d4ff323f0e1d07ef00369b20e5f8c8c84636449d93ab78b3da868acc39bef595",
+      "bytes": 10268,
       "source": "wiki/03-kubernetes/stateful-design.md"
     },
     {
@@ -50,8 +50,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/04-deployment/reproducible-helm",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/04-deployment/reproducible-helm.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "52aada7e5080479efd1e565714db22f64f347d38852becef08f523592faa7673",
-      "bytes": 4167,
+      "sha256": "1dd74e249b3750ee157d9e98cd4e2b5e5c564b4c177b8309890c2e176b90fb26",
+      "bytes": 7016,
       "source": "wiki/04-deployment/reproducible-helm.md"
     },
     {
@@ -63,8 +63,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/05-wallet/wallet-boundaries",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/05-wallet/wallet-boundaries.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "0425bd5ac2f3b744a4e7160d32853952f99d82d4b085a3dc8a73bc154951b846",
-      "bytes": 4770,
+      "sha256": "cde83753b3490bc14db10c6193d87c71324bb1d26d25959c48c681ec31877607",
+      "bytes": 7230,
       "source": "wiki/05-wallet/wallet-boundaries.md"
     },
     {
@@ -76,8 +76,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/06-payments/channel-liquidity",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/06-payments/channel-liquidity.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "dd726007ce9359be31f313615cbf1019fa0125ec55a40456c62b5345c7c39ac5",
-      "bytes": 4381,
+      "sha256": "25913aa41b92d23f31e5494beca741a0e71a9032c5d30368be7554d365730cfd",
+      "bytes": 8620,
       "source": "wiki/06-payments/channel-liquidity.md"
     },
     {
@@ -89,8 +89,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/07-observability/signals-to-decisions",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/07-observability/signals-to-decisions.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "3e226562e574f3b7cee4f856ede3f83536bbe2cb46f3b593426bb05762882d53",
-      "bytes": 7389,
+      "sha256": "5c7ee950a4c4b792bbda604f12ca311059344dc0d7e6f271b4479ca06df951ff",
+      "bytes": 11388,
       "source": "wiki/07-observability/signals-to-decisions.md"
     },
     {
@@ -102,8 +102,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/08-incidents/runbook-lifecycle",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/08-incidents/runbook-lifecycle.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "d7e3413d389f24ed78f9391ca1ac67d57dc99b7738bed3f6fa8459e66fd9662b",
-      "bytes": 3939,
+      "sha256": "dbad6400a924cee88b0b579fc4eb905758bb82b09efba4c11358530cb9500ba7",
+      "bytes": 6529,
       "source": "wiki/08-incidents/runbook-lifecycle.md"
     },
     {
@@ -115,8 +115,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/09-security/defense-in-depth",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/09-security/defense-in-depth.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "285a9100626c7b7152030ceb53b655049aa0b054235ac227f722da3640bc266b",
-      "bytes": 5458,
+      "sha256": "b95298cd841e9d01151795b30cdd56d9dac3941a7965a9f292c7f7246dc637de",
+      "bytes": 9049,
       "source": "wiki/09-security/defense-in-depth.md"
     },
     {
@@ -128,8 +128,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/09-security/scb-recovery",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/09-security/scb-recovery.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "c17438fe31ff912c8abea0d24beac0872039a599de5622be3c3c133819dafa9b",
-      "bytes": 4118,
+      "sha256": "ce8622bca71a5463a78a717f7c41db379e98f63906b252eb69060b5fc5177e71",
+      "bytes": 5976,
       "source": "wiki/09-security/scb-recovery.md"
     },
     {
@@ -141,8 +141,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/10-automation/observe-to-act",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/10-automation/observe-to-act.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "1bb2346be1d2a40207bc54d70e7377eacdad39719ae6277bdb69ff1c0e1ab96b",
-      "bytes": 5803,
+      "sha256": "0705370f49777893e38125c040a7dca3c56d73c3fbfa34eb19a81d9a8c3c20ee",
+      "bytes": 8738,
       "source": "wiki/10-automation/observe-to-act.md"
     },
     {
@@ -154,8 +154,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/11-validation/evidence",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/11-validation/evidence.md",
       "lastUpdated": "2026-09-25",
-      "sha256": "d00a45973754e5a6dfef07eeb9ce273bde6a61965d6c374a3c44be99dd14393c",
-      "bytes": 3765,
+      "sha256": "4071d31e7c059ee006df4333598f2297ae5ae313268e22468e76898bb9cf86eb",
+      "bytes": 6194,
       "source": "wiki/11-validation/evidence.md"
     },
     {
@@ -167,8 +167,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/12-retrospective/tradeoffs",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/12-retrospective/tradeoffs.md",
       "lastUpdated": "2026-09-25",
-      "sha256": "e29ad3276f326d78beae5a9c00a34677100c2fd8122e140ae3577bc842d26489",
-      "bytes": 4322,
+      "sha256": "3298417fe82386cb833edb13f7bf620a3180924bb4582d63461dc577b1cfba87",
+      "bytes": 6300,
       "source": "wiki/12-retrospective/tradeoffs.md"
     },
     {
@@ -219,8 +219,8 @@
       "url": "https://s1ns3nz0.github.io/lnd-ops/start-here",
       "markdownUrl": "https://s1ns3nz0.github.io/lnd-ops/llms/ko/start-here.md",
       "lastUpdated": "2026-09-24",
-      "sha256": "9214a3d0689054260c383e256a324380cb89aa0dc5e844e69f1401f7c2b3f8df",
-      "bytes": 2690,
+      "sha256": "da61165c4f6c31a90a28acbfcb571bf90731ce2c4717fd7d0a220d30297678cb",
+      "bytes": 3710,
       "source": "wiki/start-here.md"
     }
   ]

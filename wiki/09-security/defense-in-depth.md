@@ -13,6 +13,29 @@ scope: regtest · testnet
 
 LND의 wallet 볼륨에 접근할 수 있는 프로세스와 Kubernetes 리소스를 변경할 수 있는 계정은 서로 다른 권한을 가진다. 한 가지 보안 도구를 설치했다는 이유로 두 경계가 모두 보호되지는 않는다. 이 장에서는 잘못된 Pod가 배포되고, 실행된 프로세스가 통신하거나 API를 호출하는 순서로 통제를 따라간다.
 
+## 배경 1: 요청이 통과하는 세 가지 질문
+
+보안을 읽을 때는 “누가 요청했는가”, “무엇을 할 수 있는가”, “그 요청 내용이 배포 규칙에 맞는가”를 구분한다. Kubernetes에서 ServiceAccount는 workload가 API를 호출할 때 사용하는 신원이고, RBAC는 그 신원에 허용된 리소스와 동작을 정한다. 그다음 admission 단계의 정책은 허용된 변경 요청이라도 내용이 배포 기준에 맞는지 검사할 수 있다. [ServiceAccount](https://kubernetes.io/docs/concepts/security/service-accounts/) · [Admission 단계](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/)
+
+예를 들어 gateway가 Pod를 조회할 수 있다는 것은 그 Pod 안에서 명령을 실행할 수 있다는 뜻이 아니다. API의 대상 리소스와 동작은 별도로 허용해야 한다. 반대로 노드 파일을 읽는 프로세스의 행동은 Kubernetes API 요청이 아닐 수 있으므로 RBAC만으로 통제되지 않는다. 어떤 통제를 선택할지는 공격이나 실수가 지나가는 경로에 달려 있다.
+
+이 프로젝트에서 LND의 ServiceAccount token을 자동 마운트하지 않는 이유는 LND가 API를 호출할 필요가 없기 때문이다. 쓸모없는 자격 증명을 컨테이너에 넣지 않으면 프로세스 침해 때 사용할 수 있는 경로 하나를 줄인다. 하지만 이것만으로 LND의 RPC나 볼륨 접근까지 제한되는 것은 아니므로 다른 계층의 통제가 이어진다.
+
+## 배경 2: 네트워크 정책은 양쪽 방향을 따로 본다
+
+Pod가 NetworkPolicy의 ingress 또는 egress 격리 대상이 되면 해당 방향에서 허용되는 트래픽을 정책들의 합으로 판단한다. 출발지의 egress와 목적지의 ingress가 모두 격리된 경우 연결이 되려면 양쪽에서 허용되어야 한다. 한쪽에 allow 규칙을 추가했다고 다른 쪽의 제한까지 사라지는 것은 아니다. [NetworkPolicy 동작](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+
+예를 들어 Prometheus가 exporter를 읽으려면 목적지의 metrics 포트에 대한 ingress뿐 아니라 출발지 egress도 맞아야 한다. 이름으로 접근한다면 DNS 질의 경로도 필요하다. 따라서 default deny를 적용한 직후 “모든 것이 끊겼다”면 실제 서비스 경로와 이름 해석 경로를 나누어 확인한다.
+
+NetworkPolicy의 기본 역할은 네트워크 도달 범위를 제한하는 것이다. 그 포트로 연결한 사용자가 어떤 LND RPC를 실행할 수 있는지는 TLS와 macaroon 같은 애플리케이션 경계에서 다룬다. 이 차이를 알면 네트워크 허용을 곧 관리자 권한 허용으로 이해하는 실수를 피할 수 있다.
+
+## 배경 3: 컨테이너 안의 root 권한을 여러 겹으로 줄이는 이유
+
+Linux capability는 전통적인 root 권한을 나눈 단위다. capability 제거, privilege escalation 제한, seccomp의 시스템 호출 제한은 각각 다른 권한 경로를 줄인다. seccomp `RuntimeDefault`는 런타임 기본 프로파일을 쓰는 것이며 LND 업무 의미를 이해하는 규칙은 아니다. 이러한 필드는 프로세스의 실행 권한을 제한하며, 파일 소유권이나 RPC 권한 설정을 대신하지 않는다. [Pod securityContext](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/)
+
+따라서 root로 실행되는 이미지에서 capability만 제거한 상태와, 검증된 비root UID로 최소 파일에만 접근하는 상태는 동일하지 않다. 아래에서 설명하는 현재 호환성 예외를 남긴 채 “non-root 완료”라고 표시하면 보호 수준을 과장하게 된다. 예외는 실제 이미지와 PVC 권한을 함께 수정하고 기동·재배포를 검증한 뒤 닫아야 한다.
+
+
 ## 먼저 보호할 자산과 신뢰할 주체를 정한다
 
 보호 대상은 wallet·채널 데이터, RPC 자격 증명, SCB, 클러스터 관리 권한이다. 현재 host와 운영자 kubeconfig는 관리자 신뢰 경계에 있다. 이 계정을 탈취한 공격자로부터 같은 host 안의 모든 자산을 완전히 보호한다고 주장하지 않는다.

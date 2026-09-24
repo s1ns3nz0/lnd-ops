@@ -6,6 +6,31 @@ StatefulSet과 PVC
 
 
 
+배경 1: Kubernetes는 원하는 상태를 유지한다
+
+**Pod**는 Kubernetes가 배치하는 실행 단위로, 하나 이상의 컨테이너가 네트워크와 필요한 볼륨을 공유한다. **StatefulSet**은 안정된 이름과 저장소 연결이 필요한 Pod를 관리하는 컨트롤러다. 컨테이너 하나가 프로그램의 실행 환경이라면, Pod는 그 프로그램과 함께 실행할 보조 프로세스를 묶는 단위로 이해할 수 있다.
+
+Kubernetes API에 StatefulSet을 만들면 API 서버가 직접 LND를 실행하는 것은 아니다. 컨트롤러가 선언을 보고 Pod 같은 하위 리소스를 만들고, 스케줄러가 실행할 노드를 선택하며, 그 노드의 kubelet과 컨테이너 런타임이 실제 컨테이너를 시작한다. 컨트롤러는 현재 상태와 원하는 상태의 차이를 반복해서 줄인다. 이를 **reconciliation**, 즉 조정 과정이라고 부른다. Kubernetes 구성 요소
+
+그래서 `kubectl apply`의 성공은 선언이 받아들여졌다는 뜻이다. 이미지 다운로드, 볼륨 준비, 프로세스 시작, LND의 지갑 준비까지 성공했다는 뜻은 아니다. Helm의 대기 시간이 끝났을 때도 “Helm이 느리다”에서 멈추지 않고 어느 단계가 진행되지 않는지 찾아야 한다.
+
+이 프로젝트에서 StatefulSet의 안정된 이름은 운영자가 같은 노드를 추적하도록 돕고, PVC는 재생성된 Pod가 기존 데이터를 사용하도록 돕는다. 이름이 같다는 사실과 저장 데이터가 같다는 사실은 별도다. 따라서 재배포 검증에서 Pod 이름만 보지 않고 PVC와 LND identity도 비교한다.
+
+배경 2: PVC가 실제 디스크로 이어지는 과정
+
+**PVC(PersistentVolumeClaim)**는 “이 크기와 접근 방식의 저장공간이 필요하다”는 요청이다. **PV(PersistentVolume)**는 Kubernetes가 관리하는 실제 저장공간의 표현이다. **StorageClass**는 어떤 provisioner가 어떤 방식으로 공간을 준비할지를 정한다. 동적 provisioning에서는 이 요청을 받은 provisioner가 저장공간과 PV를 마련하고 PVC에 연결한다. 연결이 완료되면 PVC가 `Bound`가 된다. PV와 PVC
+
+이 프로젝트의 local-path는 노드의 로컬 디스크를 사용한다. PVC가 존재한다고 다른 PC에도 데이터가 복제된 것은 아니다. 또한 `ReadWriteOnce`는 기본적으로 한 노드에서 읽기·쓰기로 마운트하는 접근 모드이며, 같은 노드의 여러 Pod 접근까지 막는 단일 writer 잠금이라고 해석하면 안 된다.
+
+이전에 Windows에서 봤던 `Pod Pending → PVC Pending → local-path-provisioner CrashLoopBackOff`가 좋은 예다. provisioner가 Kubernetes API의 Service 주소에 접속하지 못하면 저장공간을 준비할 수 없고, 그 결과 LND는 시작할 볼륨을 얻지 못한다. 이 상태에서 wallet 암호나 LND peer 설정을 바꾸어도 아직 실행되지 않은 애플리케이션의 문제를 고치려는 셈이다. PVC Event와 provisioner 로그를 먼저 보는 이유가 여기 있다.
+
+배경 3: Service 주소가 유지되어도 뒤의 프로세스는 바뀐다
+
+Pod IP는 재생성 과정에서 바뀔 수 있다. Service는 선택 조건에 맞는 Pod들에 접근할 주소를 제공하고, EndpointSlice가 실제 대상 주소 정보를 표현한다. 이 chart의 Service는 일반 ClusterIP이며 headless Service가 아니다. `bitcoin:18443` 같은 이름을 사용하는 것은 바뀔 수 있는 Pod IP를 설정에 직접 넣지 않기 위해서다. Service 동작
+
+다만 주소를 찾는 것, TCP 연결이 되는 것, RPC 권한이 있는 것, 지갑이 열린 것은 모두 다른 조건이다. DNS가 정상이어도 NetworkPolicy가 패킷을 막을 수 있고, TCP가 연결돼도 TLS나 macaroon 검증이 실패할 수 있다. 이러한 계층을 구분하면 네트워크 장애와 애플리케이션 상태를 혼동하지 않는다.
+
+
 설계의 출발점
 
 LND의 컨테이너 이미지는 교체 가능하지만 `/data/.lnd`는 노드 자체에 가깝다. Kubernetes는 이 둘을 Pod와 PVC로 분리한다. StatefulSet은 각 노드에 안정된 ordinal과 전용 claim을 만들고, Service는 교체된 Pod에 같은 논리 주소를 제공한다.

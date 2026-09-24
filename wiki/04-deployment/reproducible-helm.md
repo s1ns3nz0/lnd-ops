@@ -13,6 +13,23 @@ scope: regtest · testnet
 
 처음 설치할 때는 파일 몇 개와 명령 순서를 기억하는 것으로 충분해 보인다. 하지만 Mac에서 성공한 설치를 Windows에서 반복하거나, 지갑이 있는 환경에 새 설정을 적용하면 그 기억은 배포 계약이 되지 못한다. 이 장은 설치 과정에서 무엇을 고정하고 무엇을 환경별 입력으로 남겼는지 설명한다.
 
+## 배경: Mac과 Windows에서 Linux 컨테이너가 실행되는 곳
+
+컨테이너 이미지는 프로그램과 사용자 공간 파일을 담지만 실행에 필요한 커널 전체를 포함하는 가상 머신 이미지는 아니다. 이 프로젝트의 Linux 컨테이너는 Linux 커널 위에서 실행되어야 한다. Mac에서는 Lima의 Linux VM이, Windows에서는 WSL2의 Linux 환경이 이 경계를 제공한다. 따라서 “두 OS에서 같은 수준으로 실행한다”는 목표에는 호스트 준비와 Linux 내부 배포가 모두 포함된다. [Docker 컨테이너 설명](https://docs.docker.com/get-started/docker-concepts/the-basics/what-is-a-container/)
+
+CPU 아키텍처도 별도의 축이다. Apple Silicon의 arm64와 일반 Windows PC의 amd64는 같은 기계어를 실행하지 않는다. multi-platform 이미지의 index는 플랫폼별 이미지를 가리키고 런타임은 자신의 플랫폼에 맞는 것을 선택한다. 따라서 하나의 index digest를 사용하더라도 내려받는 플랫폼별 이미지의 digest는 다를 수 있다. 반대로 특정 플랫폼 manifest만 고정하면 다른 아키텍처를 지원하지 못할 수 있다. [Docker multi-platform 이미지](https://docs.docker.com/build/building/multi-platform/)
+
+두 환경에서 이미지가 실행된다는 사실만으로 모든 동작이 같다고 할 수는 없다. 파일 권한, VM 디스크 공간, 네트워크 경로, 커널 관측 기능도 확인해야 한다. 이 때문에 프로젝트는 이미지 빌드 결과와 실제 Linux 환경에서의 acceptance를 구분한다.
+
+## 배경: Helm의 재실행과 데이터의 되돌리기는 다르다
+
+Helm chart는 Kubernetes 리소스를 만드는 템플릿 묶음이고, values는 그 템플릿에 넣는 입력이다. release는 특정 이름으로 설치·관리하는 chart 인스턴스다. regtest와 testnet의 values가 다르면 같은 chart에서도 체인 backend와 노드 수가 달라진다. 먼저 렌더링 결과를 확인하는 이유는 입력이 실제 Pod와 Service 선언으로 어떻게 바뀌는지 보기 위해서다. [Helm chart 구조](https://helm.sh/docs/topics/charts/)
+
+여기서 **멱등성**은 같은 의도로 스크립트를 다시 실행했을 때 불필요한 새 상태를 만들지 않고 원하는 상태로 수렴하는 성질을 말한다. 기존 namespace를 재사용하는 것과 기존 지갑을 무시하고 새 지갑을 만드는 것은 전혀 다른 재실행 동작이다. 또한 결제 전송처럼 실행할 때마다 효과가 생기는 명령은 단순 재시도만으로 멱등성이 생기지 않는다.
+
+Helm 리소스를 이전 선언으로 돌리는 작업도 LND의 채널 합의를 과거로 돌리는 기능은 아니다. 배포 설정, 영속 데이터, 외부 peer와 합의한 프로토콜 상태는 서로 다른 수명주기를 가진다. 스크립트의 재배포 계약에서 어떤 것은 다시 만들고 어떤 것은 반드시 보존하는지 명시해야 하는 이유다.
+
+
 ## 호스트 준비와 애플리케이션 배포를 나눈 이유
 
 Mac에서는 Lima가 Linux 실행 환경을 제공하고, Windows에서는 WSL2가 그 역할을 한다. 이후의 K3s와 Helm 리소스는 공통으로 유지한다. [`ops/bootstrap`](https://github.com/s1ns3nz0/lnd-ops/blob/master/ops/bootstrap)은 호스트별 차이를 처리하고, [`ops/deploy`](https://github.com/s1ns3nz0/lnd-ops/blob/master/ops/deploy)는 준비된 Kubernetes에 애플리케이션을 적용한다.
