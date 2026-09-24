@@ -30,13 +30,13 @@ The [implementation roadmap](implementation-roadmap.md) defines the smaller core
 - Scope the first threat model to accidental Kubernetes misconfiguration or a compromised Pod reaching LND credentials, wallet data, or the management API.
 - Do not add a separate firewall product. Use Kubernetes NetworkPolicy for Pod traffic; document each host's firewall configuration as a prerequisite.
 - Apply default-deny ingress and egress to the LND namespace, then allow only required DNS, peer, Neutrino, and monitoring traffic. Test the real connection paths before considering the policy complete.
-- Use dedicated LND and lndmon ServiceAccounts without Kubernetes API permissions or automatically mounted tokens. Give lndmon a separate read-only macaroon. Keep the admin macaroon on the LND persistent volume and the wallet seed offline.
+- Use a dedicated token-free `lnd-node` ServiceAccount for the LND Pod and its monitoring sidecars, and a separate token-free `bitcoin-node` ServiceAccount for Bitcoin Core. Grant neither Kubernetes API permissions. Give lndmon a separate read-only macaroon. Keep the admin macaroon on the LND persistent volume and the wallet seed offline.
 - Target the `restricted` Kubernetes Pod Security Admission profile for the LND namespace. Assess monitoring components separately and document any namespace-level exception. Copy SCBs with a Linux guest or host job that does not require the LND Pod to mount host filesystems.
 - Install Kyverno for project namespaces only. Check image digest and resource-limit policies in audit mode, correct violations, then enforce the verified rules. Exclude K3s system and Falco namespaces from those project policies.
 - Run Falco as a node-level sensor in a separate security namespace, using modern eBPF if each guest kernel supports it. Confirm real kernel events are collected on both machines. Send a test event through the local dashboard and Alertmanager; do not count an installed but inactive sensor as a success.
 - Enable K3s Secret encryption at rest at cluster installation. Keep each administrator kubeconfig on its own machine and out of the repository.
 - Defer the Windows device-encryption and recovery-key check until the Windows setup phase; complete it before funding the testnet wallet.
-- Defer Vault and cert-manager. The first Vault integration will hold service credentials such as lndmon's read-only macaroon, not the wallet seed or admin macaroon. Use cert-manager only if certificate issuance or renewal becomes necessary.
+- Defer Vault. The first Vault integration will hold service credentials such as lndmon's read-only macaroon, not the wallet seed or admin macaroon. Monitor LND's self-managed TLS certificate expiry; use cert-manager only if a separately reviewed in-cluster issuer and rotation contract becomes necessary.
 
 ### Security acceptance criteria
 

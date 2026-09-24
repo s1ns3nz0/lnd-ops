@@ -33,6 +33,8 @@ cmp collector/payment_metrics.py charts/lnd-ops/files/payment_metrics.py >/dev/n
 }
 
 python3 -m json.tool ops/images.lock.json >/dev/null
+python3 -m json.tool ops/helm-plugins/lnd-ops-security-images/images.lock.json >/dev/null
+(cd charts/vendor && shasum -a 256 --check SHA256SUMS)
 dashboard_count=0
 while IFS= read -r -d '' dashboard; do
   python3 -m json.tool "$dashboard" >/dev/null
@@ -54,11 +56,17 @@ helm lint charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml
 helm lint charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml
 helm lint charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml
 helm lint charts/vendor/kube-prometheus-stack-91.4.1.tgz -f charts/monitoring-values.yaml
+helm lint charts/vendor/kyverno-3.9.1.tgz -f charts/security/kyverno-values.yaml
+helm lint charts/vendor/falco-9.2.0.tgz -f charts/security/falco-values.yaml
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
 helm template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
 helm template lnd-ops-monitoring charts/vendor/kube-prometheus-stack-91.4.1.tgz \
   -n lnd-monitoring -f charts/monitoring-values.yaml >/dev/null
+helm template kyverno charts/vendor/kyverno-3.9.1.tgz -n kyverno -f charts/security/kyverno-values.yaml | \
+  ops/helm-plugins/lnd-ops-security-images/render.py >/dev/null
+helm template falco charts/vendor/falco-9.2.0.tgz -n falco -f charts/security/falco-values.yaml | \
+  ops/helm-plugins/lnd-ops-security-images/render.py >/dev/null
 
 printf 'OK: syntax/JSON (%d Bash, %d Python, %d dashboards), discovered unit tests, and configured Helm lint/renders passed\n' \
   "$bash_count" "$python_count" "$dashboard_count"

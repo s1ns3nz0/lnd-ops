@@ -12,4 +12,6 @@ cleanupController:
   replicas: 1
 reportsController:
   replicas: 1
-
+test:
+  image:
+    tag: v1.19.1

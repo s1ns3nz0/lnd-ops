@@ -32,4 +32,5 @@ run_wallet_gate regtest
 run_wallet_gate testnet
 "$repo_dir/ops/deploy-monitoring"
 "$repo_dir/ops/verify-monitoring" --infrastructure-only
+"$repo_dir/ops/deploy-security"
 echo 'OK: Windows WSL 2 infrastructure smoke test passed'

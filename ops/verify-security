@@ -69,6 +69,12 @@ def main(arguments):
         return 2
     image = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
     try:
+        for namespace in ("kyverno", "falco"):
+            workloads = json.loads(kubectl("-n", namespace, "get", "deployments,daemonsets", "-o", "json").stdout)
+            for workload in workloads.get("items", []):
+                for container in workload["spec"]["template"]["spec"].get("initContainers", []) + workload["spec"]["template"]["spec"].get("containers", []):
+                    if "@sha256:" not in container["image"]:
+                        raise Failure(f"{namespace}/{workload['metadata']['name']} image is not digest pinned")
         policy = json.loads(kubectl("get", "clusterpolicy", "lnd-ops-workload-baseline", "-o", "json").stdout)
         ready = any(
             item.get("type") == "Ready" and item.get("status") == "True"

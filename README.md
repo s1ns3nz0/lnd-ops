@@ -80,6 +80,16 @@ After the testnet wallet has an open channel and `ops/backup-scb` has created it
 
 After the testnet wallet is unlocked and its encrypted SCB is current, run `ops/phase3-acceptance` from a clean checkout. The gate makes no Kubernetes or LND changes: it keeps the Phase 1 continuity check passing, executes every dashboard PromQL query against live data, verifies all required alert rules and runbook links, and writes a private owner-only JSON result under `${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/evidence/`. Exit `0` is a pass, `10` identifies a required operator action, `1` is a failed invariant, and `2` is invalid invocation. It uses an existing `KUBECONFIG` when set, otherwise the project kubeconfig in the state directory.
 
+Install and validate the Phase 4 security baseline with:
+
+```sh
+ops/deploy-security
+ops/verify-security
+ops/phase4-acceptance
+```
+
+The security deployment uses vendored, checksummed Kyverno and Falco charts. A Helm 4 post-renderer pins their runtime images to verified linux/amd64 and linux/arm64 OCI digests. The acceptance gate proves admission allow/deny decisions, token-free RBAC, real NetworkPolicy isolation, a modern eBPF Falco event reaching Alertmanager, live LND certificate expiry, and continued Phase 3 operation. See [the security baseline](docs/security-baseline.md).
+
 ## Repository harness
 
 A small, repository-local harness for predictable Codex work. It keeps only
