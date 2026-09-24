@@ -53,7 +53,12 @@ spec:
             {{- toYaml .Values.bitcoin.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
-            capabilities: {drop: [ALL]}
+            # The upstream entrypoint normalizes the existing PVC directory
+            # mode before dropping to uid 101. FOWNER is the minimum
+            # compatibility exception needed for a reused local-path volume.
+            capabilities:
+              drop: [ALL]
+              add: [FOWNER]
           volumeMounts:
             - {name: data, mountPath: /home/bitcoin/.bitcoin}
   volumeClaimTemplates:

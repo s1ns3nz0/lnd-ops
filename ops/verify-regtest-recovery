@@ -39,6 +39,7 @@ def main():
     confirmed_before = int(annotations["lnd-ops.dev/confirmed-before"])
     local_before = int(annotations["lnd-ops.dev/channel-local-before"])
     recorded_scb_hash = annotations["lnd-ops.dev/scb-sha256"]
+    scb_format = annotations.get("lnd-ops.dev/scb-format", "plain-on-encrypted-volume-v1")
     original_pvc_uid = annotations["lnd-ops.dev/original-pvc-uid"]
 
     original = kubectl_json("-n", "lnd-regtest", "get", "statefulset", "lnd-0", "-o", "json")
@@ -47,15 +48,29 @@ def main():
     pvc = kubectl_json("-n", "lnd-regtest", "get", "pvc", "data-lnd-0-0", "-o", "json")
     if pvc["metadata"]["uid"] != original_pvc_uid:
         sys.exit("FAIL: original lnd-0 PVC identity changed")
-    if sys.platform == "darwin":
-        host_scb = pathlib.Path.home() / "lnd-ops-backups/regtest/lnd-0/channel.backup"
-    elif sys.platform == "linux" and any(word in pathlib.Path("/proc/sys/kernel/osrelease").read_text().lower() for word in ("microsoft", "wsl")):
-        windows_mount = subprocess.check_output([REPO / "ops/windows-drive"], text=True).strip()
-        host_scb = pathlib.Path(windows_mount) / "lnd-ops-backups/regtest/lnd-0/channel.backup"
+    if scb_format == "gpg-symmetric-v1":
+        host_scb = pathlib.Path.home() / "lnd-ops-backups-encrypted/regtest/lnd-0/channel.backup.gpg"
+        record = host_scb.parent / ".last-success"
+        try:
+            _, plain_hash, cipher_hash, record_format = record.read_text().split()
+        except (OSError, ValueError):
+            sys.exit("FAIL: encrypted host SCB transfer record is unavailable")
+        if record_format != scb_format or plain_hash != recorded_scb_hash:
+            sys.exit("FAIL: encrypted host SCB transfer record differs from prepared recovery")
+        if not host_scb.is_file() or hashlib.sha256(host_scb.read_bytes()).hexdigest() != cipher_hash:
+            sys.exit("FAIL: encrypted host SCB ciphertext differs from its transfer record")
+    elif scb_format == "plain-on-encrypted-volume-v1":
+        if sys.platform == "darwin":
+            host_scb = pathlib.Path.home() / "lnd-ops-backups/regtest/lnd-0/channel.backup"
+        elif sys.platform == "linux" and any(word in pathlib.Path("/proc/sys/kernel/osrelease").read_text().lower() for word in ("microsoft", "wsl")):
+            windows_mount = subprocess.check_output([REPO / "ops/windows-drive"], text=True).strip()
+            host_scb = pathlib.Path(windows_mount) / "lnd-ops-backups/regtest/lnd-0/channel.backup"
+        else:
+            sys.exit("FAIL: unsupported host for SCB verification")
+        if not host_scb.is_file() or hashlib.sha256(host_scb.read_bytes()).hexdigest() != recorded_scb_hash:
+            sys.exit("FAIL: host SCB does not match prepared recovery copy")
     else:
-        sys.exit("FAIL: unsupported host for SCB verification")
-    if not host_scb.is_file() or hashlib.sha256(host_scb.read_bytes()).hexdigest() != recorded_scb_hash:
-        sys.exit("FAIL: host SCB does not match prepared recovery copy")
+        sys.exit("FAIL: unsupported prepared SCB format")
     pod_scb_hash = subprocess.check_output(
         ["kubectl", "-n", "lnd-regtest-recovery", "exec", "lnd-0-0", "--", "sha256sum", "/data/recovery.backup"],
         text=True, stderr=subprocess.DEVNULL,

@@ -9,6 +9,9 @@ repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
 original_namespace=lnd-regtest
 recovery_namespace=lnd-regtest-recovery
+passphrase=
+cleanup() { passphrase=; }
+trap cleanup EXIT
 
 if kubectl get namespace "$recovery_namespace" >/dev/null 2>&1; then
   echo 'Recovery namespace already exists; inspect the existing attempt' >&2
@@ -17,10 +20,41 @@ fi
 recovery_label=$(kubectl get namespace "$original_namespace" -o json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("metadata",{}).get("labels",{}).get("lnd-ops-recovery",""))')
 [[ "$recovery_label" != started ]] || { echo 'Recovery has already been started for this regtest identity' >&2; exit 1; }
 
-"$repo_dir/ops/backup-status" regtest lnd-0 >/dev/null || {
-  echo 'ACTION: open the regtest channel, then run ops/backup-scb regtest lnd-0 and ops/backup-status regtest lnd-0' >&2
-  exit 10
-}
+encrypted_file=$HOME/lnd-ops-backups-encrypted/regtest/lnd-0/channel.backup.gpg
+encrypted_record=$(dirname "$encrypted_file")/.last-success
+backup_format=
+backup_file=
+if [[ -s "$encrypted_file" && -s "$encrypted_record" ]]; then
+  "$repo_dir/ops/backup-status-encrypted" regtest lnd-0 >/dev/null || {
+    echo 'ACTION: refresh and verify the encrypted lnd-0 regtest SCB' >&2
+    exit 10
+  }
+  [[ -t 0 && -t 1 ]] || {
+    echo 'Run in an interactive terminal; the SCB passphrase is never accepted through arguments or pipes' >&2
+    exit 2
+  }
+  read -r -s -p 'Encryption passphrase for lnd-0 SCB recovery: ' passphrase; echo
+  read -r _ plain_hash cipher_hash format < "$encrypted_record"
+  [[ $format == gpg-symmetric-v1 ]] || { echo 'Encrypted SCB transfer record format is invalid' >&2; exit 1; }
+  [[ $(sha256sum "$encrypted_file" | awk '{print $1}') == "$cipher_hash" ]] || {
+    echo 'Encrypted SCB ciphertext differs from its transfer record' >&2
+    exit 1
+  }
+  verified=$(gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 3 \
+    --decrypt "$encrypted_file" 3<<<"$passphrase" | sha256sum | awk '{print $1}') || {
+    echo 'Unable to decrypt the encrypted SCB with the supplied passphrase' >&2
+    exit 1
+  }
+  [[ $verified == "$plain_hash" ]] || { echo 'Decrypted SCB checksum mismatch' >&2; exit 1; }
+  host_hash=$plain_hash
+  backup_format=gpg-symmetric-v1
+else
+  "$repo_dir/ops/backup-status" regtest lnd-0 >/dev/null || {
+    echo 'ACTION: create and verify an encrypted lnd-0 regtest SCB' >&2
+    exit 10
+  }
+  backup_format=plain-on-encrypted-volume-v1
+fi
 getinfo=$(kubectl -n "$original_namespace" exec lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest getinfo 2>/dev/null) || {
   echo 'ACTION: unlock the original lnd-0 wallet' >&2
   exit 10
@@ -41,20 +75,22 @@ read -r channel_point channel_peer local_balance <<< "$channel_details"
 confirmed_before=$(kubectl -n "$original_namespace" exec lnd-0-0 -- lncli --lnddir=/data/.lnd --network=regtest walletbalance | \
   python3 -c 'import json,sys; print(json.load(sys.stdin)["confirmed_balance"])')
 
-case "$(uname -s)" in
-  Darwin) backup_file=$HOME/lnd-ops-backups/regtest/lnd-0/channel.backup ;;
-  Linux)
-    grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2' >&2; exit 1; }
-    windows_mount=$("$repo_dir/ops/windows-drive")
-    backup_file=$windows_mount/lnd-ops-backups/regtest/lnd-0/channel.backup
-    ;;
-  *) echo 'Supported hosts: macOS and WSL 2' >&2; exit 1 ;;
-esac
-[[ -s "$backup_file" ]] || { echo 'Verified host SCB disappeared' >&2; exit 1; }
-if command -v shasum >/dev/null 2>&1; then
-  host_hash=$(shasum -a 256 "$backup_file" | awk '{print $1}')
-else
-  host_hash=$(sha256sum "$backup_file" | awk '{print $1}')
+if [[ $backup_format == plain-on-encrypted-volume-v1 ]]; then
+  case "$(uname -s)" in
+    Darwin) backup_file=$HOME/lnd-ops-backups/regtest/lnd-0/channel.backup ;;
+    Linux)
+      grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease || { echo 'Expected WSL 2' >&2; exit 1; }
+      windows_mount=$("$repo_dir/ops/windows-drive")
+      backup_file=$windows_mount/lnd-ops-backups/regtest/lnd-0/channel.backup
+      ;;
+    *) echo 'Supported hosts: macOS and WSL 2' >&2; exit 1 ;;
+  esac
+  [[ -s "$backup_file" ]] || { echo 'Verified host SCB disappeared' >&2; exit 1; }
+  if command -v shasum >/dev/null 2>&1; then
+    host_hash=$(shasum -a 256 "$backup_file" | awk '{print $1}')
+  else
+    host_hash=$(sha256sum "$backup_file" | awk '{print $1}')
+  fi
 fi
 original_pvc_uid=$(kubectl -n "$original_namespace" get pvc data-lnd-0-0 -o jsonpath='{.metadata.uid}')
 
@@ -67,6 +103,7 @@ kubectl annotate namespace "$recovery_namespace" \
   lnd-ops.dev/confirmed-before="$confirmed_before" \
   lnd-ops.dev/channel-local-before="$local_balance" \
   lnd-ops.dev/scb-sha256="$host_hash" \
+  lnd-ops.dev/scb-format="$backup_format" \
   lnd-ops.dev/original-pvc-uid="$original_pvc_uid" \
   --overwrite >/dev/null
 kubectl label namespace "$original_namespace" lnd-ops-recovery=started --overwrite >/dev/null
@@ -79,7 +116,14 @@ helm upgrade --install lnd-ops-recovery "$repo_dir/charts/lnd-ops" \
   --values "$repo_dir/charts/lnd-ops/values-regtest-recovery.yaml" \
   --wait --timeout 10m
 
-cat "$backup_file" | kubectl -n "$recovery_namespace" exec -i lnd-0-0 -- tee /data/recovery.backup >/dev/null
+if [[ $backup_format == gpg-symmetric-v1 ]]; then
+  gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 3 \
+    --decrypt "$encrypted_file" 3<<<"$passphrase" | \
+    kubectl -n "$recovery_namespace" exec -i lnd-0-0 -- tee /data/recovery.backup >/dev/null
+else
+  cat "$backup_file" | kubectl -n "$recovery_namespace" exec -i lnd-0-0 -- tee /data/recovery.backup >/dev/null
+fi
+passphrase=
 kubectl -n "$recovery_namespace" exec lnd-0-0 -- chmod 600 /data/recovery.backup
 pod_hash=$(kubectl -n "$recovery_namespace" exec lnd-0-0 -- sha256sum /data/recovery.backup | awk '{print $1}')
 [[ "$host_hash" == "$pod_hash" ]] || { echo 'Recovery SCB copy checksum mismatch' >&2; exit 1; }
