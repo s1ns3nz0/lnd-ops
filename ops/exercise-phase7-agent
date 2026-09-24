@@ -59,8 +59,34 @@ def tool(port, name, arguments):
     return json.loads(result["content"][0]["text"])
 
 
+def pod_mcp(method, params=None, request_id=1):
+    payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
+    if params is not None:
+        payload["params"] = params
+    client = (
+        "import json,sys,urllib.request; "
+        "p=sys.argv[1].encode(); "
+        "r=urllib.request.Request('http://127.0.0.1:8080/mcp',data=p,"
+        "headers={'Content-Type':'application/json','Accept':'application/json'},method='POST'); "
+        "print(urllib.request.urlopen(r,timeout=30).read().decode())"
+    )
+    result = run([
+        "kubectl", "-n", "lnd-agent", "exec", "deployment/runbook-gateway", "-c", "gateway", "--",
+        "python3", "-c", client, json.dumps(payload),
+    ])
+    response = json.loads(result.stdout)
+    if "error" in response:
+        raise RuntimeError(response["error"]["message"])
+    return response["result"]
+
+
+def pod_tool(name, arguments):
+    result = pod_mcp("tools/call", {"name": name, "arguments": arguments})
+    return json.loads(result["content"][0]["text"])
+
+
 def main():
-    controller = gateway = None
+    controller = None
     try:
         if run(["git", "-C", str(REPO), "status", "--porcelain"]).stdout:
             raise RuntimeError("repository worktree must be clean before Phase 7 exercise")
@@ -68,13 +94,9 @@ def main():
             ["kubectl", "-n", "kagent", "port-forward", "service/kagent-controller", "18083:8083"],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
-        gateway = subprocess.Popen(
-            ["kubectl", "-n", "lnd-agent", "port-forward", "service/runbook-gateway", "18080:8080"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-        )
-        wait_port(18083, controller); wait_port(18080, gateway)
-        mcp(18080, "initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
-        diagnosis = tool(18080, "diagnose_incident", {"scenario": "channel_inactive"})
+        wait_port(18083, controller)
+        pod_mcp("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
+        diagnosis = pod_tool("diagnose_incident", {"scenario": "channel_inactive"})
         if diagnosis.get("matching_runbook") != "channel-inactive.md" or "observed_facts" not in diagnosis:
             raise RuntimeError("gateway diagnosis is not grounded in the expected live evidence")
 
@@ -109,25 +131,13 @@ def main():
         if any(term in response.lower() for term in ("payment_request", "wallet_password", "cipher_seed")):
             raise RuntimeError("kagent response contains a forbidden secret field name")
 
-        # The CLI invocation can outlive an idle kubectl port-forward stream.
-        # Recreate the operator-side gateway tunnel before deterministic policy checks.
-        if gateway.poll() is None:
-            gateway.terminate()
-            try: gateway.wait(timeout=5)
-            except subprocess.TimeoutExpired: gateway.kill()
-        gateway = subprocess.Popen(
-            ["kubectl", "-n", "lnd-agent", "port-forward", "service/runbook-gateway", "18080:8080"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-        )
-        wait_port(18080, gateway)
-        mcp(18080, "initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
-        allowed = tool(18080, "execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
+        allowed = pod_tool("execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
         if not allowed.get("allowed") or not allowed.get("audit_recorded"):
             raise RuntimeError("allowlisted response did not succeed with an audit record")
-        cooldown = tool(18080, "execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
+        cooldown = pod_tool("execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
         if cooldown.get("allowed") or cooldown.get("reason") != "cooldown active":
             raise RuntimeError("repeated mutation was not stopped by cooldown")
-        forbidden = tool(18080, "execute_allowlisted_response", {"action": "unlock_wallet"})
+        forbidden = pod_tool("execute_allowlisted_response", {"action": "unlock_wallet"})
         if forbidden.get("allowed") or not forbidden.get("audit_recorded"):
             raise RuntimeError("forbidden response was not denied and audited")
         run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=2m"])
@@ -156,7 +166,7 @@ def main():
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
     finally:
-        for process in (gateway, controller):
+        for process in (controller,):
             if process is not None and process.poll() is None:
                 process.terminate()
                 try: process.wait(timeout=5)
