@@ -109,6 +109,18 @@ def main():
         if any(term in response.lower() for term in ("payment_request", "wallet_password", "cipher_seed")):
             raise RuntimeError("kagent response contains a forbidden secret field name")
 
+        # The CLI invocation can outlive an idle kubectl port-forward stream.
+        # Recreate the operator-side gateway tunnel before deterministic policy checks.
+        if gateway.poll() is None:
+            gateway.terminate()
+            try: gateway.wait(timeout=5)
+            except subprocess.TimeoutExpired: gateway.kill()
+        gateway = subprocess.Popen(
+            ["kubectl", "-n", "lnd-agent", "port-forward", "service/runbook-gateway", "18080:8080"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        wait_port(18080, gateway)
+        mcp(18080, "initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "phase7-exercise", "version": "1"}})
         allowed = tool(18080, "execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
         if not allowed.get("allowed") or not allowed.get("audit_recorded"):
             raise RuntimeError("allowlisted response did not succeed with an audit record")
