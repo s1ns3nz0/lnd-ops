@@ -94,6 +94,20 @@ test('every learning phase has a live completion probe and an interactive route'
   assert.match(contents, /wait_for_phase\(/);
 });
 
+test('persistent testnet readiness accepts established payment history', async () => {
+  const contents = await readFile(resolve(repo, 'ops/verify-testnet-readiness'), 'utf8');
+  assert.match(contents, /item\.get\("status"\) == "SUCCEEDED" for item in payments/);
+  assert.match(contents, /item\.get\("state"\) == "SETTLED" for item in invoices/);
+  assert.doesNotMatch(contents, /within the last hour/);
+});
+
+test('monitoring still requires fresh one-hour payment samples', async () => {
+  const contents = await readFile(resolve(repo, 'ops/verify-monitoring'), 'utf8');
+  assert.match(contents, /lnd_ops_outgoing_payments_1h/);
+  assert.match(contents, /lnd_ops_received_invoices_1h/);
+  assert.match(contents, /make a fresh outgoing and incoming/);
+});
+
 test('guided setup reserves partial status for an explicit operator gate', async () => {
   const contents = await readFile(start, 'utf8');
   assert.match(contents, /if result\.returncode == 10:\n        detail = \(result\.stderr or result\.stdout\)/);

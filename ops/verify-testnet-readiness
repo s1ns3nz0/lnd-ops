@@ -6,7 +6,6 @@ import os
 import pathlib
 import subprocess
 import sys
-import time
 
 
 STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
@@ -32,17 +31,16 @@ def main():
         channels = lncli("listchannels").get("channels", [])
         if not any(item.get("active") and not item.get("private") for item in channels):
             raise RuntimeError("open and confirm an active public testnet channel")
-        now = time.time()
         payments = lncli("listpayments", "--include_incomplete").get("payments", [])
         invoices = lncli("listinvoices").get("invoices", [])
-        sent = any(item.get("status") == "SUCCEEDED" and now - float(item.get("creation_date", 0)) <= 3600 for item in payments)
-        received = any(item.get("state") == "SETTLED" and now - float(item.get("settle_date", 0)) <= 3600 for item in invoices)
+        sent = any(item.get("status") == "SUCCEEDED" for item in payments)
+        received = any(item.get("state") == "SETTLED" for item in invoices)
         if not sent or not received:
-            raise RuntimeError("make a successful outgoing and incoming testnet payment within the last hour")
+            raise RuntimeError("make one successful outgoing and incoming testnet payment")
     except (RuntimeError, ValueError, TypeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
         print(f"ACTION: {error}", file=sys.stderr)
         return 10
-    print("OK persistent testnet node: synced peer, public channel, and recent send/receive payments")
+    print("OK persistent testnet node: synced peer, public channel, and established send/receive payment history")
     return 0
 
 
