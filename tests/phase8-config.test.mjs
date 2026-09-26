@@ -9,7 +9,7 @@ const read = (path) => readFile(resolve(repo, path), 'utf8');
 test('Phase 8 keeps the documented stable command surface executable', async () => {
   const required = [
     'ops/doctor', 'ops/bootstrap', 'ops/deploy', 'ops/deploy-monitoring',
-    'ops/deploy-security', 'ops/acceptance',
+    'ops/deploy-security', 'ops/acceptance', 'ops/start',
   ];
   for (const path of required) {
     const source = await read(path);

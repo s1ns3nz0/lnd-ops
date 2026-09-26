@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Guide an operator through the cumulative LND Ops learning environments."""
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+SELECTION = STATE / "wallet-selection.json"
+WALLET_CHOICES = {
+    "existing-testnet": ("기존 testnet 지갑", "existing", ("lnd-testnet/data-lnd-0-0",)),
+    "existing-regtest": ("기존 regtest 지갑 세트", "existing", ("lnd-regtest/data-lnd-0-0", "lnd-regtest/data-lnd-1-0")),
+    "new-testnet": ("새 testnet workspace", "new", ()),
+    "new-regtest": ("새 regtest workspace", "new", ()),
+}
+
+BANNER = '''__                      __       ______
+|  \\                    |  \\     /      \\
+| ▓▓      _______   ____| ▓▓    |  ▓▓▓▓▓▓\\ ______   _______
+| ▓▓     |       \\ /      ▓▓    | ▓▓  | ▓▓/      \\ /       \\
+| ▓▓     | ▓▓▓▓▓▓▓\\  ▓▓▓▓▓▓▓    | ▓▓  | ▓▓  ▓▓▓▓▓▓\\  ▓▓▓▓▓▓▓
+| ▓▓     | ▓▓  | ▓▓ ▓▓  | ▓▓    | ▓▓  | ▓▓ ▓▓  | ▓▓\\▓▓    \\
+| ▓▓_____| ▓▓  | ▓▓ ▓▓__| ▓▓    | ▓▓__/ ▓▓ ▓▓__/ ▓▓_\\▓▓▓▓▓▓\\
+| ▓▓     \\ ▓▓  | ▓▓\\▓▓    ▓▓     \\▓▓    ▓▓ ▓▓    ▓▓       ▓▓
+ \\▓▓▓▓▓▓▓▓\\▓▓   \\▓▓ \\▓▓▓▓▓▓▓      \\▓▓▓▓▓▓| ▓▓▓▓▓▓▓ \\▓▓▓▓▓▓▓
+                                         | ▓▓
+                                         | ▓▓
+                                          \\▓▓
+
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••'''
+
+PHASES = (
+    {
+        "title": "regtest 기초 환경",
+        "environment": "폐쇄된 regtest Bitcoin·LND 2노드와 PVC, 기본 NetworkPolicy를 구성합니다.",
+        "probe": ("ops/verify", "regtest"),
+        "namespaces": ("lnd-regtest",),
+        "build": (("ops/doctor",), ("ops/bootstrap",), ("ops/deploy", "regtest"), ("ops/verify", "regtest")),
+        "manual": "지갑 생성·unlock, seed 오프라인 보관 후 `ops/exercise-regtest`를 실행하세요.",
+    },
+    {
+        "title": "지속 testnet 노드",
+        "environment": "영속 PVC를 가진 testnet LND와 public-peer 정책을 구성합니다.",
+        "probe": ("ops/verify", "testnet"),
+        "namespaces": ("lnd-testnet",),
+        "build": (("ops/deploy", "testnet"), ("ops/verify", "testnet")),
+        "manual": "지갑 생성·unlock, 오프라인 seed/SCB 보관, peer·channel·양방향 결제를 완료하세요.",
+    },
+    {
+        "title": "Loop 유동성 관리",
+        "environment": "testnet Loop daemon, 전용 credential Secret, 제한된 network path, health metric을 추가합니다.",
+        "probe": ("ops/verify-loop",),
+        "namespaces": ("lnd-testnet",),
+        "build": (),
+        "manual": "전용 macaroon을 준비한 뒤 `ops/enable-loop --macaroon /secure/path/loop.macaroon`을 실행하고 `ops/verify-loop`로 quote만 확인하세요. swap 생성은 이 도구가 하지 않습니다.",
+    },
+    {
+        "title": "관측 환경",
+        "environment": "Prometheus, Grafana, LND/결제 collector, dashboard와 alert rule을 구성합니다.",
+        "probe": ("ops/verify-monitoring", "--infrastructure-only"),
+        "namespaces": ("lnd-monitoring",),
+        "build": (("ops/deploy-monitoring",), ("ops/verify-monitoring", "--infrastructure-only")),
+        "manual": "wallet unlock과 read-only macaroon 준비 후 `ops/deploy testnet --monitoring`, `ops/verify-monitoring --profile testnet`을 실행하세요.",
+    },
+    {
+        "title": "보안 기준선",
+        "environment": "Kyverno admission, RBAC, NetworkPolicy, Falco runtime 탐지를 적용합니다.",
+        "probe": (),
+        "namespaces": ("kyverno", "falco"),
+        "build": (("ops/deploy-security",),),
+        "post_verify": False,
+        "manual": "live acceptance는 `ops/phase4-acceptance`로 실행하세요.",
+    },
+    {
+        "title": "백업·복구 운영",
+        "environment": "암호화 SCB, stale-backup alert, seed+SCB recovery 증거를 만드는 단계입니다.",
+        "probe": (),
+        "namespaces": (),
+        "build": (),
+        "manual": "지갑 상태를 바꾸므로 runbook의 수동 절차와 `ops/phase5-acceptance`만 사용하세요.",
+    },
+    {
+        "title": "장애·경보 실습",
+        "environment": "regtest 채널, Kubernetes CrashLoop, Falco 이벤트 장애를 주입하고 자동 복구를 검증합니다.",
+        "probe": (),
+        "namespaces": (),
+        "build": (),
+        "manual": "가역 장애 주입은 `ops/exercise-phase6-faults`로 별도 실행하세요.",
+    },
+    {
+        "title": "제한된 kagent",
+        "environment": "외부 Ollama와 연결한 allowlist 기반 진단·복구 agent를 구성합니다.",
+        "probe": (),
+        "namespaces": (),
+        "build": (),
+        "manual": "Ollama endpoint와 model을 정한 뒤 Phase 7 runbook의 `ops/deploy-agent` 절차를 실행하세요.",
+    },
+    {
+        "title": "Mac·WSL 재현성",
+        "environment": "Mac arm64와 Windows WSL2 amd64에서 clean start와 host acceptance 증거를 확인합니다.",
+        "probe": (),
+        "namespaces": (),
+        "build": (),
+        "manual": "각 호스트에서 `ops/phase8-host-acceptance`를 실행한 뒤 `ops/phase8-acceptance`로 합치세요.",
+    },
+    {
+        "title": "포트폴리오 데모",
+        "environment": "Lightning, 관측, 안전한 regtest 장애, kagent, 보안·복구 증거를 순서대로 보여줍니다.",
+        "probe": (),
+        "namespaces": (),
+        "build": (),
+        "manual": "준비 상태를 확인했습니다. 실제 데모는 clean Git revision에서 `ops/demo`로 실행하세요.",
+    },
+)
+
+# `ops/start` is an ordinary, wallet-preserving setup path. Destructive reset,
+# wallet-creation, funding, recovery, and fault-exercise commands are never
+# eligible for automatic execution here.
+SAFE_AUTOMATIC_COMMANDS = frozenset({
+    ("ops/doctor",),
+    ("ops/bootstrap",),
+    ("ops/deploy", "regtest"),
+    ("ops/verify", "regtest"),
+    ("ops/deploy", "testnet"),
+    ("ops/verify", "testnet"),
+    ("ops/deploy-monitoring",),
+    ("ops/verify-monitoring", "--infrastructure-only"),
+    ("ops/deploy-security",),
+})
+
+
+def display(command):
+    return " ".join(command)
+
+
+def runtime_environment():
+    return os.environ | {"KUBECONFIG": os.environ.get("KUBECONFIG", str(STATE / "kubeconfig"))}
+
+
+def wallet_pvc_snapshot():
+    snapshot = {}
+    for namespace, claim in (("lnd-testnet", "data-lnd-0-0"), ("lnd-regtest", "data-lnd-0-0"), ("lnd-regtest", "data-lnd-1-0")):
+        try:
+            result = subprocess.run(
+                ["kubectl", "-n", namespace, "get", "pvc", claim, "-o", "jsonpath={.metadata.uid}"],
+                text=True, capture_output=True, env=runtime_environment(), timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return snapshot
+        if result.returncode == 0 and result.stdout.strip():
+            snapshot[f"{namespace}/{claim}"] = result.stdout.strip()
+    return snapshot
+
+
+def load_selection():
+    if not SELECTION.exists():
+        return None
+    if SELECTION.is_symlink() or SELECTION.stat().st_uid != os.getuid() or SELECTION.stat().st_mode & 0o777 != 0o600:
+        raise RuntimeError("unsafe wallet selection file")
+    data = json.loads(SELECTION.read_text())
+    if data.get("schema") != "lnd-ops/wallet-selection/v1" or data.get("choice") not in WALLET_CHOICES:
+        raise RuntimeError("invalid wallet selection file")
+    return data
+
+
+def select_wallet(choice):
+    title, mode, claims = WALLET_CHOICES[choice]
+    snapshot = wallet_pvc_snapshot()
+    if mode == "existing" and not all(claim in snapshot for claim in claims):
+        raise RuntimeError(f"{title} PVC를 찾을 수 없습니다; 새 workspace를 선택하거나 지갑 상태를 확인하세요")
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    STATE.chmod(0o700)
+    temporary = SELECTION.with_name(f".{SELECTION.name}.tmp-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as output:
+        json.dump({"schema": "lnd-ops/wallet-selection/v1", "choice": choice, "pvc_uids": {claim: snapshot[claim] for claim in claims}}, output, sort_keys=True)
+        output.write("\n")
+    os.replace(temporary, SELECTION)
+    SELECTION.chmod(0o600)
+    print(f"선택됨: {title}")
+
+
+def selection_gate():
+    selected = load_selection()
+    if selected is None:
+        return "먼저 `wallet` 명령으로 기존 또는 새 wallet workspace를 선택하세요"
+    title, mode, _ = WALLET_CHOICES[selected["choice"]]
+    if mode == "new":
+        return f"{title}는 별도 PVC/identity 생성 단계가 필요합니다. 기존 지갑은 변경하지 않습니다"
+    current = wallet_pvc_snapshot()
+    if any(current.get(claim) != uid for claim, uid in selected["pvc_uids"].items()):
+        return f"선택한 {title} PVC identity가 바뀌었습니다; 실행을 중단합니다"
+    return None
+
+
+def prompt_wallet_selection():
+    print("\n지갑 workspace 선택")
+    for number, (choice, (title, mode, _)) in enumerate(WALLET_CHOICES.items(), 1):
+        suffix = "기존 PVC를 고정" if mode == "existing" else "기존 지갑을 건드리지 않는 별도 workspace"
+        print(f"[{number}] {title} — {suffix}")
+    while True:
+        answer = input("선택 [1-4]: ").strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(WALLET_CHOICES):
+            select_wallet(list(WALLET_CHOICES)[int(answer) - 1])
+            return
+        print("1부터 4 중 하나를 입력하세요.", file=sys.stderr)
+
+
+def wallet_banner():
+    try:
+        result = subprocess.run(
+            [str(REPO / "ops/wallet-status"), "--format", "banner"], cwd=REPO,
+            env=runtime_environment(), text=True, capture_output=True, timeout=95,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "WALLET STATUS\n  상태를 읽을 수 없음"
+    if result.returncode:
+        return "WALLET STATUS\n  상태를 읽을 수 없음"
+    return result.stdout.strip() or "WALLET STATUS\n  지갑 없음"
+
+
+def execute(command, dry_run=False):
+    if command not in SAFE_AUTOMATIC_COMMANDS:
+        raise RuntimeError(f"refusing a non-preserving automatic command: {display(command)}")
+    print(f"  {'PLAN' if dry_run else 'RUN '} {display(command)}", flush=True)
+    if dry_run:
+        return 0
+    before = wallet_pvc_snapshot()
+    result = subprocess.run([str(REPO / command[0]), *command[1:]], cwd=REPO, env=runtime_environment()).returncode
+    after = wallet_pvc_snapshot()
+    changed = {name: (uid, after.get(name)) for name, uid in before.items() if after.get(name) != uid}
+    if changed:
+        raise RuntimeError(f"wallet PVC identity changed during {display(command)}: {changed}")
+    return result
+
+
+def existing_namespace(namespaces):
+    if not namespaces:
+        return False
+    environment = runtime_environment()
+    for namespace in namespaces:
+        try:
+            result = subprocess.run(["kubectl", "get", "namespace", namespace], text=True, capture_output=True, env=environment)
+        except FileNotFoundError:
+            return False
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def inspect(number):
+    phase = PHASES[number]
+    command = phase["probe"]
+    if not command:
+        return "manual", "operator-held evidence or rehearsal"
+    if not (REPO / command[0]).is_file():
+        return "failed", f"missing repository command: {command[0]}"
+    result = subprocess.run([str(REPO / command[0]), *command[1:]], cwd=REPO, text=True, capture_output=True, env=runtime_environment())
+    if result.returncode == 0:
+        return "complete", "verification passed"
+    if result.returncode == 10:
+        return "partial", "operator gate pending"
+    if result.returncode == 127:
+        return "missing", "required host tool is unavailable"
+    if existing_namespace(phase["namespaces"]):
+        return "partial", "existing Kubernetes resources did not pass verification"
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return "failed", detail[-1] if detail else "verification failed without output"
+
+
+def print_catalog():
+    print(BANNER)
+    print(wallet_banner())
+    print("\nLND Ops guided setup — 번호를 고르면 Phase 0부터 해당 Phase까지 실제 상태를 확인합니다.")
+    print("완료된 Phase는 건너뛰고, partial 상태나 지갑·자금·장애 주입처럼 수동 단계에서는 안내 후 멈춥니다.\n")
+    for number, phase in enumerate(PHASES):
+        print(f"[{number}] {phase['title']}")
+        print(f"    {phase['environment']}")
+    print("\n명령: 0-9, status, help, quit")
+
+
+def print_status():
+    print("\n현재 환경")
+    for number, phase in enumerate(PHASES):
+        state, detail = inspect(number)
+        print(f"[{number}] {state:8} {phase['title']} — {detail}")
+
+
+def build_through(target, dry_run=False):
+    print(f"\nPhase 0 → {target} 확인 및 구성")
+    print(f"KUBECONFIG: {runtime_environment()['KUBECONFIG']}")
+    if not dry_run:
+        gate = selection_gate()
+        if gate:
+            print(f"STOP: {gate}")
+            return 10
+    for number, phase in enumerate(PHASES[:target + 1]):
+        state, detail = inspect(number) if not dry_run else ("missing", "dry-run")
+        if state == "complete":
+            print(f"[{number}] SKIP {phase['title']} — already complete")
+            continue
+        if state == "partial":
+            print(f"[{number}] STOP {phase['title']} — {detail}")
+            print(f"ACTION: {phase['manual']}")
+            return 0 if dry_run else 10
+        if state == "failed":
+            print(f"[{number}] STOP {phase['title']} — {detail}", file=sys.stderr)
+            print("ACTION: fix the reported verifier error, then rerun this selection.", file=sys.stderr)
+            return 1
+        if not phase["build"]:
+            print(f"[{number}] STOP {phase['title']} — manual phase")
+            print(f"ACTION: {phase['manual']}")
+            return 0 if dry_run else 10
+        print(f"[{number}] BUILD {phase['title']} — {detail}")
+        for command in phase["build"]:
+            code = execute(command, dry_run)
+            if code:
+                if code == 10:
+                    print(f"ACTION: {phase['manual']}")
+                else:
+                    print(f"FAIL: {display(command)} exited {code}", file=sys.stderr)
+                return code
+        if phase.get("post_verify", True) and not dry_run:
+            verified, verified_detail = inspect(number)
+            if verified != "complete":
+                print(f"[{number}] STOP {phase['title']} — post-build verification: {verified_detail}", file=sys.stderr)
+                print(f"ACTION: {phase['manual']}", file=sys.stderr)
+                return 10 if verified == "partial" else 1
+        print(f"[{number}] {'PLANNED' if dry_run else 'DONE'} {phase['title']}")
+    print(f"DONE: Phase {target}까지의 자동 구성이 끝났습니다.")
+    return 0
+
+
+def repl():
+    print_catalog()
+    if load_selection() is None:
+        prompt_wallet_selection()
+    while True:
+        try:
+            answer = input("lnd-ops> ").strip().lower()
+        except EOFError:
+            print()
+            return 0
+        if answer in ("quit", "exit"):
+            return 0
+        if answer in ("help", "?"):
+            print("0-9: 누적 구성 | wallet: workspace 변경 | delete: 선택형 삭제 메뉴 | status | quit")
+        elif answer == "wallet":
+            prompt_wallet_selection()
+        elif answer == "delete":
+            print("삭제 선택: testnet, regtest, monitoring, kyverno, falco, kagent, agent")
+            selected = input("쉼표로 입력 (빈 입력은 취소): ").strip()
+            if selected:
+                subprocess.run([str(REPO / "ops/purge-project"), "--select", selected, "--dry-run"], cwd=REPO)
+                phrase = "DELETE " + selected
+                confirm = input(f"실행하려면 정확히 입력: {phrase}\n> ").strip()
+                if confirm == phrase:
+                    subprocess.run([str(REPO / "ops/purge-project"), "--select", selected, "--confirm", confirm], cwd=REPO)
+        elif answer == "status":
+            print_status()
+        elif answer.isdigit() and 0 <= int(answer) < len(PHASES):
+            build_through(int(answer))
+        elif answer:
+            print("0부터 9, status, help, quit 중 하나를 입력하세요.", file=sys.stderr)
+
+
+def parse_args(arguments):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--list", action="store_true", help="show the phase catalog and exit")
+    parser.add_argument("--status", action="store_true", help="inspect every phase and exit")
+    parser.add_argument("--to", type=int, choices=range(len(PHASES)), metavar="N", help="build cumulatively through phase N")
+    parser.add_argument("--dry-run", action="store_true", help="show the cumulative build plan without executing it")
+    parser.add_argument("--select", choices=WALLET_CHOICES, help="persist a wallet workspace selection")
+    return parser.parse_args(arguments)
+
+
+def main(arguments):
+    args = parse_args(arguments)
+    if args.select:
+        select_wallet(args.select)
+        return 0
+    if args.list:
+        print_catalog()
+        return 0
+    if args.status:
+        print_status()
+        return 0
+    if args.to is not None:
+        return build_through(args.to, args.dry_run)
+    if not sys.stdin.isatty():
+        print("interactive input unavailable; use --list, --status, or --to 0..9", file=sys.stderr)
+        return 2
+    return repl()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

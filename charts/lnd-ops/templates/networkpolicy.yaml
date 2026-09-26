@@ -127,6 +127,69 @@ spec:
     - ports:
         - {protocol: TCP, port: 9735}
 {{- end }}
+{{- if and (eq .Values.profile "testnet") .Values.loop.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loop-to-lnd-rpc
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: loopd}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: lnd-0}
+      ports:
+        - {protocol: TCP, port: 10009}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lnd-from-loop-rpc
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: lnd-0}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: loopd}
+      ports:
+        - {protocol: TCP, port: 10009}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loop-server-egress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: loopd}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0}
+      ports:
+        - {protocol: TCP, port: 11010}
+{{- if .Values.monitoring.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-loop-monitoring-scrape
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: loopd}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {lnd-ops-monitoring: "true"}
+      ports:
+        - {protocol: TCP, port: 9094}
+{{- end }}
+{{- end }}
 {{- if eq .Values.profile "regtest" }}
 {{- if .Values.bitcoin.enabled }}
 ---

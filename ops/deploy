@@ -5,10 +5,23 @@ repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 profile=${1:-}
 case "$profile" in
   regtest|testnet) ;;
-  *) echo 'Usage: ops/deploy regtest|testnet [--monitoring]' >&2; exit 2 ;;
+  *) echo 'Usage: ops/deploy regtest|testnet [--monitoring] [--loop|--no-loop]' >&2; exit 2 ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --monitoring ) ]] || {
-  echo 'Usage: ops/deploy regtest|testnet [--monitoring]' >&2
+shift
+monitoring_requested=false
+loop_requested=false
+loop_disabled=false
+for option in "$@"; do
+  case "$option" in
+    --monitoring) $monitoring_requested && { echo 'duplicate --monitoring' >&2; exit 2; }; monitoring_requested=true ;;
+    --loop) $loop_requested && { echo 'duplicate --loop' >&2; exit 2; }; loop_requested=true ;;
+    --no-loop) $loop_disabled && { echo 'duplicate --no-loop' >&2; exit 2; }; loop_disabled=true ;;
+    *) echo 'Usage: ops/deploy regtest|testnet [--monitoring] [--loop|--no-loop]' >&2; exit 2 ;;
+  esac
+done
+[[ "$loop_requested" == false || "$loop_disabled" == false ]] || { echo 'choose only one of --loop or --no-loop' >&2; exit 2; }
+[[ "$loop_requested" == false || "$profile" == testnet ]] || {
+  echo 'Loop is supported only by the persistent testnet profile' >&2
   exit 2
 }
 
@@ -25,10 +38,12 @@ if [[ "$profile" == regtest ]]; then
 fi
 
 monitoring=false
+loop=false
 if helm -n "$namespace" status lnd-ops >/dev/null 2>&1; then
   monitoring=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("monitoring", {}).get("enabled", False)).lower())')
+  loop=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("loop", {}).get("enabled", False)).lower())')
 fi
-if [[ "${2:-}" == --monitoring ]]; then
+if [[ "$monitoring_requested" == true ]]; then
   if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
     echo "ACTION: deploy the wallet-free $profile profile before enabling monitoring" >&2
     exit 10
@@ -48,6 +63,18 @@ if [[ "${2:-}" == --monitoring ]]; then
   done
   monitoring=true
 fi
+if [[ "$loop_requested" == true ]]; then
+  [[ "$monitoring" == true ]] || {
+    echo 'ACTION: enable monitoring before Loop so its health metrics are collected' >&2
+    exit 10
+  }
+  kubectl -n "$namespace" get secret lnd-loop-credentials >/dev/null 2>&1 || {
+    echo 'ACTION: run ops/enable-loop --macaroon /secure/path/loop.macaroon to provide Loop credentials' >&2
+    exit 10
+  }
+  loop=true
+fi
+[[ "$loop_disabled" == false ]] || loop=false
 
 if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
   echo "Creating namespace $namespace"
@@ -59,7 +86,8 @@ echo "Applying $profile chart to $namespace"
 helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"
   --namespace "$namespace"
   --values "$repo_dir/charts/lnd-ops/values-$profile.yaml"
-  --set "monitoring.enabled=$monitoring")
+  --set "monitoring.enabled=$monitoring"
+  --set "loop.enabled=$loop")
 if [[ "$monitoring" == true ]]; then
   # Adding the sidecars restarts the Pod and LND may need a manual wallet unlock.
   # The collector source is mounted from the chart and runs on the pinned

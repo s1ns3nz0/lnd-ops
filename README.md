@@ -1,6 +1,23 @@
 # lnd-ops
 
-![LND Ops terminal banner](docs/assets/lnd-ops-banner.png)
+```text
+__                      __       ______
+|  \                    |  \     /      \
+| ▓▓      _______   ____| ▓▓    |  ▓▓▓▓▓▓\ ______   _______
+| ▓▓     |       \ /      ▓▓    | ▓▓  | ▓▓/      \ /       \
+| ▓▓     | ▓▓▓▓▓▓▓\  ▓▓▓▓▓▓▓    | ▓▓  | ▓▓  ▓▓▓▓▓▓\  ▓▓▓▓▓▓▓
+| ▓▓     | ▓▓  | ▓▓ ▓▓  | ▓▓    | ▓▓  | ▓▓ ▓▓  | ▓▓\▓▓    \
+| ▓▓_____| ▓▓  | ▓▓ ▓▓__| ▓▓    | ▓▓__/ ▓▓ ▓▓__/ ▓▓_\▓▓▓▓▓▓\
+| ▓▓     \ ▓▓  | ▓▓\▓▓    ▓▓     \▓▓    ▓▓ ▓▓    ▓▓       ▓▓
+ \▓▓▓▓▓▓▓▓\▓▓   \▓▓ \▓▓▓▓▓▓▓      \▓▓▓▓▓▓| ▓▓▓▓▓▓▓ \▓▓▓▓▓▓▓
+                                         | ▓▓
+                                         | ▓▓
+                                          \▓▓
+
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+```
 
 The Korean [LND Ops learning Wiki](https://s1ns3nz0.github.io/lnd-ops/) explains
 how LND's state and failure model lead to this repository's Kubernetes,
@@ -48,6 +65,46 @@ Success ends with `OK: Windows WSL 2 infrastructure smoke test passed`. Fresh wa
 ## Current operator slice
 
 The regtest, testnet, and monitoring infrastructure slices are implemented on Mac arm64 and Windows WSL 2 amd64. The Mac regtest wallet, channel, bidirectional payment, SCB, and [seed-plus-SCB recovery exercise](docs/evidence/mac-regtest-recovery-2026-09-23.md) passed. The Windows regtest wallet, channel, bidirectional payment, encrypted SCBs, live monitoring, and wallet-preserving redeployment also [passed](docs/evidence/windows-regtest-mvp-2026-09-23.md). Independent Mac and Windows testnet nodes then passed with external peers, active public channels, bidirectional payments, live monitoring, Pod restart recovery, current encrypted SCBs, wallet-preserving redeployment, Kubernetes security controls, and [cross-platform Phase 8 acceptance](docs/evidence/phase8-cross-platform-2026-09-24.md). The post-MVP path through the final public demonstration is defined in the [portfolio demo roadmap](docs/portfolio-demo-roadmap.md).
+
+Phase 2 begins with an opt-in, testnet-only [Loop integration](docs/phase2-loop-runbook.md). It uses a dedicated credential Secret, restricted network paths, and read-only quote verification; a real swap remains a separately approved manual operation.
+
+## Guided setup
+
+Run `./lndops` to enter the interactive setup shell. Run
+`ops/install-command` once to make `lndops` available from any directory. It describes Phases 0–9,
+checks the live environment before every selection, skips completed work, and
+builds only the safe automatic portion up to the selected phase. Wallets,
+funding, secrets, recovery, and fault injection remain explicit manual gates.
+Its banner reads each existing wallet's status, confirmed balance, active-channel
+count, and an already-existing external address. On older LND versions it shows
+an existing UTXO address instead. It never creates an address; an absent or
+locked wallet is shown as such.
+Use `lndops --status` for a read-only overview; evidence and fault phases
+are shown as manual gates so this overview never creates evidence or probe Pods.
+Use
+`lndops --to 3 --dry-run` to preview a cumulative plan.
+`lndops` rejects cleanup and reset verbs; disposable deletion remains available
+only through the separately documented guarded commands.
+Inside `lndops`, use `delete` to choose project namespaces individually. It
+always shows a dry-run first and requires `DELETE item,item` before deletion;
+K3s itself is never deleted.
+
+### Persistent wallet policy
+
+The Windows testnet wallet and its PVC are the long-lived operator wallet for
+Phases 0–9. Ordinary `ops/start` deployment paths only reconcile charts and
+never run reset, wallet creation, funding, channel-close, recovery, or fault
+exercise commands. Keep the seed offline, the wallet password outside the
+repository, and a current encrypted SCB outside the K3s volume. Use
+`ops/redeploy-check` to prove that ordinary chart reapplication kept the node
+identity, channels, PVC, SCB, and monitoring history. Regtest recovery creates
+a separate recovery PVC only while the original identity is stopped; its finish
+and abort commands resume the preserved original PVC.
+
+At first interactive start, choose an existing testnet/regtest wallet workspace
+or reserve a new separate workspace. The choice is stored owner-only under the
+project state directory. Existing selections record their PVC UIDs and stop if
+those identities change; selecting a new workspace never replaces a wallet.
 
 Start the Phase 9 rehearsal with `ops/demo`. It presents seven color-coded
 cumulative stages, asks which final stage to run, and writes a private,

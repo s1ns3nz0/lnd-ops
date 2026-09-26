@@ -27,6 +27,7 @@ while IFS= read -r -d '' script; do
 done < <(find ops -type f -print0)
 (( bash_count > 0 && python_count > 0 )) || { echo 'FAIL: no Bash or Python ops scripts discovered' >&2; exit 1; }
 python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("collector/payment_metrics.py").read_text())'
+python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("charts/lnd-ops/files/loop_health.py").read_text())'
 cmp collector/payment_metrics.py charts/lnd-ops/files/payment_metrics.py >/dev/null || {
   echo 'collector source and Helm-mounted copy differ' >&2
   exit 1
@@ -61,6 +62,7 @@ helm lint charts/vendor/falco-9.2.0.tgz -f charts/security/falco-values.yaml
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
 helm template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
+helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml --set monitoring.enabled=true --set loop.enabled=true >/dev/null
 helm template lnd-ops-monitoring charts/vendor/kube-prometheus-stack-91.4.1.tgz \
   -n lnd-monitoring -f charts/monitoring-values.yaml >/dev/null
 helm template kyverno charts/vendor/kyverno-3.9.1.tgz -n kyverno -f charts/security/kyverno-values.yaml | \

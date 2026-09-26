@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Register a locally held, custom-baked Loop macaroon without printing it, then
+# enable the separately deployed testnet Loop daemon. This command deliberately
+# never initiates a swap or accepts a payment request.
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+usage='Usage: ops/enable-loop --macaroon /secure/path/loop.macaroon'
+[[ $# -eq 2 && "$1" == --macaroon ]] || { echo "$usage" >&2; exit 2; }
+macaroon=$2
+[[ -r "$macaroon" && -s "$macaroon" ]] || { echo 'Loop macaroon is missing or empty' >&2; exit 2; }
+macaroon_mode=$(stat -f '%Lp' "$macaroon" 2>/dev/null || stat -c '%a' "$macaroon")
+[[ $((8#$macaroon_mode & 077)) -eq 0 ]] || {
+  echo 'Loop macaroon must not be readable by group or other users (use chmod 600)' >&2
+  exit 2
+}
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+[[ -r "$KUBECONFIG" ]] || { echo 'Kubeconfig missing: run ops/bootstrap' >&2; exit 1; }
+kubectl get nodes >/dev/null
+
+# First reconcile LND so tlsautorefresh can add its in-cluster service name.
+# This is an ordinary redeploy and preserves the wallet PVC.
+"$repo_dir/ops/deploy" testnet --monitoring
+kubectl -n lnd-testnet rollout status statefulset/lnd-0 --timeout=15m
+kubectl -n lnd-testnet exec lnd-0-0 -- lncli --lnddir=/data/.lnd --network=testnet getinfo >/dev/null || {
+  echo 'ACTION: unlock the testnet wallet before enabling Loop' >&2
+  exit 10
+}
+
+umask 077
+temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/lnd-ops-loop.XXXXXXXX")
+trap 'rm -rf "$temporary_dir"' EXIT
+certificate=$temporary_dir/tls.cert
+kubectl -n lnd-testnet exec lnd-0-0 -- cat /data/.lnd/tls.cert > "$certificate"
+[[ -s "$certificate" ]] || { echo 'LND TLS certificate is empty' >&2; exit 1; }
+
+kubectl -n lnd-testnet create secret generic lnd-loop-credentials \
+  --from-file=loop.macaroon="$macaroon" \
+  --from-file=tls.cert="$certificate" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+"$repo_dir/ops/deploy" testnet --monitoring --loop
+kubectl -n lnd-testnet rollout restart deployment/loopd >/dev/null
+kubectl -n lnd-testnet rollout status deployment/loopd --timeout=10m
+echo 'OK: Loop deployed. Run ops/verify-loop for the read-only health and quote check.'

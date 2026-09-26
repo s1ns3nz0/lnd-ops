@@ -17,6 +17,7 @@ def rendered_references():
     commands = [
         ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-regtest.yaml", "--set", "monitoring.enabled=true"],
         ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-testnet.yaml", "--set", "monitoring.enabled=true"],
+        ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-testnet.yaml", "--set", "monitoring.enabled=true", "--set", "loop.enabled=true"],
         ["helm", "template", "lnd-ops-monitoring", "charts/vendor/kube-prometheus-stack-91.4.1.tgz", "-n", "lnd-monitoring", "-f", "charts/monitoring-values.yaml"],
     ]
     references = set()

@@ -11,6 +11,10 @@
     "tag": "docker.io/lightninglabs/lndmon:v0.2.15",
     "digest": "sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5"
   },
+  "loop": {
+    "tag": "docker.io/lightninglabs/loop:v0.35.0-beta",
+    "digest": "sha256:6606bc5ae3d73db2cc4d162b5fdb80cb41df203bc9236e624f27526766b46454"
+  },
   "prometheus": {
     "tag": "quay.io/prometheus/prometheus:v3.14.0-distroless",
     "digest": "sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a"
@@ -49,6 +53,6 @@
   },
   "payment-collector-base": {
     "tag": "docker.io/library/python:3.13-slim",
-    "digest": "sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+    "digest": "sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b"
   }
 }

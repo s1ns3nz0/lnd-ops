@@ -47,10 +47,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Check scripts and image lock syntax
         run: |
-          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
+          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/enable-loop ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
           bash -n ops/build-collector
           bash -n ops/kagent-cli
-          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/verify-monitoring", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py")]'
+          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/start", "ops/wallet-status", "ops/verify-monitoring", "ops/verify-loop", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py", "charts/lnd-ops/files/loop_health.py")]'
           python3 -m py_compile ops/exercise-regtest ops/verify-regtest-recovery collector/payment_metrics.py
           python3 -m json.tool ops/images.lock.json >/dev/null
           for dashboard in charts/dashboards/*.json; do python3 -m json.tool "$dashboard" >/dev/null; done
@@ -69,6 +69,7 @@ jobs:
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml --set monitoring.enabled=true --set loop.enabled=true >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml --set monitoring.enabled=true --set-string monitoring.paymentCollectorImage=localhost/lnd-ops-payment-collector:ci >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops-agent charts/agent --namespace lnd-agent >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template kagent charts/vendor/kagent-0.9.12.tgz --namespace kagent -f charts/kagent-values.yaml --set-string providers.ollama.config.host=https://ollama.example --set-string providers.ollama.model=gpt-oss:20b >/dev/null
@@ -83,6 +84,7 @@ jobs:
           mkdir -p /tmp/lnd-ops-manifests
           helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml > /tmp/lnd-ops-manifests/regtest.yaml
           helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml > /tmp/lnd-ops-manifests/testnet.yaml
+          helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml --set monitoring.enabled=true --set loop.enabled=true > /tmp/lnd-ops-manifests/testnet-loop.yaml
           helm template lnd-ops-agent charts/agent --namespace lnd-agent > /tmp/lnd-ops-manifests/agent.yaml
           docker run --rm -v /tmp/lnd-ops-manifests:/manifests:ro \
             ghcr.io/yannh/kubeconform@sha256:8f0eeaaa96ba27ba1500b0e4b1c215acc358d159c62a7ecae58d7a03403287b0 \

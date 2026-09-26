@@ -1,0 +1,113 @@
+{{- if .Values.loop.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: lnd-loop-health
+spec:
+  selector:
+    app.kubernetes.io/name: loopd
+  ports:
+    - {name: loop-health, port: 9094, targetPort: 9094}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loopd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loopd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loopd
+    spec:
+      serviceAccountName: loopd
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: loopd
+          image: {{ .Values.loop.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [loopd]
+          args:
+            - --loopdir=/loop
+            - --network=testnet
+            - --lnd.host=lnd-0:10009
+            - --lnd.tlspath=/credentials/tls.cert
+            - --lnd.macaroonpath=/credentials/loop.macaroon
+            - --server.host={{ .Values.loop.serverHost }}
+            - --maxl402cost={{ .Values.loop.maxL402Cost }}
+            - --maxl402fee={{ .Values.loop.maxL402Fee }}
+            - --rpclisten=127.0.0.1:11010
+            - --restlisten=127.0.0.1:8081
+          resources:
+            {{- toYaml .Values.loop.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - {name: credentials, mountPath: /credentials, readOnly: true}
+            - {name: loop-data, mountPath: /loop}
+        - name: loop-health
+          image: {{ .Values.monitoring.paymentCollectorImage | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [python3, /app/loop_health.py]
+          env:
+            - {name: LOOP_DIR, value: /loop}
+            - {name: LOOP_NETWORK, value: testnet}
+          ports:
+            - {name: loop-health, containerPort: 9094}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - {name: loop-data, mountPath: /loop, readOnly: true}
+            - {name: loop-health-source, mountPath: /app/loop_health.py, subPath: loop_health.py, readOnly: true}
+      volumes:
+        - name: credentials
+          secret:
+            secretName: {{ .Values.loop.credentialsSecret }}
+            defaultMode: 0400
+        - name: loop-health-source
+          configMap:
+            name: lnd-loop-health
+            defaultMode: 0444
+        - name: loop-data
+          persistentVolumeClaim:
+            claimName: loop-data
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loopd
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lnd-loop-health
+data:
+  loop_health.py: |
+{{ .Files.Get "files/loop_health.py" | indent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loop-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.loop.storage }}
+{{- end }}

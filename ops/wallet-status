@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Read the existing LND wallet summaries without creating an address or changing state."""
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+NODES = (("testnet", "lnd-0"), ("regtest", "lnd-0"), ("regtest", "lnd-1"))
+
+
+def lncli(profile, node, operation):
+    command = [
+        "kubectl", "-n", f"lnd-{profile}", "exec", f"{node}-0", "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", f"--network={profile}", operation,
+    ]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=30)
+    if result.returncode:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def existing_address(addresses):
+    if not isinstance(addresses, dict) or not isinstance(addresses.get("account_with_addresses", []), list):
+        raise ValueError("malformed listaddresses response")
+    candidates = []
+    for account in addresses.get("account_with_addresses", []):
+        if not isinstance(account, dict) or not isinstance(account.get("addresses", []), list):
+            raise ValueError("malformed listaddresses response")
+        for entry in account.get("addresses", []):
+            if not isinstance(entry, dict):
+                raise ValueError("malformed listaddresses response")
+            if entry.get("address") and not entry.get("internal", False):
+                candidates.append(entry["address"])
+    return candidates[0] if candidates else None
+
+
+def funded_address(unspent):
+    if not isinstance(unspent, dict) or not isinstance(unspent.get("utxos", []), list):
+        raise ValueError("malformed listunspent response")
+    for entry in unspent["utxos"]:
+        if not isinstance(entry, dict):
+            raise ValueError("malformed listunspent response")
+        if entry.get("address"):
+            return entry["address"]
+    return None
+
+
+def summary(profile, node):
+    wallet_state = lncli(profile, node, "state")
+    if wallet_state is None:
+        return {"profile": profile, "node": node, "state": "상태 읽기 실패"}
+    state = wallet_state.get("state")
+    if state == "NON_EXISTING":
+        return {"profile": profile, "node": node, "state": "지갑 없음"}
+    if state != "SERVER_ACTIVE":
+        return {"profile": profile, "node": node, "state": "잠김"}
+    info = lncli(profile, node, "getinfo")
+    if not info or not info.get("identity_pubkey"):
+        return {"profile": profile, "node": node, "state": "상태 읽기 실패"}
+    balance = lncli(profile, node, "walletbalance") or {}
+    channels = lncli(profile, node, "listchannels") or {}
+    addresses = lncli(profile, node, "listaddresses")
+    active = sum(1 for channel in channels.get("channels", []) if channel.get("active"))
+    try:
+        if addresses is not None:
+            address = existing_address(addresses)
+            address_kind = "외부 주소"
+        else:
+            address = funded_address(lncli(profile, node, "listunspent") or {})
+            address_kind = "UTXO 주소"
+    except ValueError:
+        return {"profile": profile, "node": node, "state": "상태 읽기 실패"}
+    return {
+        "profile": profile,
+        "node": node,
+        "state": "활성",
+        "confirmed_sat": int(balance.get("confirmed_balance", 0)),
+        "active_channels": active,
+        "address": address or "기존 외부 주소 없음",
+        "address_kind": address_kind,
+    }
+
+
+def render(rows):
+    lines = ["WALLET STATUS"]
+    for row in rows:
+        prefix = f"{row['profile']}/{row['node']}"
+        if row["state"] != "활성":
+            lines.append(f"  {prefix}: {row['state']}")
+            continue
+        lines.append(
+            f"  {prefix}: 활성 | 확정 {row['confirmed_sat']} sat | 활성 채널 {row['active_channels']} | {row['address_kind']} {row['address']}"
+        )
+    return "\n".join(lines)
+
+
+def main(arguments):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--format", choices=("banner",), help="render the compact startup banner format")
+    args = parser.parse_args(arguments)
+    rows = [summary(profile, node) for profile, node in NODES]
+    print(render(rows))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

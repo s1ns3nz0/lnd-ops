@@ -97,6 +97,19 @@ prometheus:
             target_label: namespace
           - source_labels: [__meta_kubernetes_service_name]
             target_label: service
+      - job_name: lnd-loop-health
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [lnd-testnet]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: loop-health
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_service_name]
+            target_label: service
 prometheusOperator:
   image:
     sha: cf153f64d6c38113fceb2cda7642365ea887f71edd7888f054e43e54cf177e55

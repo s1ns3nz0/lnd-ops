@@ -62,6 +62,11 @@ spec:
             - --restlisten=0.0.0.0:8080
             - --listen=0.0.0.0:9735
             - --tlsextraip=127.0.0.1
+            # A local client and the separately deployed Loop Pod both verify
+            # this certificate. tlsautorefresh adds service DNS safely on a
+            # subsequent ordinary chart reapply without changing wallet data.
+            - --tlsextradomain=lnd-0
+            - --tlsautorefresh
             {{- if $root.Values.monitoring.enabled }}
             - --prometheus.enable
             - --prometheus.listen=0.0.0.0:8989

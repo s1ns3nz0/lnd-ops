@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+bin_dir=${XDG_BIN_HOME:-$HOME/.local/bin}
+mkdir -p "$bin_dir"
+chmod 700 "$bin_dir"
+target="$bin_dir/lndops"
+if [[ -e "$target" && ! -L "$target" ]]; then
+  echo "FAIL: refusing to replace non-symlink command: $target" >&2
+  exit 1
+fi
+ln -sfn "$repo_dir/lndops" "$target"
+echo "OK: installed $target"
+case ":$PATH:" in
+  *":$bin_dir:"*) ;;
+  *) echo "ACTION: add $bin_dir to PATH, then start a new shell" ;;
+esac

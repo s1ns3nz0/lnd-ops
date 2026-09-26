@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Read-only Loop health and quote gate; it never creates a swap."""
+import json
+import os
+import subprocess
+import sys
+
+KUBECONFIG = os.environ.get("KUBECONFIG", os.path.expanduser("~/.local/state/lnd-ops/kubeconfig"))
+
+
+def run(*args):
+    return subprocess.run(args, text=True, capture_output=True, check=False)
+
+
+def fail(message, code=1):
+    print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+if not os.path.isfile(KUBECONFIG):
+    fail("Kubeconfig missing: run ops/bootstrap")
+os.environ["KUBECONFIG"] = KUBECONFIG
+health = run("kubectl", "-n", "lnd-testnet", "get", "deployment", "loopd", "-o", "json")
+if health.returncode:
+    fail("ACTION: enable Loop with ops/enable-loop --macaroon /secure/path/loop.macaroon", 10)
+deployment = json.loads(health.stdout)
+if deployment.get("status", {}).get("availableReplicas") != 1:
+    fail("ACTION: wait for loopd to become available", 10)
+metric = run("kubectl", "-n", "lnd-testnet", "exec", "deployment/loopd", "-c", "loop-health", "--", "python3", "-c", "from urllib.request import urlopen; print(urlopen(\"http://127.0.0.1:9094/metrics\").read().decode())")
+if metric.returncode or "lnd_ops_loop_healthy 1" not in metric.stdout:
+    fail("Loop health endpoint is not ready")
+quote = run("kubectl", "-n", "lnd-testnet", "exec", "deployment/loopd", "-c", "loopd", "--", "loop", "--loopdir=/loop", "--network=testnet", "quote", "out", "--amt=10000")
+if quote.returncode:
+    fail("Loop quote failed: " + quote.stderr.strip())
+print("OK Loop: daemon healthy and testnet quote returned; no swap was created")

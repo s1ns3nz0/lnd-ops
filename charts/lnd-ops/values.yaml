@@ -25,7 +25,20 @@ testnet:
 monitoring:
   enabled: false
   lndmonImage: docker.io/lightninglabs/lndmon@sha256:231d981ddafb6ab73fc6e1ff29697b99f29a1ddcf17c13f8b72267ca3939e8e5
-  paymentCollectorImage: docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
+  paymentCollectorImage: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
   lndmonResources:
     requests: {cpu: 25m, memory: 64Mi}
     limits: {cpu: 250m, memory: 256Mi}
+loop:
+  # Loop is off until an operator has supplied a custom, Loop-scoped macaroon.
+  enabled: false
+  image: docker.io/lightninglabs/loop@sha256:6606bc5ae3d73db2cc4d162b5fdb80cb41df203bc9236e624f27526766b46454
+  credentialsSecret: lnd-loop-credentials
+  serverHost: swap.lightning.today:11010
+  # Quotes and probes do not spend funds. A swap is always an explicit operator action.
+  maxL402Cost: 0
+  maxL402Fee: 0
+  storage: 1Gi
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 512Mi}

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+case "${1:-}" in
+  cleanup|reset|reset-*|destroy)
+    echo 'FAIL: lndops never deletes resources; use the documented explicit reset command for a wallet-free disposable environment' >&2
+    exit 2
+    ;;
+esac
+exec "$repo_dir/ops/start" "$@"
