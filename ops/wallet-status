@@ -12,7 +12,7 @@ import sys
 STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
 os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
 NODES = (("testnet", "lnd-0"), ("regtest", "lnd-0"), ("regtest", "lnd-1"))
-TESTNET_FAUCET = "https://mempool.space/testnet/faucet"
+LIGHTNING_SATS_FAUCET = "https://www.btcgacha.com/"
 
 
 def lncli(profile, node, operation):
@@ -100,7 +100,7 @@ def render(rows):
             continue
         lines.append(f"  {prefix:<18} 활성 | 확정 {row['confirmed_sat']} sat | 활성 채널 {row['active_channels']}")
         lines.append(f"  {'':18} {row['address_kind']}: {row['address']}")
-    lines.append(f"  Testnet Faucet: {TESTNET_FAUCET}")
+    lines.append(f"  Mainnet Lightning sats faucet (12h): {LIGHTNING_SATS_FAUCET}")
     return "\n".join(lines)
 
 
