@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 0 ]] || { echo 'Usage: ops/restore-regtest-recovery-wallet' >&2; exit 2; }
+[[ -t 0 && -t 1 ]] || {
+  echo 'Run in an interactive terminal; seed words and passwords are never accepted through arguments or pipes' >&2
+  exit 2
+}
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+namespace=lnd-regtest-recovery
+kubectl get namespace "$namespace" >/dev/null 2>&1 || {
+  echo 'ACTION: prepare the isolated regtest recovery namespace first' >&2
+  exit 10
+}
+state=$(kubectl -n "$namespace" exec lnd-0-0 -- \
+  lncli --lnddir=/data/.lnd --network=regtest state | \
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+case "$state" in
+  NON_EXISTING)
+    cat <<'EOF'
+Restore the original disposable regtest lnd-0 seed in this isolated copy.
+Use the recovery seed, choose a new local recovery password, and provide the
+SCB when LND asks. This never replaces the preserved original wallet PVC.
+EOF
+    kubectl -n "$namespace" exec -it lnd-0-0 -- \
+      lncli --lnddir=/data/.lnd --network=regtest create
+    ;;
+  SERVER_ACTIVE) echo 'OK: isolated recovery wallet is already active'; exit 0 ;;
+  LOCKED) echo 'ACTION: unlock the isolated recovery wallet first' >&2; exit 10 ;;
+  *) echo "FAIL: unexpected recovery wallet state: $state" >&2; exit 1 ;;
+esac
+echo 'OK: isolated recovery wallet created; verify the recovered copy before resuming the original'

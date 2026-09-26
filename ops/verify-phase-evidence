@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Read-only completion check for Phase 8 or Phase 9 evidence."""
+
+import json
+import os
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+
+
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+EVIDENCE = STATE / "evidence"
+CONTRACTS = {
+    "phase8": ("phase8-acceptance-*.json", "lnd-ops/phase8-acceptance/v1"),
+    "phase9": ("phase9-demo-*.json", "lnd-ops/phase9-demo/v1"),
+}
+
+
+def main(arguments):
+    if len(arguments) != 1 or arguments[0] not in CONTRACTS:
+        print("Usage: ops/verify-phase-evidence phase8|phase9", file=sys.stderr)
+        return 2
+    pattern, schema = CONTRACTS[arguments[0]]
+    paths = sorted(EVIDENCE.glob(pattern), key=lambda path: path.stat().st_mtime_ns, reverse=True)
+    if not paths:
+        print(f"ACTION: complete the {arguments[0]} interactive flow to create its evidence", file=sys.stderr)
+        return 10
+    path = paths[0]
+    try:
+        if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o777 != 0o600:
+            raise ValueError("evidence ownership or permissions are unsafe")
+        payload = json.loads(path.read_text())
+        if payload.get("schema") != schema or payload.get("result") != "pass":
+            raise ValueError("latest evidence is not a passing record")
+        checked = datetime.fromisoformat(payload["checked_at"].replace("Z", "+00:00"))
+        maximum_age = timedelta(days=7 if arguments[0] == "phase9" else 1)
+        if datetime.now(timezone.utc) - checked > maximum_age:
+            raise ValueError("latest evidence is no longer current")
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print(f"OK {arguments[0]} evidence: {path.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

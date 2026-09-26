@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 && ( "$1" == lnd-0 || "$1" == lnd-1 ) ]] || {
+  echo 'Usage: ops/unlock-regtest-wallet lnd-0|lnd-1' >&2
+  exit 2
+}
+[[ -t 0 && -t 1 ]] || {
+  echo 'Run in an interactive terminal; the wallet password is never accepted through arguments or pipes' >&2
+  exit 2
+}
+
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+node=$1
+state=$(kubectl -n lnd-regtest exec "$node-0" -- \
+  lncli --lnddir=/data/.lnd --network=regtest state | \
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+case "$state" in
+  LOCKED)
+    kubectl -n lnd-regtest exec -it "$node-0" -- \
+      lncli --lnddir=/data/.lnd --network=regtest unlock
+    ;;
+  SERVER_ACTIVE) echo "OK: $node regtest wallet is already unlocked"; exit 0 ;;
+  NON_EXISTING) echo "ACTION: create $node regtest wallet first" >&2; exit 10 ;;
+  *) echo "FAIL: unexpected $node wallet state: $state" >&2; exit 1 ;;
+esac
+echo "OK: $node regtest wallet unlocked"

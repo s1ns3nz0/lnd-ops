@@ -62,14 +62,36 @@ test('interactive phases execute one needed action and recheck before progressin
   assert.doesNotMatch(contents, /위 수동 실습 gate가 남아 있습니다/);
 });
 
-test('Router progress stays on its own screen while automatic conditions are pending', async () => {
+test('Router progress keeps one live status line while automatic conditions are pending', async () => {
   const contents = await readFile(start, 'utf8');
-  const routerGuide = contents.slice(contents.indexOf('def guide_router'), contents.indexOf('\ndef guide_operator'));
+  const routerGuide = contents.slice(contents.indexOf('def guide_router'), contents.indexOf('\ndef run_confirmed'));
   assert.match(routerGuide, /PHASE 03 · ROUTER PROGRESS/);
   assert.match(routerGuide, /while True:/);
   assert.match(routerGuide, /time\.sleep\(ROUTER_POLL_SECONDS\)/);
-  assert.match(routerGuide, /완료 전까지 이 화면을 유지합니다/);
+  assert.match(routerGuide, /router_active_public_channels\(\)/);
+  assert.match(routerGuide, /render_router_wait\(/);
+  assert.match(routerGuide, /상태 변경:/);
+  assert.doesNotMatch(routerGuide, /확인 \{attempts/);
+  assert.doesNotMatch(routerGuide, /초 뒤 Router 상태를 다시 확인/);
   assert.match(routerGuide, /공개 Router 조건과 실제 forwarding이 검증되었습니다/);
+  assert.match(contents, /공개 채널 \{channel_state\} · 대기:/);
+  assert.match(contents, /최근 채널 동기화:/);
+  assert.match(contents, /경과: \{elapsed_time/);
+});
+
+test('every learning phase has a live completion probe and an interactive route', async () => {
+  const contents = await readFile(start, 'utf8');
+  for (const probe of [
+    'verify-regtest-workflow', 'verify-testnet-readiness', 'verify-router', 'verify-loop',
+    'verify-monitoring", "--profile", "testnet', 'phase4-acceptance', 'phase5-acceptance',
+    'phase6-acceptance', 'phase7-acceptance', 'verify-phase-evidence", "phase8',
+    'verify-phase-evidence", "phase9',
+  ]) assert.match(contents, new RegExp(probe));
+  for (const guide of ['guide_regtest', 'guide_testnet', 'guide_router', 'guide_loop', 'guide_monitoring', 'guide_evidence_phase']) {
+    assert.match(contents, new RegExp(`def ${guide}`));
+  }
+  assert.match(contents, /run_confirmed\(/);
+  assert.match(contents, /wait_for_phase\(/);
 });
 
 test('guided setup reserves partial status for an explicit operator gate', async () => {
@@ -79,7 +101,7 @@ test('guided setup reserves partial status for an explicit operator gate', async
   assert.doesNotMatch(contents, /existing Kubernetes resources did not pass verification/);
   assert.match(contents, /post-build verification/);
   assert.match(contents, /ops\/wallet-status/);
-  assert.match(contents, /return "failed", detail\[-1\]/);
+  assert.match(contents, /return "failed", summary/);
 });
 
 test('guided setup validates target numbers and refuses noninteractive unspecified input', () => {
@@ -119,10 +141,11 @@ test('interactive setup presents workspace selection before wallet status and th
   assert.ok(repl.indexOf('print_wallet_overview()') < repl.indexOf('print_phase_catalog()'));
 });
 
-test('wallet workspace prompt asks whether to retain a saved selection', async () => {
+test('wallet workspace prompt keeps a saved selection without advertising an Enter shortcut', async () => {
   const contents = await readFile(start, 'utf8');
-  assert.match(contents, /현재 선택 유지/);
-  assert.match(contents, /선택 \[1-4, Enter=유지\]/);
+  assert.match(contents, /if not answer and selected:/);
+  assert.match(contents, /선택 \[1-4\]:/);
+  assert.doesNotMatch(contents, /선택 \[1-4, Enter=유지\]/);
 });
 
 test('wallet workspace prompt exits cleanly on end of input', async () => {

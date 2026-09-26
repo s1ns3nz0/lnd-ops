@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Read-only completion check for the two-node regtest learning workflow."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+def lncli(node, *arguments):
+    result = subprocess.run(
+        ["kubectl", "-n", "lnd-regtest", "exec", f"{node}-0", "--", "lncli", "--lnddir=/data/.lnd", "--network=regtest", *arguments],
+        text=True, capture_output=True, timeout=60,
+    )
+    if result.returncode:
+        raise RuntimeError("create or unlock both regtest wallets")
+    return json.loads(result.stdout)
+
+
+def main():
+    try:
+        first, second = lncli("lnd-0", "getinfo"), lncli("lnd-1", "getinfo")
+        channels = lncli("lnd-0", "listchannels").get("channels", [])
+        active = [item for item in channels if item.get("active") and item.get("remote_pubkey") == second.get("identity_pubkey")]
+        if not active:
+            raise RuntimeError("run the local regtest channel and bidirectional payment exercise")
+        payments = lncli("lnd-0", "listpayments", "--max_payments", "100").get("payments", [])
+        invoices = lncli("lnd-0", "listinvoices", "--max_invoices", "100").get("invoices", [])
+        if not any(item.get("status") == "SUCCEEDED" for item in payments) or not any(item.get("state") == "SETTLED" for item in invoices):
+            raise RuntimeError("run the local regtest channel and bidirectional payment exercise")
+    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+        print(f"ACTION: {error}", file=sys.stderr)
+        return 10
+    print(f"OK regtest workflow: active channel between {first['identity_pubkey']} and {second['identity_pubkey']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

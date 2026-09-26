@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import platform
 import socket
 import subprocess
 import sys
@@ -44,7 +45,7 @@ PHASES = (
     {
         "title": "regtest 기초 환경",
         "environment": "폐쇄된 regtest Bitcoin·LND 2노드와 PVC, 기본 NetworkPolicy를 구성합니다.",
-        "probe": ("ops/verify", "regtest"),
+        "probe": ("ops/verify-regtest-workflow",),
         "workspace": "regtest",
         "namespaces": ("lnd-regtest",),
         "build": (("ops/doctor",), ("ops/bootstrap",), ("ops/deploy", "regtest"), ("ops/verify", "regtest")),
@@ -53,7 +54,7 @@ PHASES = (
     {
         "title": "지속 testnet 노드",
         "environment": "영속 PVC를 가진 testnet LND와 public-peer 정책을 구성합니다.",
-        "probe": ("ops/verify", "testnet"),
+        "probe": ("ops/verify-testnet-readiness",),
         "workspace": "testnet",
         "namespaces": ("lnd-testnet",),
         "build": (("ops/deploy", "testnet"), ("ops/verify", "testnet")),
@@ -79,7 +80,7 @@ PHASES = (
     {
         "title": "관측 환경",
         "environment": "Prometheus, Grafana, LND/결제 collector, dashboard와 alert rule을 구성합니다.",
-        "probe": ("ops/verify-monitoring", "--infrastructure-only"),
+        "probe": ("ops/verify-monitoring", "--profile", "testnet"),
         "namespaces": ("lndops-monitoring",),
         "build": (("ops/deploy-monitoring",), ("ops/verify-monitoring", "--infrastructure-only")),
         "manual": "wallet unlock과 read-only macaroon 준비 후 `ops/deploy testnet --monitoring`, `ops/verify-monitoring --profile testnet`을 실행하세요.",
@@ -87,50 +88,55 @@ PHASES = (
     {
         "title": "보안 기준선",
         "environment": "Kyverno admission, RBAC, NetworkPolicy, Falco runtime 탐지를 적용합니다.",
-        "probe": (),
+        "probe": ("ops/phase4-acceptance",),
         "namespaces": ("lndops-kyverno", "lndops-falco"),
         "build": (("ops/deploy-security",),),
-        "post_verify": False,
+        "operator_gate": True,
         "manual": "live acceptance는 `ops/phase4-acceptance`로 실행하세요.",
     },
     {
         "title": "백업·복구 운영",
         "environment": "암호화 SCB, stale-backup alert, seed+SCB recovery 증거를 만드는 단계입니다.",
-        "probe": (),
+        "probe": ("ops/phase5-acceptance",),
         "namespaces": (),
         "build": (),
+        "operator_gate": True,
         "manual": "지갑 상태를 바꾸므로 runbook의 수동 절차와 `ops/phase5-acceptance`만 사용하세요.",
     },
     {
         "title": "장애·경보 실습",
         "environment": "regtest 채널, Kubernetes CrashLoop, Falco 이벤트 장애를 주입하고 자동 복구를 검증합니다.",
-        "probe": (),
+        "probe": ("ops/phase6-acceptance",),
         "namespaces": (),
         "build": (),
+        "operator_gate": True,
         "manual": "가역 장애 주입은 `ops/exercise-phase6-faults`로 별도 실행하세요.",
     },
     {
         "title": "제한된 kagent",
         "environment": "외부 Ollama와 연결한 allowlist 기반 진단·복구 agent를 구성합니다.",
-        "probe": (),
+        "probe": ("ops/phase7-acceptance",),
         "namespaces": (),
         "build": (),
+        "operator_gate": True,
         "manual": "Ollama endpoint와 model을 정한 뒤 Phase 7 runbook의 `ops/deploy-agent` 절차를 실행하세요.",
     },
     {
         "title": "Mac·WSL 재현성",
         "environment": "Mac arm64와 Windows WSL2 amd64에서 clean start와 host acceptance 증거를 확인합니다.",
-        "probe": (),
+        "probe": ("ops/verify-phase-evidence", "phase8"),
         "namespaces": (),
         "build": (),
+        "operator_gate": True,
         "manual": "각 호스트에서 `ops/phase8-host-acceptance`를 실행한 뒤 `ops/phase8-acceptance`로 합치세요.",
     },
     {
         "title": "포트폴리오 데모",
         "environment": "Lightning, 관측, 안전한 regtest 장애, kagent, 보안·복구 증거를 순서대로 보여줍니다.",
-        "probe": (),
+        "probe": ("ops/verify-phase-evidence", "phase9"),
         "namespaces": (),
         "build": (),
+        "operator_gate": True,
         "manual": "준비 상태를 확인했습니다. 실제 데모는 clean Git revision에서 `ops/demo`로 실행하세요.",
     },
 )
@@ -327,15 +333,66 @@ def operator_message(phase, detail):
     return detail.removeprefix("ACTION: ")
 
 
+def router_active_public_channels():
+    """Return the active public routing-channel count without changing LND state."""
+    command = [
+        "kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--",
+        "lncli", "--lnddir=/data/.lnd", "--network=testnet", "listchannels",
+    ]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, env=runtime_environment(), timeout=30)
+        if result.returncode:
+            return None
+        channels = json.loads(result.stdout).get("channels", [])
+        return sum(
+            channel.get("active") and not channel.get("private") and int(channel.get("local_balance", 0)) > 1
+            for channel in channels
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def elapsed_time(seconds):
+    minutes, seconds = divmod(max(0, int(seconds)), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def render_router_wait(phase, active_channels, detail, channel_synced_at, started_at):
+    channel_state = f"{active_channels}/2" if active_channels is not None else "확인 중/2"
+    synced = time.strftime("%H:%M:%S", time.localtime(channel_synced_at)) if channel_synced_at else "대기 중"
+    message = operator_message(phase, detail)
+    line = (
+        f"  Router · 공개 채널 {channel_state} · 대기: {message} · "
+        f"최근 채널 동기화: {synced} · 경과: {elapsed_time(time.monotonic() - started_at)}"
+    )
+    if sys.stdout.isatty():
+        sys.stdout.write(f"\r\033[2K{line}")
+        sys.stdout.flush()
+    else:
+        print(line)
+
+
 def guide_router(number, phase):
     section("PHASE 03 · ROUTER PROGRESS", CYAN)
-    attempts = 0
+    started_at = time.monotonic()
+    previous = None
+    previous_channels = None
+    channel_synced_at = None
     while True:
         state, detail = inspect(number - 1)
+        active_channels = router_active_public_channels()
+        if active_channels != previous_channels:
+            previous_channels = active_channels
+            channel_synced_at = time.time()
         if state == "complete":
+            if sys.stdout.isatty():
+                print()
             print("  완료: 공개 Router 조건과 실제 forwarding이 검증되었습니다.")
             return state
         if state == "failed":
+            if sys.stdout.isatty():
+                print()
             print(f"  확인 오류: {operator_message(phase, detail)}")
             return state
         if "create or unlock" in detail:
@@ -360,19 +417,235 @@ def guide_router(number, phase):
                 result = subprocess.run([str(REPO / "ops/configure-router-policy"), "--confirm", "APPLY ROUTER POLICY"], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
                 print("  완료: routing 수수료 정책을 적용했습니다." if result.returncode == 0 else "  보류: 채널 정책을 아직 적용할 수 없습니다.")
             continue
-        attempts += 1
-        print(f"  확인 {attempts:02}: {operator_message(phase, detail)}")
-        print(f"  {ROUTER_POLL_SECONDS}초 뒤 Router 상태를 다시 확인합니다. 완료 전까지 이 화면을 유지합니다.")
+        current = (state, detail)
+        if current != previous:
+            if previous is not None:
+                if sys.stdout.isatty():
+                    print()
+                print(f"  상태 변경: {operator_message(phase, detail)}")
+            previous = current
+        render_router_wait(phase, active_channels, detail, channel_synced_at, started_at)
         try:
             time.sleep(ROUTER_POLL_SECONDS)
         except KeyboardInterrupt:
+            if sys.stdout.isatty():
+                print()
             print("\n  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")
+            return "partial"
+
+
+def run_confirmed(label, command, confirmation="Enter=실행"):
+    """Run one named operator action without exposing its command syntax in the UI."""
+    try:
+        answer = input(f"  {label} [{confirmation}, s=건너뜀]: ").strip()
+    except EOFError:
+        return False
+    if answer.lower() == "s":
+        print("  건너뛰었습니다. 현재 Phase 화면에서 상태를 계속 확인합니다.")
+        return False
+    if confirmation.startswith("TYPE ") and answer != confirmation.removeprefix("TYPE "):
+        print("  확인 문구가 일치하지 않아 실행하지 않았습니다.")
+        return False
+    result = subprocess.run([str(REPO / command[0]), *command[1:]], cwd=REPO, env=runtime_environment())
+    if result.returncode == 0:
+        print(f"  완료: {label}")
+        return True
+    print(f"  보류: {label}이 완료되지 않았습니다. 상태를 다시 확인합니다.")
+    return False
+
+
+def wait_for_phase(number, phase, detail, attempts):
+    print(f"  확인 {attempts:02}: {operator_message(phase, detail)}")
+    print(f"  {ROUTER_POLL_SECONDS}초 뒤 상태를 다시 확인합니다. 완료 전까지 이 화면을 유지합니다.")
+    try:
+        time.sleep(ROUTER_POLL_SECONDS)
+    except KeyboardInterrupt:
+        print("\n  Phase 확인을 중단했습니다. 다시 같은 번호를 선택하면 이어서 확인합니다.")
+        return False
+    return True
+
+
+def regtest_wallet_state(node):
+    result = subprocess.run(
+        ["kubectl", "-n", "lnd-regtest", "exec", f"{node}-0", "--", "lncli", "--lnddir=/data/.lnd", "--network=regtest", "state"],
+        text=True, capture_output=True, env=runtime_environment(), timeout=60,
+    )
+    if result.returncode:
+        return "UNKNOWN"
+    try:
+        return json.loads(result.stdout).get("state", "UNKNOWN")
+    except json.JSONDecodeError:
+        return "UNKNOWN"
+
+
+def guide_regtest(number, phase):
+    section("PHASE 01 · REGTEST PROGRESS", CYAN)
+    attempts = 0
+    while True:
+        state, detail = inspect(number - 1)
+        if state == "complete":
+            print("  완료: 두 regtest 지갑, 채널, 양방향 결제가 검증되었습니다.")
+            return state
+        missing = [node for node in ("lnd-0", "lnd-1") if regtest_wallet_state(node) == "NON_EXISTING"]
+        locked = [node for node in ("lnd-0", "lnd-1") if regtest_wallet_state(node) == "LOCKED"]
+        if missing:
+            node = missing[0]
+            run_confirmed(f"{node} regtest 지갑 생성과 seed 보관", ("ops/create-regtest-wallet", node))
+            continue
+        if locked:
+            node = locked[0]
+            run_confirmed(f"{node} regtest 지갑 unlock", ("ops/unlock-regtest-wallet", node))
+            continue
+        if "regtest channel" in detail:
+            run_confirmed("regtest 채널과 양방향 결제 실습", ("ops/exercise-regtest",))
+            continue
+        attempts += 1
+        if not wait_for_phase(number, phase, detail, attempts):
+            return "partial"
+
+
+def guide_testnet(number, phase):
+    section("PHASE 02 · TESTNET PROGRESS", CYAN)
+    attempts = 0
+    while True:
+        state, detail = inspect(number - 1)
+        if state == "complete":
+            print("  완료: testnet 동기화, peer, 공개 채널, 최근 송금·수금이 검증되었습니다.")
+            return state
+        if "unlock" in detail:
+            run_testnet_unlock()
+            continue
+        attempts += 1
+        if not wait_for_phase(number, phase, detail, attempts):
+            return "partial"
+
+
+def guide_loop(number, phase):
+    section("PHASE 04 · LOOP PROGRESS", CYAN)
+    attempts = 0
+    while True:
+        state, detail = inspect(number - 1)
+        if state == "complete":
+            print("  완료: Loop health와 read-only quote가 검증되었습니다.")
+            return state
+        if "enable Loop" in detail:
+            try:
+                macaroon = input("  Loop 전용 macaroon 파일 경로: ").strip()
+            except EOFError:
+                return "partial"
+            if macaroon:
+                run_confirmed("Loop read-only 서비스 구성", ("ops/enable-loop", "--macaroon", macaroon))
+            else:
+                print("  경로를 입력하지 않았습니다. 현재 상태를 다시 확인합니다.")
+            continue
+        attempts += 1
+        if not wait_for_phase(number, phase, detail, attempts):
+            return "partial"
+
+
+def guide_monitoring(number, phase):
+    section("PHASE 05 · MONITORING PROGRESS", CYAN)
+    attempts = 0
+    while True:
+        state, detail = inspect(number - 1)
+        if state == "complete":
+            print("  완료: 관측 인프라와 testnet LND·결제 지표가 검증되었습니다.")
+            return state
+        if "create/unlock" in detail:
+            run_testnet_unlock()
+            continue
+        attempts += 1
+        if not wait_for_phase(number, phase, detail, attempts):
+            return "partial"
+
+
+def guide_evidence_phase(number, phase):
+    section(f"PHASE {number:02} · OPERATOR PROGRESS", CYAN)
+    title = phase["title"]
+    attempted = False
+    attempts = 0
+    while True:
+        state, detail = inspect(number - 1)
+        if state == "complete":
+            print(f"  완료: {title} 완료 증거가 검증되었습니다.")
+            return state
+        if not attempted:
+            if title == "백업·복구 운영":
+                if not run_confirmed("testnet 암호화 SCB 백업", ("ops/backup-scb-encrypted", "testnet", "lnd-0")):
+                    continue
+                if not run_confirmed("regtest 복구용 암호화 SCB 백업", ("ops/backup-scb-encrypted", "regtest", "lnd-0")):
+                    continue
+                if not run_confirmed("백업 freshness alert 복구 실습", ("ops/exercise-backup-alert",)):
+                    continue
+                if not run_confirmed("격리 regtest 복구 환경 준비", ("ops/prepare-regtest-recovery", "--confirm-disposable"), "TYPE START RECOVERY"):
+                    continue
+                if not run_confirmed("격리 복구 지갑 seed·SCB 복원", ("ops/restore-regtest-recovery-wallet",)):
+                    continue
+                if not run_confirmed("검증된 복구 copy 종료와 원본 재개", ("ops/finish-regtest-recovery", "--preserve-original-wallet"), "TYPE FINISH RECOVERY"):
+                    continue
+                if not run_confirmed("복원된 원본 regtest 지갑 unlock", ("ops/unlock-regtest-wallet", "lnd-0")):
+                    continue
+                run_confirmed("백업·복구 acceptance 확인", ("ops/phase5-acceptance",))
+            elif title == "보안 기준선":
+                run_confirmed("보안 baseline acceptance 확인", ("ops/phase4-acceptance",))
+            elif title == "장애·경보 실습":
+                if not run_confirmed("가역 장애·경보 실습 실행", ("ops/exercise-phase6-faults",), "TYPE RUN FAULT EXERCISE"):
+                    continue
+                run_confirmed("장애·경보 acceptance 확인", ("ops/phase6-acceptance",))
+            elif title == "제한된 kagent":
+                try:
+                    endpoint = input("  Ollama endpoint: ").strip()
+                    model = input("  Ollama model: ").strip()
+                    cidr = input("  Ollama server CIDR: ").strip()
+                except EOFError:
+                    return "partial"
+                if not (endpoint and model and cidr):
+                    print("  endpoint, model, CIDR이 모두 필요합니다.")
+                    continue
+                if not run_confirmed("제한된 kagent 구성", ("ops/deploy-agent", "--endpoint", endpoint, "--model", model, "--server-cidr", cidr)):
+                    continue
+                if not run_confirmed("kagent 진단 실습", ("ops/exercise-phase7-agent",), "TYPE RUN KAGENT EXERCISE"):
+                    continue
+                run_confirmed("kagent acceptance 확인", ("ops/phase7-acceptance",))
+            elif title == "Mac·WSL 재현성":
+                if platform.system() == "Darwin":
+                    if not run_confirmed("Mac clean-start 재현성 실습", ("ops/exercise-clean-start",)):
+                        continue
+                elif platform.system() == "Linux" and pathlib.Path("/proc/sys/kernel/osrelease").exists() and "microsoft" in pathlib.Path("/proc/sys/kernel/osrelease").read_text().lower():
+                    if not run_confirmed("Windows WSL clean-start 확인", ("ops/windows-smoke",)):
+                        continue
+                if not run_confirmed("현재 호스트 acceptance 실행", ("ops/phase8-host-acceptance",)):
+                    continue
+                try:
+                    windows_evidence = input("  Windows WSL evidence 파일 경로: ").strip()
+                except EOFError:
+                    return "partial"
+                if not windows_evidence:
+                    print("  Windows WSL evidence 파일 경로가 필요합니다.")
+                    continue
+                run_confirmed("Mac·WSL 통합 acceptance 확인", ("ops/phase8-acceptance", windows_evidence))
+            elif title == "포트폴리오 데모":
+                run_confirmed("누적 포트폴리오 데모 실행", ("ops/demo",))
+            attempted = True
+            continue
+        attempts += 1
+        if not wait_for_phase(number, phase, detail, attempts):
             return "partial"
 
 
 def guide_operator(number, phase, detail, interactive):
     if interactive and phase["title"] == "testnet Router Node 전환":
         return guide_router(number, phase)
+    if interactive and phase["title"] == "regtest 기초 환경":
+        return guide_regtest(number, phase)
+    if interactive and phase["title"] == "지속 testnet 노드":
+        return guide_testnet(number, phase)
+    if interactive and phase["title"] == "Loop 유동성 관리":
+        return guide_loop(number, phase)
+    if interactive and phase["title"] == "관측 환경":
+        return guide_monitoring(number, phase)
+    if interactive and phase.get("operator_gate"):
+        return guide_evidence_phase(number, phase)
     section(f"PHASE {number:02} · OPERATOR STEP", YELLOW)
     print(f"  현재 상태: {operator_message(phase, detail)}")
     if interactive and phase["title"] == "지속 testnet 노드":
@@ -452,12 +725,9 @@ def prompt_wallet_selection():
         suffix = "기존 PVC를 고정" if mode == "existing" else "기존 지갑을 건드리지 않는 별도 workspace"
         print(f"[{number}] {title} — {suffix}")
     selected = load_selection()
-    if selected:
-        title = WALLET_CHOICES[selected["choice"]][0]
-        print(f"[Enter] 현재 선택 유지 — {title}")
     while True:
         try:
-            answer = input("선택 [1-4, Enter=유지]: ").strip()
+            answer = input("선택 [1-4]: ").strip()
         except EOFError:
             print()
             return False
@@ -505,6 +775,16 @@ def inspect(number):
         return "manual", "operator-held evidence or rehearsal"
     if not (REPO / command[0]).is_file():
         return "failed", f"missing repository command: {command[0]}"
+    if phase["namespaces"]:
+        try:
+            available = subprocess.run(
+                ["kubectl", "get", "namespace", phase["namespaces"][0]], text=True, capture_output=True,
+                env=runtime_environment(), timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return "missing", "required infrastructure is not built"
+        if available.returncode:
+            return "missing", "required infrastructure is not built"
     result = subprocess.run([str(REPO / command[0]), *command[1:]], cwd=REPO, text=True, capture_output=True, env=runtime_environment())
     if result.returncode == 0:
         return "complete", "verification passed"
@@ -514,7 +794,10 @@ def inspect(number):
     if result.returncode == 127:
         return "missing", "required host tool is unavailable"
     detail = (result.stderr or result.stdout).strip().splitlines()
-    return "failed", detail[-1] if detail else "verification failed without output"
+    summary = detail[-1] if detail else "verification failed without output"
+    if phase.get("operator_gate"):
+        return "partial", summary
+    return "failed", summary
 
 
 def print_wallet_overview():
@@ -651,7 +934,7 @@ def build_through(target, dry_run=False, interactive=False):
                     print(f"FAIL: {display(command)} exited {code}", file=sys.stderr)
                     return code
         if phase.get("post_verify", True) and not dry_run:
-            verified, verified_detail = inspect(number)
+            verified, verified_detail = inspect(index)
             if verified != "complete":
                 if verified == "partial":
                     pending = True
