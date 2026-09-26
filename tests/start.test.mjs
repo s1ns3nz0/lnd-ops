@@ -34,7 +34,7 @@ test('guided setup lists all cumulative phases and the requested ASCII banner', 
   assert.match(output, /WALLET STATUS/);
   assert.match(output, /Mac·WSL 재현성/);
   assert.match(output, /COMMANDS/);
-  assert.match(output, /delete  삭제 메뉴/);
+  assert.match(output, /delete     삭제할 project resource를 직접 선택/);
   assert.match(output, /=+/);
 });
 
@@ -84,7 +84,7 @@ test('guided setup persists a named wallet workspace and refuses an identity cha
   assert.match(contents, /lnd-ops\/wallet-selection\/v1/);
   assert.match(contents, /wallet_pvc_snapshot/);
   assert.match(contents, /PVC identity가 바뀌었습니다/);
-  assert.match(contents, /wallet: workspace 변경/);
+  assert.match(contents, /wallet workspace 선택/);
 });
 
 test('interactive setup presents workspace selection before wallet status and the phase menu', async () => {

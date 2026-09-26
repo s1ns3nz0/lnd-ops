@@ -305,9 +305,17 @@ def print_phase_catalog():
     for number, phase in enumerate(PHASES):
         print(paint(f"\n[{number}] {phase['title']}", YELLOW))
         print(f"  {phase['environment']}")
+    print_commands()
+
+
+def print_commands():
     section("COMMANDS", CYAN)
-    print("  0-9  phase 선택   wallet  wallet workspace   delete  삭제 메뉴")
-    print("  status  상태 확인   help  도움말   quit  종료")
+    print("  0-9        선택한 번호까지 Phase를 순서대로 확인·구성")
+    print("  wallet     기존 또는 새 wallet workspace 선택")
+    print("  status     모든 Phase의 현재 상태만 확인")
+    print("  delete     삭제할 project resource를 직접 선택")
+    print("  help 또는 ?  이 명령 목록 다시 보기")
+    print("  quit 또는 exit  종료")
 
 
 def print_catalog():
@@ -385,7 +393,7 @@ def repl():
         if answer in ("quit", "exit"):
             return 0
         if answer in ("help", "?"):
-            print("0-9: 누적 구성 | wallet: workspace 변경 | delete: 선택형 삭제 메뉴 | status | quit")
+            print_commands()
         elif answer == "wallet":
             prompt_wallet_selection()
         elif answer == "delete":
