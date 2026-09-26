@@ -278,9 +278,20 @@ def run_router_wizard():
             print("  보류: Windows P2P 포트 전달에는 관리자 권한이 필요합니다.")
 
 
+def run_testnet_unlock():
+    print("  기존 testnet 지갑 암호를 입력하면 unlock을 실행합니다.")
+    result = subprocess.run([str(REPO / "ops/unlock-testnet")], cwd=REPO, env=runtime_environment())
+    if result.returncode == 0:
+        print("  완료: 기존 testnet 지갑이 unlock되었습니다.")
+    else:
+        print("  보류: 지갑 unlock이 완료되지 않았습니다. 지갑 데이터는 변경하지 않았습니다.")
+
+
 def guide_operator(number, phase, detail, interactive):
     section(f"PHASE {number:02} · OPERATOR GUIDE", YELLOW)
     print(f"  현재 상태: {detail}")
+    if interactive and phase["title"] == "지속 testnet 노드":
+        run_testnet_unlock()
     if interactive and phase["title"] == "testnet Router Node 전환":
         print("  자동 구성 입력")
         print("  공개 P2P 연결을 만들려면 외부에서 도달 가능한 주소가 필요합니다.")
