@@ -2,11 +2,14 @@
 """Guide an operator through the cumulative LND Ops learning environments."""
 
 import argparse
+import ipaddress
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
+from urllib.request import urlopen
 
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -216,12 +219,43 @@ def applies_to_selected_workspace(phase):
     return workspace is None or workspace == selected_workspace()
 
 
-def run_router_wizard():
+def public_endpoint_candidates():
+    candidates = []
     try:
-        public_host = input("  공개 DNS 또는 IP 주소 [Enter=구성 건너뜀, 변경 없음]: ").strip()
+        with urlopen("https://api.ipify.org", timeout=5) as response:
+            address = response.read().decode().strip()
+        if ipaddress.ip_address(address).is_global:
+            try:
+                hostname = socket.gethostbyaddr(address)[0]
+            except OSError:
+                hostname = None
+            candidates.append((address, hostname))
+    except (OSError, ValueError):
+        pass
+    return candidates
+
+
+def run_router_wizard():
+    candidates = public_endpoint_candidates()
+    default = candidates[0][0] if candidates else ""
+    if candidates:
+        print("  외부에서 확인한 공인 주소 후보")
+        for address, hostname in candidates:
+            suffix = f" ({hostname})" if hostname else ""
+            print(f"  - {address}{suffix}")
+        prompt = f"  사용할 공개 주소 [Enter={default}, s=구성 건너뜀]: "
+    else:
+        print("  공인 주소를 자동으로 찾지 못했습니다. 직접 입력하거나 Enter로 건너뛸 수 있습니다.")
+        prompt = "  공개 DNS 또는 IP 주소 [Enter=구성 건너뜀, 변경 없음]: "
+    try:
+        public_host = input(prompt).strip()
     except EOFError:
         print()
         return
+    if public_host == "s":
+        public_host = ""
+    if not public_host and default:
+        public_host = default
     if not public_host:
         print("  보류: 입력이 없으므로 아무 리소스도 변경하지 않았습니다.")
         print("  다음 시도에 공개 DNS 또는 IP 주소를 입력하면 P2P 연결을 자동 구성합니다.")
