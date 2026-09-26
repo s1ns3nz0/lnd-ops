@@ -29,8 +29,8 @@ class WalletStatusTests(unittest.TestCase):
         self.assertEqual(row["address_kind"], "외부 주소")
         self.assertEqual(row["confirmed_sat"], 42)
         self.assertEqual(row["active_channels"], 1)
-        self.assertIn("https://www.btcgacha.com/", wallet_status.render([row]))
-        self.assertIn("Mainnet Lightning sats faucet (12h)", wallet_status.render([row]))
+        self.assertIn("https://coinfaucet.eu/en/btc-testnet/", wallet_status.render([row]))
+        self.assertIn("Testnet3 faucet (12h)", wallet_status.render([row]))
 
     def test_missing_or_locked_wallet_does_not_expose_a_placeholder_address(self):
         with unittest.mock.patch.object(wallet_status, "lncli", return_value={"state": "NON_EXISTING"}):

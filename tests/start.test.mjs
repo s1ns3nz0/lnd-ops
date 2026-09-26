@@ -90,12 +90,19 @@ test('guided setup persists a named wallet workspace and refuses an identity cha
 test('interactive setup presents workspace selection before wallet status and the phase menu', async () => {
   const contents = await readFile(start, 'utf8');
   const repl = contents.slice(contents.indexOf('def repl():'), contents.indexOf('\ndef parse_args'));
+  assert.doesNotMatch(repl, /if load_selection\(\) is None/);
   assert.ok(repl.indexOf('prompt_wallet_selection()') < repl.indexOf('print_wallet_overview()'));
   assert.ok(repl.indexOf('print_wallet_overview()') < repl.indexOf('print_phase_catalog()'));
+});
+
+test('wallet workspace prompt asks whether to retain a saved selection', async () => {
+  const contents = await readFile(start, 'utf8');
+  assert.match(contents, /현재 선택 유지/);
+  assert.match(contents, /선택 \[1-4, Enter=유지\]/);
 });
 
 test('wallet workspace prompt exits cleanly on end of input', async () => {
   const contents = await readFile(start, 'utf8');
   assert.match(contents, /except EOFError:\n            print\(\)\n            return False/);
-  assert.match(contents, /if not prompt_wallet_selection\(\):\n            return 0/);
+  assert.match(contents, /if not prompt_wallet_selection\(\):\n        return 0/);
 });

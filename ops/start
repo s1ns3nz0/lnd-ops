@@ -219,16 +219,23 @@ def prompt_wallet_selection():
     for number, (choice, (title, mode, _)) in enumerate(WALLET_CHOICES.items(), 1):
         suffix = "기존 PVC를 고정" if mode == "existing" else "기존 지갑을 건드리지 않는 별도 workspace"
         print(f"[{number}] {title} — {suffix}")
+    selected = load_selection()
+    if selected:
+        title = WALLET_CHOICES[selected["choice"]][0]
+        print(f"[Enter] 현재 선택 유지 — {title}")
     while True:
         try:
-            answer = input("선택 [1-4]: ").strip()
+            answer = input("선택 [1-4, Enter=유지]: ").strip()
         except EOFError:
             print()
             return False
+        if not answer and selected:
+            print(f"선택 유지: {WALLET_CHOICES[selected['choice']][0]}")
+            return True
         if answer.isdigit() and 1 <= int(answer) <= len(WALLET_CHOICES):
             select_wallet(list(WALLET_CHOICES)[int(answer) - 1])
             return True
-        print("1부터 4 중 하나를 입력하세요.", file=sys.stderr)
+        print("1부터 4 또는 Enter를 입력하세요.", file=sys.stderr)
 
 
 def wallet_banner():
@@ -378,10 +385,9 @@ def build_through(target, dry_run=False):
 
 def repl():
     print(BANNER)
-    if load_selection() is None:
-        section("WALLET WORKSPACE", GREEN)
-        if not prompt_wallet_selection():
-            return 0
+    section("WALLET WORKSPACE", GREEN)
+    if not prompt_wallet_selection():
+        return 0
     print_wallet_overview()
     print_phase_catalog()
     while True:
