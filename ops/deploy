@@ -5,18 +5,23 @@ repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 profile=${1:-}
 case "$profile" in
   regtest|testnet) ;;
-  *) echo 'Usage: ops/deploy regtest|testnet [--monitoring] [--loop|--no-loop]' >&2; exit 2 ;;
+  *) echo 'Usage: ops/deploy regtest|testnet [--monitoring] [--loop|--no-loop] [--router --router-external-ip HOST]' >&2; exit 2 ;;
 esac
 shift
 monitoring_requested=false
 loop_requested=false
 loop_disabled=false
-for option in "$@"; do
+router_requested=false
+router_external_ip=''
+while (($#)); do
+  option=$1
   case "$option" in
-    --monitoring) $monitoring_requested && { echo 'duplicate --monitoring' >&2; exit 2; }; monitoring_requested=true ;;
-    --loop) $loop_requested && { echo 'duplicate --loop' >&2; exit 2; }; loop_requested=true ;;
-    --no-loop) $loop_disabled && { echo 'duplicate --no-loop' >&2; exit 2; }; loop_disabled=true ;;
-    *) echo 'Usage: ops/deploy regtest|testnet [--monitoring] [--loop|--no-loop]' >&2; exit 2 ;;
+    --monitoring) $monitoring_requested && { echo 'duplicate --monitoring' >&2; exit 2; }; monitoring_requested=true; shift ;;
+    --loop) $loop_requested && { echo 'duplicate --loop' >&2; exit 2; }; loop_requested=true; shift ;;
+    --no-loop) $loop_disabled && { echo 'duplicate --no-loop' >&2; exit 2; }; loop_disabled=true; shift ;;
+    --router) $router_requested && { echo 'duplicate --router' >&2; exit 2; }; router_requested=true; shift ;;
+    --router-external-ip) [[ $# -ge 2 ]] || { echo '--router-external-ip requires HOST' >&2; exit 2; }; router_external_ip=$2; shift 2 ;;
+    *) echo 'Usage: ops/deploy regtest|testnet [--monitoring] [--loop|--no-loop] [--router --router-external-ip HOST]' >&2; exit 2 ;;
   esac
 done
 [[ "$loop_requested" == false || "$loop_disabled" == false ]] || { echo 'choose only one of --loop or --no-loop' >&2; exit 2; }
@@ -24,6 +29,10 @@ done
   echo 'Loop is supported only by the persistent testnet profile' >&2
   exit 2
 }
+[[ "$router_requested" == false || "$profile" == testnet ]] || { echo 'Router mode is supported only by the persistent testnet profile' >&2; exit 2; }
+[[ "$router_requested" == false || -n "$router_external_ip" ]] || { echo 'Router mode requires --router-external-ip HOST' >&2; exit 2; }
+[[ -z "$router_external_ip" || "$router_requested" == true ]] || { echo '--router-external-ip requires --router' >&2; exit 2; }
+[[ -z "$router_external_ip" || "$router_external_ip" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { echo 'Router external host must be a bare DNS name or IP address' >&2; exit 2; }
 
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
 [[ -r "$KUBECONFIG" ]] || { echo "Kubeconfig missing: $KUBECONFIG; run ops/bootstrap" >&2; exit 1; }
@@ -39,9 +48,13 @@ fi
 
 monitoring=false
 loop=false
+router=false
+router_external_ip_saved=''
 if helm -n "$namespace" status lnd-ops >/dev/null 2>&1; then
   monitoring=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("monitoring", {}).get("enabled", False)).lower())')
   loop=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("loop", {}).get("enabled", False)).lower())')
+  router=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("router", {}).get("enabled", False)).lower())')
+  router_external_ip_saved=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("router", {}).get("externalIP", ""))')
 fi
 if [[ "$monitoring_requested" == true ]]; then
   if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
@@ -75,6 +88,10 @@ if [[ "$loop_requested" == true ]]; then
   loop=true
 fi
 [[ "$loop_disabled" == false ]] || loop=false
+if [[ "$router_requested" == true ]]; then
+  router=true
+  router_external_ip_saved=$router_external_ip
+fi
 
 if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
   echo "Creating namespace $namespace"
@@ -87,7 +104,12 @@ helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"
   --namespace "$namespace"
   --values "$repo_dir/charts/lnd-ops/values-$profile.yaml"
   --set "monitoring.enabled=$monitoring"
-  --set "loop.enabled=$loop")
+  --set "loop.enabled=$loop"
+  --set "router.enabled=$router")
+if [[ "$router" == true ]]; then
+  [[ -n "$router_external_ip_saved" ]] || { echo 'Existing Router mode has no external host; rerun with --router --router-external-ip HOST' >&2; exit 1; }
+  helm_command+=(--set-string "router.externalIP=$router_external_ip_saved")
+fi
 if [[ "$monitoring" == true ]]; then
   # Adding the sidecars restarts the Pod and LND may need a manual wallet unlock.
   # The collector source is mounted from the chart and runs on the pinned

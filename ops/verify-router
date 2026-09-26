@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Read-only completion gate for the persistent testnet routing node."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+BASE = ["kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--", "lncli", "--lnddir=/data/.lnd", "--network=testnet"]
+
+
+class Gate(Exception):
+    pass
+
+
+def lncli(*args):
+    result = subprocess.run(BASE + list(args), text=True, capture_output=True, timeout=120)
+    if result.returncode:
+        raise Gate("create or unlock the persistent testnet wallet")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"malformed lncli JSON for {args[0]}") from exc
+
+
+def policy_matches(info, channel):
+    scid = channel.get("scid") or channel.get("channel_id")
+    if not scid:
+        return False
+    graph = lncli("getchaninfo", f"--chan_id={scid}")
+    own_key = info["identity_pubkey"]
+    policy = graph.get("node1_policy") if graph.get("node1_pub") == own_key else graph.get("node2_policy")
+    if not policy:
+        return False
+    try:
+        return (
+            int(policy.get("fee_base_msat", -1)) == 1000
+            and int(policy.get("fee_rate_milli_msat", -1)) == 500
+            and int(policy.get("min_htlc", policy.get("min_htlc_msat", -1))) == 1
+            and int(policy.get("max_htlc_msat", 0)) > 0
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def main(argv):
+    if argv:
+        print("Usage: ops/verify-router", file=sys.stderr)
+        return 2
+    try:
+        service = subprocess.run(
+            ["kubectl", "-n", "lnd-testnet", "get", "service", "lnd-router-p2p", "-o", "json"],
+            text=True, capture_output=True, timeout=30,
+        )
+        if service.returncode:
+            raise Gate("run ops/enable-router --external-ip PUBLIC_HOST")
+        node_port = json.loads(service.stdout)["spec"]["ports"][0].get("nodePort")
+        if node_port != 30973:
+            raise RuntimeError(f"router P2P Service must use NodePort 30973, found {node_port}")
+        info = lncli("getinfo")
+        if not info.get("synced_to_chain") or not info.get("synced_to_graph"):
+            raise Gate("wait for testnet chain and graph synchronization")
+        if not info.get("uris"):
+            raise Gate("forward public TCP 9735 to NodePort 30973 and confirm LND advertises its external URI")
+        channels = [
+            channel for channel in lncli("listchannels").get("channels", [])
+            if channel.get("active") and not channel.get("private") and int(channel.get("local_balance", 0)) > 1
+        ]
+        if len(channels) < 2:
+            raise Gate(f"open and confirm a second active public channel with routing liquidity (currently {len(channels)})")
+        configured = sum(policy_matches(info, channel) for channel in channels)
+        if configured != len(channels):
+            raise Gate('apply the reviewed policy with ops/configure-router-policy --confirm "APPLY ROUTER POLICY"')
+        forwards = lncli("fwdinghistory", "--start_time=0").get("forwarding_events", [])
+        if not forwards:
+            raise Gate("have a separate external payer make a small testnet payment through this node")
+        print(f"OK Router: public_uri={info['uris'][0]}, active_public_channels={len(channels)}, policy_channels={configured}, forwarding_events={len(forwards)}")
+        return 0
+    except Gate as exc:
+        print(f"ACTION: {exc}", file=sys.stderr)
+        return 10
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

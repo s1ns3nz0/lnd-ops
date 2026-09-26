@@ -80,6 +80,16 @@ test('remote WSL log access is key-only and scoped to the operator Mac', async (
   assert.doesNotMatch(source, /PRIVATE KEY/);
 });
 
+test('WSL Router exposure forwards only the reviewed Lightning P2P port', async () => {
+  const source = await readFile(path.join(repo, 'ops/windows-enable-router'), 'utf8');
+  assert.match(source, /listenport=9735/);
+  assert.match(source, /connectport=30973/);
+  assert.match(source, /localport=9735/);
+  assert.match(source, /lnd-router-p2p/);
+  assert.match(source, /wsl --shutdown/);
+  assert.doesNotMatch(source, /10009|8080|6443/);
+});
+
 test('collector base loading avoids the skopeo Docker API compatibility path', async () => {
   const source = await readFile(path.join(repo, 'ops/build-collector'), 'utf8');
   assert.match(source, /docker-archive:/);

@@ -29,7 +29,7 @@ test('lndops rejects deletion verbs before it enters the setup shell', () => {
 test('guided setup lists all cumulative phases and the requested ASCII banner', async () => {
   await chmod(start, 0o755);
   const output = execFileSync(start, ['--list'], {cwd: repo, encoding: 'utf8'});
-  for (let phase = 0; phase <= 9; phase += 1) assert.match(output, new RegExp(`\\[${phase}\\]`));
+  for (let phase = 0; phase <= 10; phase += 1) assert.match(output, new RegExp(`\\[${phase}\\]`));
   assert.match(output, /__\s+__\s+______/);
   assert.match(output, /WALLET STATUS/);
   assert.match(output, /Mac·WSL 재현성/);
@@ -39,13 +39,14 @@ test('guided setup lists all cumulative phases and the requested ASCII banner', 
 });
 
 test('guided setup previews only safe automatic work and stops at the first manual gate', () => {
-  const output = execFileSync(start, ['--to', '2', '--dry-run'], {cwd: repo, encoding: 'utf8'});
+  const output = execFileSync(start, ['--to', '3', '--dry-run'], {cwd: repo, encoding: 'utf8'});
   assert.match(output, /PLAN ops\/doctor/);
   assert.match(output, /KUBECONFIG:/);
   assert.match(output, /PLAN ops\/bootstrap/);
   assert.match(output, /PLAN ops\/deploy regtest/);
-  assert.match(output, /STOP Loop 유동성 관리 — manual phase/);
-  assert.match(output, /ops\/enable-loop --macaroon \/secure\/path\/loop\.macaroon/);
+  assert.match(output, /STOP testnet Router Node 전환 — manual phase/);
+  assert.match(output, /ops\/enable-router --external-ip PUBLIC_HOST/);
+  assert.match(output, /APPLY ROUTER POLICY/);
   assert.doesNotMatch(output, /PLAN ops\/deploy-monitoring/);
 });
 
@@ -59,7 +60,7 @@ test('guided setup treats an existing failed Kubernetes phase as partial', async
 });
 
 test('guided setup validates target numbers and refuses noninteractive unspecified input', () => {
-  const invalid = spawnSync(start, ['--to', '10'], {cwd: repo, encoding: 'utf8'});
+  const invalid = spawnSync(start, ['--to', '11'], {cwd: repo, encoding: 'utf8'});
   assert.equal(invalid.status, 2);
   assert.match(invalid.stderr, /invalid choice/);
   const unavailable = spawnSync(start, [], {cwd: repo, encoding: 'utf8', input: ''});

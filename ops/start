@@ -54,6 +54,14 @@ PHASES = (
         "manual": "지갑 생성·unlock, 오프라인 seed/SCB 보관, peer·channel·양방향 결제를 완료하세요.",
     },
     {
+        "title": "testnet Router Node 전환",
+        "environment": "기존 testnet identity를 유지하며 공개 P2P 9735, 공개 활성 채널 2개, 수수료 정책과 실제 forwarding을 검증합니다.",
+        "probe": ("ops/verify-router",),
+        "namespaces": ("lnd-testnet",),
+        "build": (),
+        "manual": "`ops/enable-router --external-ip PUBLIC_HOST` 후 호스트 9735 전달을 설정하고, 공개 채널 2개를 활성화하세요. `ops/configure-router-policy --confirm 'APPLY ROUTER POLICY'` 뒤 별도 payer의 작은 testnet 결제로 forwarding을 만드세요.",
+    },
+    {
         "title": "Loop 유동성 관리",
         "environment": "testnet Loop daemon, 전용 credential Secret, 제한된 network path, health metric을 추가합니다.",
         "probe": ("ops/verify-loop",),

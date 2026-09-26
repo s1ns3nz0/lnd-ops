@@ -15,6 +15,10 @@ containerd:
 portForwards:
   - guestPort: 6443
     hostPort: @K3S_HOST_PORT@
+  # No Pod receives this port unless opt-in Router mode creates its NodePort.
+  - guestPort: 30973
+    hostPort: 9735
+    hostIP: 0.0.0.0
 provision:
   - mode: system
     script: |

@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Apply the reviewed, per-channel testnet forwarding policy only after confirmation."""
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+BASE = ["kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--", "lncli", "--lnddir=/data/.lnd", "--network=testnet"]
+
+
+def lncli(*args):
+    result = subprocess.run(BASE + list(args), text=True, capture_output=True, timeout=120)
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip() or f"lncli {args[0]} failed")
+    return json.loads(result.stdout)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--confirm", metavar="TEXT", required=True)
+    arguments = parser.parse_args(argv)
+    if arguments.confirm != "APPLY ROUTER POLICY":
+        print('Refusing policy change: use --confirm "APPLY ROUTER POLICY"', file=sys.stderr)
+        return 2
+    try:
+        channels = [
+            channel for channel in lncli("listchannels").get("channels", [])
+            if channel.get("active") and not channel.get("private") and int(channel.get("local_balance", 0)) > 1
+        ]
+        if len(channels) < 2:
+            print("ACTION: wait for two active public channels with local routing liquidity", file=sys.stderr)
+            return 10
+        for channel in channels:
+            maximum_msat = (int(channel["local_balance"]) - 1) * 1000
+            command = (
+                "updatechanpolicy", f"--chan_point={channel['channel_point']}",
+                "--base_fee_msat=1000", "--fee_rate=0.0005", "--min_htlc_msat=1",
+                f"--max_htlc_msat={maximum_msat}",
+            )
+            lncli(*command)
+            print(f"UPDATED {channel['channel_point']}: base=1 sat, fee=500 ppm, min=1 msat, max={maximum_msat} msat")
+        print(f"OK Router policy: applied to {len(channels)} active public channel(s)")
+        return 0
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

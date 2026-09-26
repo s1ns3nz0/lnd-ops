@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$(uname -s)" == Linux ]] && grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null || {
+  echo 'FAIL: run this script inside WSL 2 Ubuntu' >&2
+  exit 1
+}
+
+find_windows_tool() {
+  local name=$1 candidate
+  candidate=$(command -v "$name" 2>/dev/null || true)
+  if [[ -n "$candidate" && -x "$candidate" ]]; then printf '%s\n' "$candidate"; return; fi
+  candidate="/mnt/c/Windows/System32/$name"
+  [[ -x "$candidate" ]] || { echo "FAIL: WSL interop tool missing: $name" >&2; return 1; }
+  printf '%s\n' "$candidate"
+}
+
+net_exe=$(find_windows_tool net.exe)
+netsh_exe=$(find_windows_tool netsh.exe)
+sc_exe=$(find_windows_tool sc.exe)
+if ! "$net_exe" session >/dev/null 2>&1; then
+  echo 'FAIL: close Ubuntu, then open Ubuntu with Run as administrator and rerun this command' >&2
+  exit 1
+fi
+wsl_ip=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([^ ]*\).*/\1/p' | head -1)
+python3 - "$wsl_ip" <<'PY'
+import ipaddress, sys
+try:
+    assert ipaddress.ip_address(sys.argv[1]).version == 4
+except (ValueError, AssertionError):
+    raise SystemExit('FAIL: cannot determine the default-route WSL IPv4 address')
+PY
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+kubectl -n lnd-testnet get service lnd-router-p2p -o jsonpath='{.spec.ports[0].nodePort}' | grep -Fxq 30973 || {
+  echo 'ACTION: run ops/enable-router --external-ip PUBLIC_HOST first' >&2
+  exit 10
+}
+"$sc_exe" config iphlpsvc start= auto >/dev/null
+"$sc_exe" start iphlpsvc >/dev/null 2>&1 || true
+"$netsh_exe" interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=9735 >/dev/null 2>&1 || true
+"$netsh_exe" interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=9735 connectaddress="$wsl_ip" connectport=30973 >/dev/null
+rule_name='lnd-ops: allow public Lightning P2P'
+"$netsh_exe" advfirewall firewall delete rule name="$rule_name" >/dev/null 2>&1 || true
+"$netsh_exe" advfirewall firewall add rule name="$rule_name" dir=in action=allow enable=yes \
+  profile=any protocol=TCP localport=9735 >/dev/null
+"$netsh_exe" interface portproxy show v4tov4 | tr -d '\r'
+echo "OK: Windows public TCP 9735 forwards to WSL $wsl_ip:30973. Rerun after wsl --shutdown."

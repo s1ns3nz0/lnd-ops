@@ -66,12 +66,12 @@ Success ends with `OK: Windows WSL 2 infrastructure smoke test passed`. Fresh wa
 
 The regtest, testnet, and monitoring infrastructure slices are implemented on Mac arm64 and Windows WSL 2 amd64. The Mac regtest wallet, channel, bidirectional payment, SCB, and [seed-plus-SCB recovery exercise](docs/evidence/mac-regtest-recovery-2026-09-23.md) passed. The Windows regtest wallet, channel, bidirectional payment, encrypted SCBs, live monitoring, and wallet-preserving redeployment also [passed](docs/evidence/windows-regtest-mvp-2026-09-23.md). Independent Mac and Windows testnet nodes then passed with external peers, active public channels, bidirectional payments, live monitoring, Pod restart recovery, current encrypted SCBs, wallet-preserving redeployment, Kubernetes security controls, and [cross-platform Phase 8 acceptance](docs/evidence/phase8-cross-platform-2026-09-24.md). The post-MVP path through the final public demonstration is defined in the [portfolio demo roadmap](docs/portfolio-demo-roadmap.md).
 
-Phase 2 begins with an opt-in, testnet-only [Loop integration](docs/phase2-loop-runbook.md). It uses a dedicated credential Secret, restricted network paths, and read-only quote verification; a real swap remains a separately approved manual operation.
+Phase 2 turns the retained testnet identity into a guarded [routing-node candidate](docs/phase2-router-runbook.md): two public active channels, public P2P only, a reviewed fee policy, and observed forwarding are required. Phase 3 is the opt-in, testnet-only [Loop integration](docs/phase2-loop-runbook.md). It uses a dedicated credential Secret, restricted network paths, and read-only quote verification; a real swap remains a separately approved manual operation.
 
 ## Guided setup
 
 Run `./lndops` to enter the interactive setup shell. Run
-`ops/install-command` once to make `lndops` available from any directory. It describes Phases 0–9,
+`ops/install-command` once to make `lndops` available from any directory. It describes Phases 0–10,
 checks the live environment before every selection, skips completed work, and
 builds only the safe automatic portion up to the selected phase. Wallets,
 funding, secrets, recovery, and fault injection remain explicit manual gates.
