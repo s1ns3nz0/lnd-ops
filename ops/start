@@ -218,12 +218,13 @@ def applies_to_selected_workspace(phase):
 
 def run_router_wizard():
     try:
-        public_host = input("  공개 DNS 또는 IP 주소: ").strip()
+        public_host = input("  공개 DNS 또는 IP 주소 [Enter=구성 건너뜀, 변경 없음]: ").strip()
     except EOFError:
         print()
         return
     if not public_host:
-        print("  보류: 공개 주소를 입력하면 P2P 연결을 자동 구성합니다.")
+        print("  보류: 입력이 없으므로 아무 리소스도 변경하지 않았습니다.")
+        print("  다음 시도에 공개 DNS 또는 IP 주소를 입력하면 P2P 연결을 자동 구성합니다.")
         return
     result = subprocess.run([str(REPO / "ops/enable-router"), "--external-ip", public_host], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
     if result.returncode:
@@ -241,17 +242,12 @@ def run_router_wizard():
 def guide_operator(number, phase, detail, interactive):
     section(f"PHASE {number:02} · OPERATOR GUIDE", YELLOW)
     print(f"  현재 상태: {detail}")
+    if interactive and phase["title"] == "testnet Router Node 전환":
+        print("  자동 구성 입력")
+        print("  공개 P2P 연결을 만들려면 외부에서 도달 가능한 주소가 필요합니다.")
+        run_router_wizard()
     for index, step in enumerate(manual_steps(phase), 1):
         print(f"  {index}. {step}")
-        if interactive:
-            try:
-                input("     확인 후 Enter: ")
-            except EOFError:
-                print()
-                return
-    if interactive and phase["title"] == "testnet Router Node 전환":
-        print("  이 단계에서 공개 P2P 연결을 자동 구성합니다.")
-        run_router_wizard()
 
 
 def display(command):
