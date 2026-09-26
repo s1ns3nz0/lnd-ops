@@ -43,7 +43,7 @@ PHASES = (
         "probe": ("ops/verify", "regtest"),
         "namespaces": ("lnd-regtest",),
         "build": (("ops/doctor",), ("ops/bootstrap",), ("ops/deploy", "regtest"), ("ops/verify", "regtest")),
-        "manual": "지갑 생성·unlock, seed 오프라인 보관 후 `ops/exercise-regtest`를 실행하세요.",
+        "manual": ("두 regtest 지갑을 만들고 잠금을 해제합니다.", "각 지갑의 seed를 오프라인에 보관합니다.", "두 노드 사이 채널과 양방향 결제를 실습합니다."),
     },
     {
         "title": "지속 testnet 노드",
@@ -51,7 +51,7 @@ PHASES = (
         "probe": ("ops/verify", "testnet"),
         "namespaces": ("lnd-testnet",),
         "build": (("ops/deploy", "testnet"), ("ops/verify", "testnet")),
-        "manual": "지갑 생성·unlock, 오프라인 seed/SCB 보관, peer·channel·양방향 결제를 완료하세요.",
+        "manual": ("기존 testnet 지갑을 잠금 해제하고 seed와 채널 백업을 오프라인에 보관합니다.", "신뢰하는 외부 peer에 연결하고 공개 채널을 확인합니다.", "작은 송금과 수금을 각각 한 번 확인합니다."),
     },
     {
         "title": "testnet Router Node 전환",
@@ -59,7 +59,7 @@ PHASES = (
         "probe": ("ops/verify-router",),
         "namespaces": ("lnd-testnet",),
         "build": (),
-        "manual": "`ops/enable-router --external-ip PUBLIC_HOST` 후 호스트 9735 전달을 설정하고, 공개 채널 2개를 활성화하세요. `ops/configure-router-policy --confirm 'APPLY ROUTER POLICY'` 뒤 별도 payer의 작은 testnet 결제로 forwarding을 만드세요.",
+        "manual": ("이 노드의 공개 주소로 Lightning P2P 포트만 연결합니다.", "로컬 유동성이 있는 공개 채널을 두 개 이상 활성화합니다.", "합의한 routing 수수료 정책을 적용합니다.", "별도 외부 지갑이 이 노드를 경유하는 작은 testnet 결제를 수행합니다."),
     },
     {
         "title": "Loop 유동성 관리",
@@ -67,7 +67,7 @@ PHASES = (
         "probe": ("ops/verify-loop",),
         "namespaces": ("lnd-testnet",),
         "build": (),
-        "manual": "전용 macaroon을 준비한 뒤 `ops/enable-loop --macaroon /secure/path/loop.macaroon`을 실행하고 `ops/verify-loop`로 quote만 확인하세요. swap 생성은 이 도구가 하지 않습니다.",
+        "manual": ("Loop 전용의 최소 권한 credential을 준비합니다.", "Loop 서비스를 연결하고 읽기 전용 quote가 동작하는지 확인합니다.", "실제 swap은 이 안내 흐름에서 실행하지 않습니다."),
     },
     {
         "title": "관측 환경",
@@ -194,6 +194,24 @@ def resource_count(namespace, resource, ready=False):
         for item in items
     )
     return available, len(items)
+
+
+def manual_steps(phase):
+    task = phase["manual"]
+    return task if isinstance(task, tuple) else ("이 Phase의 운영 실습과 검증을 완료합니다.",)
+
+
+def guide_operator(number, phase, detail, interactive):
+    section(f"PHASE {number:02} · OPERATOR GUIDE", YELLOW)
+    print(f"  현재 상태: {detail}")
+    for index, step in enumerate(manual_steps(phase), 1):
+        print(f"  {index}. {step}")
+        if interactive:
+            try:
+                input("     확인 후 Enter: ")
+            except EOFError:
+                print()
+                return
 
 
 def display(command):
@@ -388,12 +406,13 @@ def print_status():
         section("NEXT COMPLETION", YELLOW)
         print(f"  Phase {number:02} · {phase['title']}")
         print(f"  상태: {detail}")
-        print(f"  필요: {phase['manual']}")
+        for index, step in enumerate(manual_steps(phase), 1):
+            print(f"  {index}. {step}")
     else:
         print("NEXT: 모든 Phase가 완료되었습니다.")
 
 
-def build_through(target, dry_run=False):
+def build_through(target, dry_run=False, interactive=False):
     if target == 0:
         print_status()
         return 0
@@ -416,7 +435,7 @@ def build_through(target, dry_run=False):
             pending = True
             phase_pending = True
             print(f"[{number}] PENDING {phase['title']} — {detail}")
-            print(f"ACTION: {phase['manual']}")
+            guide_operator(number, phase, detail, interactive)
             continue
         if state == "failed":
             print(f"[{number}] STOP {phase['title']} — {detail}", file=sys.stderr)
@@ -425,7 +444,7 @@ def build_through(target, dry_run=False):
         if not phase["build"]:
             pending = True
             print(f"[{number}] PENDING {phase['title']} — manual phase")
-            print(f"ACTION: {phase['manual']}")
+            guide_operator(number, phase, "이 단계는 사용자 확인이 필요합니다.", interactive)
             continue
         print(f"[{number}] BUILD {phase['title']} — {detail}")
         for command in phase["build"]:
@@ -434,7 +453,7 @@ def build_through(target, dry_run=False):
                 if code == 10:
                     pending = True
                     phase_pending = True
-                    print(f"ACTION: {phase['manual']}")
+                    guide_operator(number, phase, "자동 구성은 끝났고 사용자 확인이 필요합니다.", interactive)
                     break
                 else:
                     print(f"FAIL: {display(command)} exited {code}", file=sys.stderr)
@@ -446,7 +465,7 @@ def build_through(target, dry_run=False):
                     pending = True
                     phase_pending = True
                     print(f"[{number}] PENDING {phase['title']} — post-build verification: {verified_detail}")
-                    print(f"ACTION: {phase['manual']}")
+                    guide_operator(number, phase, verified_detail, interactive)
                 else:
                     print(f"[{number}] STOP {phase['title']} — post-build verification: {verified_detail}", file=sys.stderr)
                     return 1
@@ -498,7 +517,7 @@ def repl():
         elif answer in ("0", "status"):
             print_status()
         elif answer.isdigit() and 1 <= int(answer) <= len(PHASES):
-            build_through(int(answer))
+            build_through(int(answer), interactive=True)
         elif answer:
             print("0부터 11, status, help, quit 중 하나를 입력하세요.", file=sys.stderr)
 

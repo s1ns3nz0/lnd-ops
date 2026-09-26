@@ -45,8 +45,9 @@ test('guided setup previews safe automatic work through manual gates', () => {
   assert.match(output, /PLAN ops\/bootstrap/);
   assert.match(output, /PLAN ops\/deploy regtest/);
   assert.match(output, /PENDING testnet Router Node 전환 — manual phase/);
-  assert.match(output, /ops\/enable-router --external-ip PUBLIC_HOST/);
-  assert.match(output, /APPLY ROUTER POLICY/);
+  assert.match(output, /PHASE 03 · OPERATOR GUIDE/);
+  assert.match(output, /공개 주소로 Lightning P2P 포트만 연결/);
+  assert.doesNotMatch(output, /ops\/enable-router/);
   assert.doesNotMatch(output, /PLAN ops\/deploy-monitoring/);
 });
 
