@@ -41,5 +41,7 @@ test('Router commands separate exposure, policy mutation, and read-only verifica
   assert.match(verify, /fwdinghistory/);
   assert.match(verify, /active public channel/);
   assert.match(verify, /NodePort 30973/);
+  assert.match(verify, /node2_pub/);
+  assert.match(verify, /local_balance.*- 1\) \* 1000/);
   assert.match(deploy, /--router --router-external-ip HOST/);
 });

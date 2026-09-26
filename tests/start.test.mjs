@@ -38,17 +38,28 @@ test('guided setup lists all cumulative phases and the requested ASCII banner', 
   assert.match(output, /=+/);
 });
 
-test('guided setup previews safe automatic work through manual gates', () => {
+test('guided setup stops its preview at the first incomplete operator phase', () => {
   const output = execFileSync(start, ['--to', '4', '--dry-run'], {cwd: repo, encoding: 'utf8'});
   assert.match(output, /PLAN ops\/doctor/);
   assert.match(output, /KUBECONFIG:/);
   assert.match(output, /PLAN ops\/bootstrap/);
   assert.match(output, /PLAN ops\/deploy regtest/);
   assert.match(output, /PENDING testnet Router Node 전환 — manual phase/);
-  assert.match(output, /PHASE 03 · OPERATOR GUIDE/);
+  assert.match(output, /PHASE 03 · OPERATOR STEP/);
   assert.match(output, /공개 주소로 Lightning P2P 포트만 연결/);
+  assert.match(output, /PAUSE: Phase 03/);
   assert.doesNotMatch(output, /ops\/enable-router/);
   assert.doesNotMatch(output, /PLAN ops\/deploy-monitoring/);
+});
+
+test('interactive phases execute one needed action and recheck before progressing', async () => {
+  const contents = await readFile(start, 'utf8');
+  assert.match(contents, /def phase_checkpoint\(number, phase\):/);
+  assert.match(contents, /def operator_message\(phase, detail\):/);
+  assert.match(contents, /run_testnet_unlock\(\)/);
+  assert.match(contents, /if after != "complete":\n\s+return pause\(number, phase\)/);
+  assert.match(contents, /현재 작업이 끝나야 다음 Phase로 진행합니다/);
+  assert.doesNotMatch(contents, /위 수동 실습 gate가 남아 있습니다/);
 });
 
 test('guided setup reserves partial status for an explicit operator gate', async () => {

@@ -33,7 +33,12 @@ def policy_matches(info, channel):
         return False
     graph = lncli("getchaninfo", f"--chan_id={scid}")
     own_key = info["identity_pubkey"]
-    policy = graph.get("node1_policy") if graph.get("node1_pub") == own_key else graph.get("node2_policy")
+    if graph.get("node1_pub") == own_key:
+        policy = graph.get("node1_policy")
+    elif graph.get("node2_pub") == own_key:
+        policy = graph.get("node2_policy")
+    else:
+        return False
     if not policy:
         return False
     try:
@@ -41,7 +46,7 @@ def policy_matches(info, channel):
             int(policy.get("fee_base_msat", -1)) == 1000
             and int(policy.get("fee_rate_milli_msat", -1)) == 500
             and int(policy.get("min_htlc", policy.get("min_htlc_msat", -1))) == 1
-            and int(policy.get("max_htlc_msat", 0)) > 0
+            and int(policy.get("max_htlc_msat", 0)) == (int(channel.get("local_balance", 0)) - 1) * 1000
         )
     except (TypeError, ValueError):
         return False

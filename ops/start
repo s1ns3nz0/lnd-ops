@@ -292,17 +292,74 @@ def run_testnet_unlock():
         return False
 
 
+def phase_checkpoint(number, phase):
+    state, detail = inspect(number - 1)
+    section(f"PHASE {number:02} · CURRENT STATUS", CYAN)
+    print(f"  {status_label(state)}  {phase['title']}")
+    print(f"  상태: {operator_message(phase, detail)}")
+    return state, detail
+
+
+def operator_message(phase, detail):
+    """Translate verifier output into the one action an operator needs now."""
+    if phase["title"] == "지속 testnet 노드" and "unlock" in detail:
+        return "기존 testnet 지갑이 잠겨 있습니다. 암호를 입력해 unlock합니다."
+    if phase["title"] == "testnet Router Node 전환":
+        if "create or unlock" in detail:
+            return "기존 testnet 지갑이 잠겨 있습니다. 암호를 입력해 unlock합니다."
+        if "enable-router" in detail:
+            return "공개 주소와 Lightning P2P 연결을 아직 구성하지 않았습니다."
+        if "synchronization" in detail:
+            return "testnet 체인과 그래프 동기화를 기다리고 있습니다."
+        if "external URI" in detail:
+            return "외부 TCP 9735 연결 또는 LND 공개 주소 확인이 필요합니다."
+        if "second active public channel" in detail:
+            return "routing 유동성이 있는 활성 공개 채널이 두 개 필요합니다."
+        if "reviewed policy" in detail:
+            return "두 공개 채널에 routing 수수료 정책을 적용할 차례입니다."
+        if "separate external payer" in detail:
+            return "외부 지갑이 이 노드를 경유한 작은 testnet 결제를 기다리고 있습니다."
+    if detail == "이 단계는 사용자 확인이 필요합니다.":
+        return "이 Phase의 운영 확인이 필요합니다."
+    return detail.removeprefix("ACTION: ")
+
+
+def guide_router(number, phase):
+    state, detail = phase_checkpoint(number, phase)
+    if state == "complete":
+        return state
+    if "create or unlock" in detail:
+        run_testnet_unlock()
+    elif "run ops/enable-router" in detail:
+        print("  다음 작업: 공개 P2P 연결을 자동 구성합니다.")
+        run_router_wizard()
+    elif "second active public channel" in detail:
+        print("  대기: 현재 공개 채널이 하나뿐입니다. 외부 peer와 두 번째 공개 채널이 활성화되면 다시 확인합니다.")
+    elif "reviewed policy" in detail:
+        try:
+            answer = input("  routing 수수료 정책 적용 [Enter=적용, s=건너뜀]: ").strip().lower()
+        except EOFError:
+            answer = "s"
+        if answer != "s":
+            result = subprocess.run([str(REPO / "ops/configure-router-policy"), "--confirm", "APPLY ROUTER POLICY"], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
+            print("  완료: routing 수수료 정책을 적용했습니다." if result.returncode == 0 else "  보류: 채널 정책을 아직 적용할 수 없습니다.")
+    elif "separate external payer" in detail:
+        print("  대기: 외부 지갑이 이 노드를 경유하는 작은 testnet 결제를 완료하면 forwarding 기록을 확인합니다.")
+    else:
+        print("  대기: 현재 조건이 충족되면 다음 Router 검증으로 진행합니다.")
+    return phase_checkpoint(number, phase)[0]
+
+
 def guide_operator(number, phase, detail, interactive):
-    section(f"PHASE {number:02} · OPERATOR GUIDE", YELLOW)
-    print(f"  현재 상태: {detail}")
+    if interactive and phase["title"] == "testnet Router Node 전환":
+        return guide_router(number, phase)
+    section(f"PHASE {number:02} · OPERATOR STEP", YELLOW)
+    print(f"  현재 상태: {operator_message(phase, detail)}")
     if interactive and phase["title"] == "지속 testnet 노드":
         run_testnet_unlock()
-    if interactive and phase["title"] == "testnet Router Node 전환":
-        print("  자동 구성 입력")
-        print("  공개 P2P 연결을 만들려면 외부에서 도달 가능한 주소가 필요합니다.")
-        run_router_wizard()
-    for index, step in enumerate(manual_steps(phase), 1):
-        print(f"  {index}. {step}")
+    else:
+        print(f"  다음 작업: {manual_steps(phase)[0]}")
+    return phase_checkpoint(number, phase)[0]
 
 
 def display(command):
@@ -496,18 +553,14 @@ def print_status():
     for number, phase in enumerate(PHASES, 1):
         state, detail = inspect(number - 1)
         print(f"  {number:02}  {status_label(state)}  {phase['title']}")
-        if next_phase is None and state != "complete":
+        if next_phase is None and state != "complete" and applies_to_selected_workspace(phase):
             next_phase = (number, phase, detail)
     if next_phase:
         number, phase, detail = next_phase
         section("NEXT COMPLETION", YELLOW)
         print(f"  Phase {number:02} · {phase['title']}")
-        print(f"  상태: {detail}")
-        if applies_to_selected_workspace(phase):
-            for index, step in enumerate(manual_steps(phase), 1):
-                print(f"  {index}. {step}")
-        else:
-            print("  이 수동 실습은 현재 선택한 wallet workspace와 무관하므로 자동 구축만 유지합니다.")
+        print(f"  상태: {operator_message(phase, detail)}")
+        print("  이 번호를 선택하면 필요한 다음 작업을 실행하고 상태를 다시 확인합니다.")
     else:
         print("NEXT: 모든 Phase가 완료되었습니다.")
 
@@ -524,6 +577,11 @@ def build_through(target, dry_run=False, interactive=False):
             print(f"STOP: {gate}")
             return 10
     pending = False
+
+    def pause(number, phase):
+        print(f"PAUSE: Phase {number:02} · {phase['title']}의 현재 작업이 끝나야 다음 Phase로 진행합니다.")
+        return 0 if dry_run else 10
+
     for index, phase in enumerate(PHASES[:target]):
         number = index + 1
         phase_pending = False
@@ -536,7 +594,9 @@ def build_through(target, dry_run=False, interactive=False):
             phase_pending = True
             print(f"[{number}] PENDING {phase['title']} — {detail}")
             if dry_run or applies_to_selected_workspace(phase):
-                guide_operator(number, phase, detail, interactive)
+                after = guide_operator(number, phase, detail, interactive)
+                if after != "complete":
+                    return pause(number, phase)
             else:
                 print("  현재 선택한 wallet workspace와 무관한 수동 실습은 건너뜁니다.")
             continue
@@ -548,7 +608,9 @@ def build_through(target, dry_run=False, interactive=False):
             pending = True
             print(f"[{number}] PENDING {phase['title']} — manual phase")
             if dry_run or applies_to_selected_workspace(phase):
-                guide_operator(number, phase, "이 단계는 사용자 확인이 필요합니다.", interactive)
+                after = guide_operator(number, phase, "이 단계는 사용자 확인이 필요합니다.", interactive)
+                if after != "complete":
+                    return pause(number, phase)
             else:
                 print("  현재 선택한 wallet workspace와 무관한 수동 실습은 건너뜁니다.")
             continue
@@ -560,7 +622,10 @@ def build_through(target, dry_run=False, interactive=False):
                     pending = True
                     phase_pending = True
                     if applies_to_selected_workspace(phase):
-                        guide_operator(number, phase, "자동 구성은 끝났고 사용자 확인이 필요합니다.", interactive)
+                        after = guide_operator(number, phase, "자동 구성은 끝났고 사용자 확인이 필요합니다.", interactive)
+                        if after != "complete":
+                            return pause(number, phase)
+                        phase_pending = False
                     break
                 else:
                     print(f"FAIL: {display(command)} exited {code}", file=sys.stderr)
@@ -573,7 +638,10 @@ def build_through(target, dry_run=False, interactive=False):
                     phase_pending = True
                     print(f"[{number}] PENDING {phase['title']} — post-build verification: {verified_detail}")
                     if applies_to_selected_workspace(phase):
-                        guide_operator(number, phase, verified_detail, interactive)
+                        after = guide_operator(number, phase, verified_detail, interactive)
+                        if after != "complete":
+                            return pause(number, phase)
+                        phase_pending = False
                 else:
                     print(f"[{number}] STOP {phase['title']} — post-build verification: {verified_detail}", file=sys.stderr)
                     return 1
@@ -582,8 +650,8 @@ def build_through(target, dry_run=False, interactive=False):
         else:
             print(f"[{number}] {'PLANNED' if dry_run else 'DONE'} {phase['title']}")
     if pending:
-        print(f"PENDING: Phase {target}까지 인프라는 자동 구축했고, 위 수동 실습 gate가 남아 있습니다.")
-        return 0 if dry_run else 10
+        print(f"DONE: 선택한 wallet workspace에 해당하는 Phase {target}까지의 자동 구성이 끝났습니다.")
+        return 0
     print(f"DONE: Phase {target}까지의 자동 구성이 끝났습니다.")
     return 0
 
