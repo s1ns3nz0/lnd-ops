@@ -6,6 +6,16 @@ the input needed for the next action, perform that action, and immediately
 recheck. The command prompt returns only after the selected Phase is complete
 or the operator explicitly interrupts it.
 
+## Implemented runner contract
+
+The runner now assigns every Phase a stable internal ID, a read-only completion
+probe, and an interactive route. Phase 1 and 2 use explicit wallet, channel,
+and payment readiness probes. Phase 3 keeps its Router screen active and
+redraws one compact status line rather than appending polling logs. Phase 4 and
+5 verify Loop and live testnet metrics. Phase 6 through 11 use their existing
+acceptance evidence as the completion contract, and invoke their existing
+interactive scripts only after their own confirmation prompt.
+
 ## Phase 1 · regtest foundation
 
 **Current gap:** the runner only describes wallet creation, seed custody,
