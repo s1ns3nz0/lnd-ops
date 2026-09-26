@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$(uname -s)" == Linux ]] && grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null || {
+  echo 'FAIL: run this installer inside WSL 2 Ubuntu' >&2
+  exit 1
+}
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+linux_user=$(id -un)
+user_home=$(getent passwd "$linux_user" | cut -d: -f6)
+[[ -n "$user_home" ]] || { echo 'FAIL: cannot resolve the current Linux user home' >&2; exit 1; }
+[[ -x "$repo_dir/ops/windows-enable-router" ]] || { echo 'FAIL: Router refresh helper is missing' >&2; exit 1; }
+
+unit=$(mktemp)
+trap 'rm -f "$unit"' EXIT
+cat >"$unit" <<EOF
+[Unit]
+Description=Refresh LND Ops Windows-to-WSL Lightning P2P forwarding
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$linux_user
+Environment=HOME=$user_home
+ExecStart=$repo_dir/ops/windows-enable-router
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo install -m 0644 "$unit" /etc/systemd/system/lnd-ops-router-refresh.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lnd-ops-router-refresh.service
+echo 'OK: Router forwarding will refresh automatically whenever WSL starts.'

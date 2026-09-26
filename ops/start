@@ -269,6 +269,11 @@ def run_router_wizard():
         host = subprocess.run([str(REPO / "ops/windows-enable-router")], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
         if host.returncode == 0:
             print("  완료: Windows에서 공개 P2P 포트 전달이 구성되었습니다.")
+            refresh = subprocess.run([str(REPO / "ops/windows-install-router-refresh")], cwd=REPO, env=runtime_environment())
+            if refresh.returncode == 0:
+                print("  완료: WSL 시작 때마다 P2P 포트 전달을 자동 갱신합니다.")
+            else:
+                print("  보류: 자동 갱신 설치에는 WSL 관리자 인증이 필요합니다.")
         else:
             print("  보류: Windows P2P 포트 전달에는 관리자 권한이 필요합니다.")
 
