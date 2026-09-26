@@ -1,35 +1,103 @@
 #!/usr/bin/env python3
-"""Delete only operator-selected lnd-ops namespaces; never delete K3s itself."""
-import argparse, os, pathlib, subprocess, sys
+"""Delete selected LND Ops resources while requiring a separate wallet-data choice."""
+
+import argparse
+import os
+import pathlib
+import subprocess
+import sys
+
 
 STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
-ITEMS = {
-    "testnet": ("lnd-testnet",), "regtest": ("lnd-regtest", "lnd-regtest-recovery"),
-    "monitoring": ("lnd-monitoring",), "kyverno": ("kyverno",), "falco": ("falco",),
-    "kagent": ("kagent",), "agent": ("lnd-agent",),
+PROFILES = {
+    "testnet": ("lnd-testnet",),
+    "regtest": ("lnd-regtest", "lnd-regtest-recovery"),
 }
+SHARED = {
+    "monitoring": ("lnd-monitoring",),
+    "kyverno": ("kyverno",),
+    "falco": ("falco",),
+    "kagent": ("kagent",),
+    "agent": ("lnd-agent",),
+}
+ITEMS = PROFILES | SHARED
+
+
+def selected_items(value):
+    selected = tuple(item.strip() for item in value.split(",") if item.strip())
+    if not selected or len(set(selected)) != len(selected) or any(item not in ITEMS for item in selected):
+        raise ValueError("--select must contain unique known items")
+    return selected
+
+
+def confirmation_phrase(selected, delete_wallet_data):
+    suffix = ",wallet-data" if delete_wallet_data else ""
+    return "DELETE " + ",".join(selected) + suffix
+
+
+def namespace_exists(namespace, environment):
+    return subprocess.run(
+        ["kubectl", "get", "namespace", namespace], env=environment, capture_output=True,
+    ).returncode == 0
+
+
+def remove_profile_workloads(profile, environment):
+    namespace = PROFILES[profile][0]
+    status = subprocess.run(["helm", "-n", namespace, "status", "lnd-ops"], env=environment, capture_output=True)
+    if status.returncode == 0:
+        subprocess.run(["helm", "-n", namespace, "uninstall", "lnd-ops", "--wait"], env=environment, check=True)
+
 
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--select", required=True, help="comma-separated: " + ", ".join(ITEMS))
+    parser.add_argument("--delete-wallet-data", action="store_true", help="allow selected profile namespaces and their PVCs to be deleted")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--confirm", metavar="TEXT")
     args = parser.parse_args(argv)
-    selected = tuple(item for item in args.select.split(",") if item)
-    if not selected or len(set(selected)) != len(selected) or any(item not in ITEMS for item in selected):
-        parser.error("--select must contain unique known items")
-    phrase = "DELETE " + ",".join(selected)
-    namespaces = tuple(namespace for item in selected for namespace in ITEMS[item])
+    try:
+        selected = selected_items(args.select)
+    except ValueError as error:
+        parser.error(str(error))
+
+    profiles = tuple(item for item in selected if item in PROFILES)
+    shared = tuple(item for item in selected if item in SHARED)
+    if args.delete_wallet_data and not profiles:
+        parser.error("--delete-wallet-data requires testnet or regtest")
+    phrase = confirmation_phrase(selected, args.delete_wallet_data)
     print("Selected: " + ", ".join(selected))
-    print("Namespaces/PVCs to delete: " + ", ".join(namespaces))
+    if profiles:
+        if args.delete_wallet_data:
+            namespaces = tuple(namespace for profile in profiles for namespace in PROFILES[profile])
+            print("Wallet PVCs: DELETE with namespaces: " + ", ".join(namespaces))
+        else:
+            print("Wallet PVCs: PRESERVE; remove only Helm workloads from: " + ", ".join(PROFILES[profile][0] for profile in profiles))
+            if "regtest" in profiles:
+                print("Recovery namespace lnd-regtest-recovery is preserved with its recovery data.")
+    if shared:
+        print("Shared namespaces to delete: " + ", ".join(namespace for item in shared for namespace in SHARED[item]))
     print("K3s, host backups, seeds, SSH keys, and global Docker cache are excluded.")
-    if args.dry_run: return 0
+    print("Confirmation required: " + phrase)
+    if args.dry_run:
+        return 0
     if args.confirm != phrase:
-        print("ACTION: rerun with --confirm " + repr(phrase), file=sys.stderr); return 2
-    env = os.environ | {"KUBECONFIG": os.environ.get("KUBECONFIG", str(STATE / "kubeconfig"))}
-    for namespace in namespaces:
-        check = subprocess.run(["kubectl", "get", "namespace", namespace], env=env, capture_output=True)
-        if check.returncode == 0:
-            subprocess.run(["kubectl", "delete", "namespace", namespace, "--wait=true"], env=env, check=True)
+        print("ACTION: rerun with --confirm " + repr(phrase), file=sys.stderr)
+        return 2
+
+    environment = os.environ | {"KUBECONFIG": os.environ.get("KUBECONFIG", str(STATE / "kubeconfig"))}
+    for profile in profiles:
+        if args.delete_wallet_data:
+            for namespace in PROFILES[profile]:
+                if namespace_exists(namespace, environment):
+                    subprocess.run(["kubectl", "delete", "namespace", namespace, "--wait=true"], env=environment, check=True)
+        else:
+            remove_profile_workloads(profile, environment)
+    for item in shared:
+        for namespace in SHARED[item]:
+            if namespace_exists(namespace, environment):
+                subprocess.run(["kubectl", "delete", "namespace", namespace, "--wait=true"], env=environment, check=True)
     return 0
-if __name__ == "__main__": sys.exit(main(sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

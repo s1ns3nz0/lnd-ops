@@ -106,3 +106,11 @@ test('wallet workspace prompt exits cleanly on end of input', async () => {
   assert.match(contents, /except EOFError:\n            print\(\)\n            return False/);
   assert.match(contents, /if not prompt_wallet_selection\(\):\n        return 0/);
 });
+
+test('delete menu trims comma-separated selections and asks before deleting wallet PVCs', async () => {
+  const contents = await readFile(start, 'utf8');
+  assert.match(contents, /item\.strip\(\) for item in input\("쉼표로 입력/);
+  assert.match(contents, /지갑 PVC도 삭제합니까/);
+  assert.match(contents, /--delete-wallet-data/);
+  assert.match(contents, /wallet-data/);
+});

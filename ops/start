@@ -404,13 +404,19 @@ def repl():
             prompt_wallet_selection()
         elif answer == "delete":
             print("삭제 선택: testnet, regtest, monitoring, kyverno, falco, kagent, agent")
-            selected = input("쉼표로 입력 (빈 입력은 취소): ").strip()
+            selected = ",".join(item.strip() for item in input("쉼표로 입력 (빈 입력은 취소): ").split(",") if item.strip())
             if selected:
-                subprocess.run([str(REPO / "ops/purge-project"), "--select", selected, "--dry-run"], cwd=REPO)
-                phrase = "DELETE " + selected
+                options = [str(REPO / "ops/purge-project"), "--select", selected]
+                profiles = {"testnet", "regtest"} & set(selected.split(","))
+                if profiles and input("선택한 profile의 지갑 PVC도 삭제합니까? [y/N]: ").strip().lower() in ("y", "yes"):
+                    options.append("--delete-wallet-data")
+                preview = subprocess.run([*options, "--dry-run"], cwd=REPO)
+                if preview.returncode:
+                    continue
+                phrase = "DELETE " + selected + (",wallet-data" if "--delete-wallet-data" in options else "")
                 confirm = input(f"실행하려면 정확히 입력: {phrase}\n> ").strip()
                 if confirm == phrase:
-                    subprocess.run([str(REPO / "ops/purge-project"), "--select", selected, "--confirm", confirm], cwd=REPO)
+                    subprocess.run([*options, "--confirm", confirm], cwd=REPO)
         elif answer == "status":
             print_status()
         elif answer.isdigit() and 0 <= int(answer) < len(PHASES):
