@@ -7,10 +7,12 @@ import json
 import os
 import pathlib
 import platform
+import shutil
 import socket
 import subprocess
 import sys
 import time
+import unicodedata
 from urllib.request import urlopen
 
 
@@ -372,25 +374,92 @@ def elapsed_time(seconds):
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def render_router_wait(phase, active_channels, detail, channel_synced_at, started_at):
+def router_wait_message(phase, detail):
+    """Keep Router progress readable in narrow terminals."""
+    message = operator_message(phase, detail)
+    if "활성 공개 채널이 두 개" in message:
+        return "활성 공개 채널 1개 추가 필요"
+    if "testnet 체인과 그래프" in message:
+        return "testnet 체인·그래프 동기화 중"
+    if "외부 TCP 9735" in message:
+        return "외부 TCP 9735 연결 확인 필요"
+    if "외부 지갑" in message:
+        return "외부 경유 결제 대기 중"
+    return message
+
+
+def display_width(text):
+    return sum(
+        0 if unicodedata.combining(character) else 2 if unicodedata.east_asian_width(character) in ("F", "W") else 1
+        for character in text
+    )
+
+
+def fit_terminal_line(text, columns):
+    """Clip a status row by terminal display cells so ANSI cursor movement stays aligned."""
+    limit = max(1, columns - 1)
+    if display_width(text) <= limit:
+        return text
+    if limit == 1:
+        return "."
+    fitted = []
+    used = 0
+    for character in text:
+        width = 0 if unicodedata.combining(character) else 2 if unicodedata.east_asian_width(character) in ("F", "W") else 1
+        if used + width > limit - 1:
+            break
+        fitted.append(character)
+        used += width
+    return "".join(fitted) + "."
+
+
+def render_router_wait(phase, active_channels, detail, channel_synced_at, started_at, previous_lines=None):
     channel_state = f"{active_channels}/2" if active_channels is not None else "확인 중/2"
     synced = time.strftime("%H:%M:%S", time.localtime(channel_synced_at)) if channel_synced_at else "대기 중"
-    message = operator_message(phase, detail)
-    line = (
-        f"  Router · 공개 채널 {channel_state} · 대기: {message} · "
-        f"최근 채널 동기화: {synced} · 경과: {elapsed_time(time.monotonic() - started_at)}"
+    raw_lines = (
+        f"  공개 채널       {channel_state}",
+        f"  대기 조건       {router_wait_message(phase, detail)}",
+        f"  최근 채널 동기화 {synced}",
+        f"  경과 시간       {elapsed_time(time.monotonic() - started_at)}",
     )
+    columns = shutil.get_terminal_size((80, 24)).columns
+    lines = tuple(fit_terminal_line(line, columns) for line in raw_lines)
     if sys.stdout.isatty():
-        sys.stdout.write(f"\r\033[2K{line}")
+        if previous_lines is None:
+            sys.stdout.write("\n".join(lines))
+        else:
+            last_index = len(lines) - 1
+            for index, (previous, current) in enumerate(zip(previous_lines, lines)):
+                if previous == current:
+                    continue
+                upward = last_index - index
+                if upward:
+                    sys.stdout.write(f"\033[{upward}A")
+                sys.stdout.write(f"\r\033[2K{current}")
+                if upward:
+                    sys.stdout.write(f"\033[{upward}B")
+                sys.stdout.write("\r")
         sys.stdout.flush()
+    elif previous_lines is None:
+        print("\n".join(lines))
     else:
-        print(line)
+        changed = [current for previous, current in zip(previous_lines[:3], lines[:3]) if previous != current]
+        if changed:
+            print("\n".join(changed))
+    return lines
+
+
+def close_router_wait(previous_lines):
+    """Finish the live block before printing a prompt or permanent log line."""
+    if previous_lines is not None and sys.stdout.isatty():
+        print()
+    return None
 
 
 def guide_router(number, phase):
     section("PHASE 03 · ROUTER PROGRESS", CYAN)
     started_at = time.monotonic()
-    previous = None
+    previous_lines = None
     previous_channels = None
     channel_synced_at = None
     while True:
@@ -400,26 +469,27 @@ def guide_router(number, phase):
             previous_channels = active_channels
             channel_synced_at = time.time()
         if state == "complete":
-            if sys.stdout.isatty():
-                print()
+            previous_lines = close_router_wait(previous_lines)
             print("  완료: 공개 Router 조건과 실제 forwarding이 검증되었습니다.")
             return state
         if state == "failed":
-            if sys.stdout.isatty():
-                print()
+            previous_lines = close_router_wait(previous_lines)
             print(f"  확인 오류: {operator_message(phase, detail)}")
             return state
         if "create or unlock" in detail:
+            previous_lines = close_router_wait(previous_lines)
             print("  다음 작업: 기존 testnet 지갑을 unlock합니다.")
             if not run_testnet_unlock():
                 print("  unlock이 완료되지 않았습니다. 암호를 다시 입력해 재시도합니다.")
             continue
         if "run ops/enable-router" in detail:
+            previous_lines = close_router_wait(previous_lines)
             print("  다음 작업: 공개 P2P 연결을 자동 구성합니다.")
             if not run_router_wizard():
                 print("  공개 P2P 연결을 아직 구성하지 않았습니다. 필요한 주소를 입력하면 다시 시도합니다.")
             continue
         if "reviewed policy" in detail:
+            previous_lines = close_router_wait(previous_lines)
             try:
                 answer = input("  routing 수수료 정책 적용 [Enter=적용]: ").strip().lower()
             except EOFError:
@@ -431,20 +501,14 @@ def guide_router(number, phase):
                 result = subprocess.run([str(REPO / "ops/configure-router-policy"), "--confirm", "APPLY ROUTER POLICY"], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
                 print("  완료: routing 수수료 정책을 적용했습니다." if result.returncode == 0 else "  보류: 채널 정책을 아직 적용할 수 없습니다.")
             continue
-        current = (state, detail)
-        if current != previous:
-            if previous is not None:
-                if sys.stdout.isatty():
-                    print()
-                print(f"  상태 변경: {operator_message(phase, detail)}")
-            previous = current
-        render_router_wait(phase, active_channels, detail, channel_synced_at, started_at)
+        previous_lines = render_router_wait(
+            phase, active_channels, detail, channel_synced_at, started_at, previous_lines
+        )
         try:
             time.sleep(ROUTER_POLL_SECONDS)
         except KeyboardInterrupt:
-            if sys.stdout.isatty():
-                print()
-            print("\n  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")
+            previous_lines = close_router_wait(previous_lines)
+            print("  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")
             return "partial"
 
 

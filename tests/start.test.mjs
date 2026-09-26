@@ -62,7 +62,7 @@ test('interactive phases execute one needed action and recheck before progressin
   assert.doesNotMatch(contents, /위 수동 실습 gate가 남아 있습니다/);
 });
 
-test('Router progress keeps one live status line while automatic conditions are pending', async () => {
+test('Router progress updates a compact status block without appending poll output', async () => {
   const contents = await readFile(start, 'utf8');
   const routerGuide = contents.slice(contents.indexOf('def guide_router'), contents.indexOf('\ndef run_confirmed'));
   assert.match(routerGuide, /PHASE 03 · ROUTER PROGRESS/);
@@ -70,13 +70,18 @@ test('Router progress keeps one live status line while automatic conditions are 
   assert.match(routerGuide, /time\.sleep\(ROUTER_POLL_SECONDS\)/);
   assert.match(routerGuide, /router_active_public_channels\(\)/);
   assert.match(routerGuide, /render_router_wait\(/);
-  assert.match(routerGuide, /상태 변경:/);
   assert.doesNotMatch(routerGuide, /확인 \{attempts/);
   assert.doesNotMatch(routerGuide, /초 뒤 Router 상태를 다시 확인/);
+  assert.doesNotMatch(routerGuide, /상태 변경:/);
   assert.match(routerGuide, /공개 Router 조건과 실제 forwarding이 검증되었습니다/);
-  assert.match(contents, /공개 채널 \{channel_state\} · 대기:/);
-  assert.match(contents, /최근 채널 동기화:/);
-  assert.match(contents, /경과: \{elapsed_time/);
+  assert.match(contents, /공개 채널       \{channel_state\}/);
+  assert.match(contents, /대기 조건       \{router_wait_message/);
+  assert.match(contents, /최근 채널 동기화 \{synced\}/);
+  assert.match(contents, /경과 시간       \{elapsed_time/);
+  assert.match(contents, /if previous == current:/);
+  assert.match(contents, /zip\(previous_lines\[:3\], lines\[:3\]\)/);
+  assert.match(contents, /fit_terminal_line\(line, columns\)/);
+  assert.match(routerGuide, /close_router_wait\(previous_lines\)/);
 });
 
 test('every learning phase has a live completion probe and an interactive route', async () => {
