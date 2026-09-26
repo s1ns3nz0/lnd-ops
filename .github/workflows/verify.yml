@@ -47,10 +47,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Check scripts and image lock syntax
         run: |
-          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/enable-loop ops/verify ops/verify-source ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
+          bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/enable-loop ops/verify ops/verify-source ops/install-command ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
           bash -n ops/build-collector
           bash -n ops/kagent-cli
-          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/start", "ops/wallet-status", "ops/verify-monitoring", "ops/verify-loop", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py", "charts/lnd-ops/files/loop_health.py")]'
+          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/start", "ops/wallet-status", "ops/purge-project", "ops/verify-monitoring", "ops/verify-loop", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py", "charts/lnd-ops/files/loop_health.py")]'
           python3 -m py_compile ops/exercise-regtest ops/verify-regtest-recovery collector/payment_metrics.py
           python3 -m json.tool ops/images.lock.json >/dev/null
           for dashboard in charts/dashboards/*.json; do python3 -m json.tool "$dashboard" >/dev/null; done

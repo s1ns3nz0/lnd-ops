@@ -12,7 +12,7 @@ test('lndops is the repository command that delegates to the guided shell', asyn
   await chmod(command, 0o755);
   const bin = resolve(repo, '.test-bin');
   const output = execFileSync(command, ['--list'], {cwd: repo, encoding: 'utf8', env: {...process.env, XDG_BIN_HOME: bin}});
-  assert.match(output, /LND Ops guided setup/);
+  assert.match(output, /LND OPS SETUP/);
   assert.match(await readFile(command, 'utf8'), /ops\/start/);
   assert.match(await readFile(resolve(bin, 'lndops'), 'utf8'), /ops\/start/);
   await rm(bin, {recursive: true, force: true});
@@ -33,7 +33,9 @@ test('guided setup lists all cumulative phases and the requested ASCII banner', 
   assert.match(output, /__\s+__\s+______/);
   assert.match(output, /WALLET STATUS/);
   assert.match(output, /Mac·WSL 재현성/);
-  assert.match(output, /명령: 0-9, status, help, quit/);
+  assert.match(output, /COMMANDS/);
+  assert.match(output, /delete  삭제 메뉴/);
+  assert.match(output, /=+/);
 });
 
 test('guided setup previews only safe automatic work and stops at the first manual gate', () => {
@@ -83,4 +85,17 @@ test('guided setup persists a named wallet workspace and refuses an identity cha
   assert.match(contents, /wallet_pvc_snapshot/);
   assert.match(contents, /PVC identity가 바뀌었습니다/);
   assert.match(contents, /wallet: workspace 변경/);
+});
+
+test('interactive setup presents workspace selection before wallet status and the phase menu', async () => {
+  const contents = await readFile(start, 'utf8');
+  const repl = contents.slice(contents.indexOf('def repl():'), contents.indexOf('\ndef parse_args'));
+  assert.ok(repl.indexOf('prompt_wallet_selection()') < repl.indexOf('print_wallet_overview()'));
+  assert.ok(repl.indexOf('print_wallet_overview()') < repl.indexOf('print_phase_catalog()'));
+});
+
+test('wallet workspace prompt exits cleanly on end of input', async () => {
+  const contents = await readFile(start, 'utf8');
+  assert.match(contents, /except EOFError:\n            print\(\)\n            return False/);
+  assert.match(contents, /if not prompt_wallet_selection\(\):\n            return 0/);
 });

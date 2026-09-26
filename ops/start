@@ -134,6 +134,20 @@ SAFE_AUTOMATIC_COMMANDS = frozenset({
     ("ops/verify-monitoring", "--infrastructure-only"),
     ("ops/deploy-security",),
 })
+RESET = "\033[0m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+
+
+def paint(text, color):
+    return f"{color}{text}{RESET}" if sys.stdout.isatty() and "NO_COLOR" not in os.environ else text
+
+
+def section(title, color=CYAN):
+    print(paint("=" * 64, color))
+    print(paint(f"  {title}", color))
+    print(paint("=" * 64, color))
 
 
 def display(command):
@@ -206,10 +220,14 @@ def prompt_wallet_selection():
         suffix = "기존 PVC를 고정" if mode == "existing" else "기존 지갑을 건드리지 않는 별도 workspace"
         print(f"[{number}] {title} — {suffix}")
     while True:
-        answer = input("선택 [1-4]: ").strip()
+        try:
+            answer = input("선택 [1-4]: ").strip()
+        except EOFError:
+            print()
+            return False
         if answer.isdigit() and 1 <= int(answer) <= len(WALLET_CHOICES):
             select_wallet(list(WALLET_CHOICES)[int(answer) - 1])
-            return
+            return True
         print("1부터 4 중 하나를 입력하세요.", file=sys.stderr)
 
 
@@ -275,15 +293,27 @@ def inspect(number):
     return "failed", detail[-1] if detail else "verification failed without output"
 
 
+def print_wallet_overview():
+    section("WALLET STATUS", GREEN)
+    print(wallet_banner())
+
+
+def print_phase_catalog():
+    section("LND OPS SETUP", CYAN)
+    print("번호를 고르면 Phase 0부터 해당 Phase까지 실제 상태를 확인합니다.")
+    print("완료된 Phase는 건너뛰고 수동 단계에서는 안내 후 멈춥니다.")
+    for number, phase in enumerate(PHASES):
+        print(paint(f"\n[{number}] {phase['title']}", YELLOW))
+        print(f"  {phase['environment']}")
+    section("COMMANDS", CYAN)
+    print("  0-9  phase 선택   wallet  wallet workspace   delete  삭제 메뉴")
+    print("  status  상태 확인   help  도움말   quit  종료")
+
+
 def print_catalog():
     print(BANNER)
-    print(wallet_banner())
-    print("\nLND Ops guided setup — 번호를 고르면 Phase 0부터 해당 Phase까지 실제 상태를 확인합니다.")
-    print("완료된 Phase는 건너뛰고, partial 상태나 지갑·자금·장애 주입처럼 수동 단계에서는 안내 후 멈춥니다.\n")
-    for number, phase in enumerate(PHASES):
-        print(f"[{number}] {phase['title']}")
-        print(f"    {phase['environment']}")
-    print("\n명령: 0-9, status, help, quit")
+    print_wallet_overview()
+    print_phase_catalog()
 
 
 def print_status():
@@ -339,9 +369,13 @@ def build_through(target, dry_run=False):
 
 
 def repl():
-    print_catalog()
+    print(BANNER)
     if load_selection() is None:
-        prompt_wallet_selection()
+        section("WALLET WORKSPACE", GREEN)
+        if not prompt_wallet_selection():
+            return 0
+    print_wallet_overview()
+    print_phase_catalog()
     while True:
         try:
             answer = input("lnd-ops> ").strip().lower()

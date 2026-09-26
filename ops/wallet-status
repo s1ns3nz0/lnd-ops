@@ -91,15 +91,14 @@ def summary(profile, node):
 
 
 def render(rows):
-    lines = ["WALLET STATUS"]
+    lines = []
     for row in rows:
         prefix = f"{row['profile']}/{row['node']}"
         if row["state"] != "활성":
-            lines.append(f"  {prefix}: {row['state']}")
+            lines.append(f"  {prefix:<18} {row['state']}")
             continue
-        lines.append(
-            f"  {prefix}: 활성 | 확정 {row['confirmed_sat']} sat | 활성 채널 {row['active_channels']} | {row['address_kind']} {row['address']}"
-        )
+        lines.append(f"  {prefix:<18} 활성 | 확정 {row['confirmed_sat']} sat | 활성 채널 {row['active_channels']}")
+        lines.append(f"  {'':18} {row['address_kind']}: {row['address']}")
     return "\n".join(lines)
 
 
