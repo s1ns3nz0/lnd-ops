@@ -67,7 +67,7 @@ test('Router progress updates a compact status block without appending poll outp
   const routerGuide = contents.slice(contents.indexOf('def guide_router'), contents.indexOf('\ndef run_confirmed'));
   assert.match(routerGuide, /PHASE 03 · ROUTER PROGRESS/);
   assert.match(routerGuide, /while True:/);
-  assert.match(routerGuide, /time\.sleep\(ROUTER_POLL_SECONDS\)/);
+  assert.match(routerGuide, /refresh_router_clock\(/);
   assert.match(routerGuide, /router_active_public_channels\(\)/);
   assert.match(routerGuide, /render_router_wait\(/);
   assert.doesNotMatch(routerGuide, /확인 \{attempts/);

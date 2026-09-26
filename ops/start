@@ -456,6 +456,16 @@ def close_router_wait(previous_lines):
     return None
 
 
+def refresh_router_clock(phase, active_channels, detail, channel_synced_at, started_at, previous_lines):
+    """Refresh elapsed time each second while live verification remains on a ten-second cadence."""
+    for _ in range(ROUTER_POLL_SECONDS):
+        time.sleep(1)
+        previous_lines = render_router_wait(
+            phase, active_channels, detail, channel_synced_at, started_at, previous_lines
+        )
+    return previous_lines
+
+
 def guide_router(number, phase):
     section("PHASE 03 · ROUTER PROGRESS", CYAN)
     started_at = time.monotonic()
@@ -505,7 +515,9 @@ def guide_router(number, phase):
             phase, active_channels, detail, channel_synced_at, started_at, previous_lines
         )
         try:
-            time.sleep(ROUTER_POLL_SECONDS)
+            previous_lines = refresh_router_clock(
+                phase, active_channels, detail, channel_synced_at, started_at, previous_lines
+            )
         except KeyboardInterrupt:
             previous_lines = close_router_wait(previous_lines)
             print("  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")

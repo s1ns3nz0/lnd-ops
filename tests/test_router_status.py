@@ -93,6 +93,18 @@ class RouterStatusTests(unittest.TestCase):
             print("next")
         self.assertEqual(output.getvalue(), "\nnext\n")
 
+    def test_elapsed_clock_refreshes_each_second_between_live_checks(self):
+        rendered = tuple(f"line-{index}" for index in range(4))
+        with unittest.mock.patch.object(start.time, "sleep") as sleep, unittest.mock.patch.object(
+            start, "render_router_wait", return_value=rendered
+        ) as render:
+            result = start.refresh_router_clock(ROUTER, 1, DETAIL, 100, 0, rendered)
+
+        self.assertEqual(result, rendered)
+        self.assertEqual(sleep.call_count, start.ROUTER_POLL_SECONDS)
+        self.assertTrue(all(call.args == (1,) for call in sleep.call_args_list))
+        self.assertEqual(render.call_count, start.ROUTER_POLL_SECONDS)
+
 
 if __name__ == "__main__":
     unittest.main()
