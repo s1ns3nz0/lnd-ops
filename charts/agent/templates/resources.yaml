@@ -12,7 +12,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kagent-no-kubernetes-api
-  namespace: kagent
+  namespace: lndops-kagent
 automountServiceAccountToken: false
 ---
 apiVersion: apps/v1
@@ -132,7 +132,7 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kagent}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lndops-kagent}}
       ports: [{protocol: TCP, port: 8080}]
   egress:
     - to:
@@ -159,7 +159,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: kagent-constrained-traffic
-  namespace: kagent
+  namespace: lndops-kagent
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
