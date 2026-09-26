@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo_dir=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().parent)' "${BASH_SOURCE[0]}")
 case "${1:-}" in
   cleanup|reset|reset-*|destroy)
     echo 'FAIL: lndops never deletes resources; use the documented explicit reset command for a wallet-free disposable environment' >&2
     exit 2
     ;;
 esac
+"$repo_dir/ops/install-command" >/dev/null
 exec "$repo_dir/ops/start" "$@"

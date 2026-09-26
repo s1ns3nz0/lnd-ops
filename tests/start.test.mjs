@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {chmod, readFile} from 'node:fs/promises';
+import {chmod, readFile, rm} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import test from 'node:test';
 
@@ -10,9 +10,12 @@ const command = resolve(repo, 'lndops');
 
 test('lndops is the repository command that delegates to the guided shell', async () => {
   await chmod(command, 0o755);
-  const output = execFileSync(command, ['--list'], {cwd: repo, encoding: 'utf8'});
+  const bin = resolve(repo, '.test-bin');
+  const output = execFileSync(command, ['--list'], {cwd: repo, encoding: 'utf8', env: {...process.env, XDG_BIN_HOME: bin}});
   assert.match(output, /LND Ops guided setup/);
   assert.match(await readFile(command, 'utf8'), /ops\/start/);
+  assert.match(await readFile(resolve(bin, 'lndops'), 'utf8'), /ops\/start/);
+  await rm(bin, {recursive: true, force: true});
 });
 
 test('lndops rejects deletion verbs before it enters the setup shell', () => {
