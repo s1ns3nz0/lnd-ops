@@ -481,6 +481,11 @@ def print_status():
         print(paint(f"  ● {namespace:<20} {result.stdout.strip():<8}", GREEN))
         print(f"    workloads {workloads:<2}  pods {pods_ready}/{pods_total} Ready  storage {pvcs_bound}/{pvcs_total} Bound  services {services}")
     section("PHASE STATUS", CYAN)
+    print("  OK       자동 구축과 검증이 모두 완료됨")
+    print("  PENDING  인프라는 있으나 지갑·채널·외부 연결 같은 조건이 남음")
+    print("  CHECK    예상하지 못한 검증 오류가 있어 상태 확인이 필요함")
+    print("  MANUAL   자동 구축 대상이 아닌 운영 실습 또는 증거 단계")
+    print()
     next_phase = None
     for number, phase in enumerate(PHASES, 1):
         state, detail = inspect(number - 1)

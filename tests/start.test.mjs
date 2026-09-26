@@ -120,6 +120,8 @@ test('delete menu trims comma-separated selections and asks before deleting wall
 test('Phase zero is a resource and next-action status view', async () => {
   const contents = await readFile(start, 'utf8');
   assert.match(contents, /CURRENT RESOURCES/);
+  assert.match(contents, /자동 구축과 검증이 모두 완료됨/);
+  assert.match(contents, /예상하지 못한 검증 오류/);
   assert.match(contents, /\("statefulsets", "deployments", "daemonsets"\)/);
   assert.match(contents, /NEXT COMPLETION/);
   assert.match(contents, /if target == 0:/);
