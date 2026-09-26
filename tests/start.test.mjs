@@ -53,7 +53,8 @@ test('guided setup previews safe automatic work through manual gates', () => {
 
 test('guided setup reserves partial status for an explicit operator gate', async () => {
   const contents = await readFile(start, 'utf8');
-  assert.match(contents, /if result\.returncode == 10:\n        return "partial", "operator gate pending"/);
+  assert.match(contents, /if result\.returncode == 10:\n        detail = \(result\.stderr or result\.stdout\)/);
+  assert.match(contents, /return "partial", detail\[-1\]/);
   assert.doesNotMatch(contents, /existing Kubernetes resources did not pass verification/);
   assert.match(contents, /post-build verification/);
   assert.match(contents, /ops\/wallet-status/);
