@@ -62,6 +62,16 @@ test('interactive phases execute one needed action and recheck before progressin
   assert.doesNotMatch(contents, /위 수동 실습 gate가 남아 있습니다/);
 });
 
+test('Router progress stays on its own screen while automatic conditions are pending', async () => {
+  const contents = await readFile(start, 'utf8');
+  const routerGuide = contents.slice(contents.indexOf('def guide_router'), contents.indexOf('\ndef guide_operator'));
+  assert.match(routerGuide, /PHASE 03 · ROUTER PROGRESS/);
+  assert.match(routerGuide, /while True:/);
+  assert.match(routerGuide, /time\.sleep\(ROUTER_POLL_SECONDS\)/);
+  assert.match(routerGuide, /완료 전까지 이 화면을 유지합니다/);
+  assert.match(routerGuide, /공개 Router 조건과 실제 forwarding이 검증되었습니다/);
+});
+
 test('guided setup reserves partial status for an explicit operator gate', async () => {
   const contents = await readFile(start, 'utf8');
   assert.match(contents, /if result\.returncode == 10:\n        detail = \(result\.stderr or result\.stdout\)/);

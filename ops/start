@@ -9,6 +9,7 @@ import pathlib
 import socket
 import subprocess
 import sys
+import time
 from urllib.request import urlopen
 
 
@@ -153,6 +154,7 @@ CYAN = "\033[36m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
+ROUTER_POLL_SECONDS = 10
 
 
 def paint(text, color):
@@ -251,7 +253,7 @@ def run_router_wizard():
         public_host = input(prompt).strip()
     except EOFError:
         print()
-        return
+        return False
     if public_host == "s":
         public_host = ""
     if not public_host and default:
@@ -259,11 +261,11 @@ def run_router_wizard():
     if not public_host:
         print("  보류: 입력이 없으므로 아무 리소스도 변경하지 않았습니다.")
         print("  다음 시도에 공개 DNS 또는 IP 주소를 입력하면 P2P 연결을 자동 구성합니다.")
-        return
+        return False
     result = subprocess.run([str(REPO / "ops/enable-router"), "--external-ip", public_host], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
     if result.returncode:
         print("  보류: Router P2P 연결을 구성하지 못했습니다. 상태 화면에서 다시 확인하세요.")
-        return
+        return False
     print("  완료: LND 외부 주소와 Kubernetes P2P 서비스가 구성되었습니다.")
     if not run_testnet_unlock():
         print("  보류: 지갑 unlock 뒤에 Router 상태를 다시 확인합니다.")
@@ -279,6 +281,7 @@ def run_router_wizard():
                 print("  보류: 자동 갱신 설치에는 WSL 관리자 인증이 필요합니다.")
         else:
             print("  보류: Windows P2P 포트 전달에는 관리자 권한이 필요합니다.")
+    return True
 
 
 def run_testnet_unlock():
@@ -325,29 +328,46 @@ def operator_message(phase, detail):
 
 
 def guide_router(number, phase):
-    state, detail = phase_checkpoint(number, phase)
-    if state == "complete":
-        return state
-    if "create or unlock" in detail:
-        run_testnet_unlock()
-    elif "run ops/enable-router" in detail:
-        print("  다음 작업: 공개 P2P 연결을 자동 구성합니다.")
-        run_router_wizard()
-    elif "second active public channel" in detail:
-        print("  대기: 현재 공개 채널이 하나뿐입니다. 외부 peer와 두 번째 공개 채널이 활성화되면 다시 확인합니다.")
-    elif "reviewed policy" in detail:
+    section("PHASE 03 · ROUTER PROGRESS", CYAN)
+    attempts = 0
+    while True:
+        state, detail = inspect(number - 1)
+        if state == "complete":
+            print("  완료: 공개 Router 조건과 실제 forwarding이 검증되었습니다.")
+            return state
+        if state == "failed":
+            print(f"  확인 오류: {operator_message(phase, detail)}")
+            return state
+        if "create or unlock" in detail:
+            print("  다음 작업: 기존 testnet 지갑을 unlock합니다.")
+            if not run_testnet_unlock():
+                print("  unlock이 완료되지 않았습니다. 암호를 다시 입력해 재시도합니다.")
+            continue
+        if "run ops/enable-router" in detail:
+            print("  다음 작업: 공개 P2P 연결을 자동 구성합니다.")
+            if not run_router_wizard():
+                print("  공개 P2P 연결을 아직 구성하지 않았습니다. 필요한 주소를 입력하면 다시 시도합니다.")
+            continue
+        if "reviewed policy" in detail:
+            try:
+                answer = input("  routing 수수료 정책 적용 [Enter=적용]: ").strip().lower()
+            except EOFError:
+                return "partial"
+            if answer:
+                print("  정책을 적용하지 않았습니다. 10초 뒤 현재 조건을 다시 확인합니다.")
+                time.sleep(ROUTER_POLL_SECONDS)
+            else:
+                result = subprocess.run([str(REPO / "ops/configure-router-policy"), "--confirm", "APPLY ROUTER POLICY"], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
+                print("  완료: routing 수수료 정책을 적용했습니다." if result.returncode == 0 else "  보류: 채널 정책을 아직 적용할 수 없습니다.")
+            continue
+        attempts += 1
+        print(f"  확인 {attempts:02}: {operator_message(phase, detail)}")
+        print(f"  {ROUTER_POLL_SECONDS}초 뒤 Router 상태를 다시 확인합니다. 완료 전까지 이 화면을 유지합니다.")
         try:
-            answer = input("  routing 수수료 정책 적용 [Enter=적용, s=건너뜀]: ").strip().lower()
-        except EOFError:
-            answer = "s"
-        if answer != "s":
-            result = subprocess.run([str(REPO / "ops/configure-router-policy"), "--confirm", "APPLY ROUTER POLICY"], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
-            print("  완료: routing 수수료 정책을 적용했습니다." if result.returncode == 0 else "  보류: 채널 정책을 아직 적용할 수 없습니다.")
-    elif "separate external payer" in detail:
-        print("  대기: 외부 지갑이 이 노드를 경유하는 작은 testnet 결제를 완료하면 forwarding 기록을 확인합니다.")
-    else:
-        print("  대기: 현재 조건이 충족되면 다음 Router 검증으로 진행합니다.")
-    return phase_checkpoint(number, phase)[0]
+            time.sleep(ROUTER_POLL_SECONDS)
+        except KeyboardInterrupt:
+            print("\n  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")
+            return "partial"
 
 
 def guide_operator(number, phase, detail, interactive):
@@ -592,7 +612,7 @@ def build_through(target, dry_run=False, interactive=False):
         if state == "partial":
             pending = True
             phase_pending = True
-            print(f"[{number}] PENDING {phase['title']} — {detail}")
+            print(f"[{number}] PENDING {phase['title']} — {operator_message(phase, detail)}")
             if dry_run or applies_to_selected_workspace(phase):
                 after = guide_operator(number, phase, detail, interactive)
                 if after != "complete":
@@ -636,7 +656,7 @@ def build_through(target, dry_run=False, interactive=False):
                 if verified == "partial":
                     pending = True
                     phase_pending = True
-                    print(f"[{number}] PENDING {phase['title']} — post-build verification: {verified_detail}")
+                    print(f"[{number}] PENDING {phase['title']} — post-build verification: {operator_message(phase, verified_detail)}")
                     if applies_to_selected_workspace(phase):
                         after = guide_operator(number, phase, verified_detail, interactive)
                         if after != "complete":

@@ -68,7 +68,9 @@ def main(argv):
             raise RuntimeError(f"router P2P Service must use NodePort 30973, found {node_port}")
         info = lncli("getinfo")
         if not info.get("synced_to_chain") or not info.get("synced_to_graph"):
-            raise Gate("wait for testnet chain and graph synchronization")
+            chain = "ready" if info.get("synced_to_chain") else "syncing"
+            graph = "ready" if info.get("synced_to_graph") else "syncing"
+            raise Gate(f"testnet synchronization in progress (chain={chain}, graph={graph})")
         if not info.get("uris"):
             raise Gate("forward public TCP 9735 to NodePort 30973 and confirm LND advertises its external URI")
         channels = [
