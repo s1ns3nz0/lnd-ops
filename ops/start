@@ -146,6 +146,7 @@ RESET = "\033[0m"
 CYAN = "\033[36m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
+RED = "\033[31m"
 
 
 def paint(text, color):
@@ -156,6 +157,43 @@ def section(title, color=CYAN):
     print(paint("=" * 64, color))
     print(paint(f"  {title}", color))
     print(paint("=" * 64, color))
+
+
+def status_label(state):
+    labels = {
+        "complete": ("OK", GREEN), "partial": ("PENDING", YELLOW),
+        "manual": ("MANUAL", YELLOW), "missing": ("NOT BUILT", YELLOW),
+        "failed": ("CHECK", RED),
+    }
+    label, color = labels.get(state, (state.upper(), RED))
+    return paint(f"{label:9}", color)
+
+
+def kubectl_json(arguments, timeout=20):
+    try:
+        result = subprocess.run(["kubectl", *arguments, "-o", "json"], text=True, capture_output=True, env=runtime_environment(), timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def resource_count(namespace, resource, ready=False):
+    data = kubectl_json(["-n", namespace, "get", resource])
+    items = data.get("items", []) if data else []
+    if not ready:
+        if resource == "pvc":
+            return sum(item.get("status", {}).get("phase") == "Bound" for item in items), len(items)
+        return len(items), len(items)
+    available = sum(
+        all(status.get("ready") for status in item.get("status", {}).get("containerStatuses", []))
+        for item in items
+    )
+    return available, len(items)
 
 
 def display(command):
@@ -330,24 +368,27 @@ def print_status():
     for namespace in namespaces:
         result = subprocess.run(["kubectl", "get", "namespace", namespace, "-o", "jsonpath={.status.phase}"], text=True, capture_output=True, env=runtime_environment(), timeout=15)
         if result.returncode:
-            print(f"  {namespace}: absent")
+            print(paint(f"  ○ {namespace:<20} ABSENT", YELLOW))
             continue
-        resources = subprocess.run(["kubectl", "-n", namespace, "get", "statefulsets,deployments,daemonsets,pods,services", "--no-headers"], text=True, capture_output=True, env=runtime_environment(), timeout=20)
-        lines = [line for line in resources.stdout.splitlines() if line.strip()]
-        summary = "; ".join(lines[:4]) or "no workloads"
-        suffix = " …" if len(lines) > 4 else ""
-        print(f"  {namespace}: {result.stdout.strip()} — {summary}{suffix}")
+        workloads = sum(resource_count(namespace, resource)[1] for resource in ("statefulsets", "deployments", "daemonsets"))
+        pods_ready, pods_total = resource_count(namespace, "pods", ready=True)
+        pvcs_bound, pvcs_total = resource_count(namespace, "pvc")
+        _, services = resource_count(namespace, "services")
+        print(paint(f"  ● {namespace:<20} {result.stdout.strip():<8}", GREEN))
+        print(f"    workloads {workloads:<2}  pods {pods_ready}/{pods_total} Ready  storage {pvcs_bound}/{pvcs_total} Bound  services {services}")
     section("PHASE STATUS", CYAN)
     next_phase = None
     for number, phase in enumerate(PHASES, 1):
         state, detail = inspect(number - 1)
-        print(f"[{number}] {state:8} {phase['title']} — {detail}")
+        print(f"  {number:02}  {status_label(state)}  {phase['title']}")
         if next_phase is None and state != "complete":
             next_phase = (number, phase, detail)
     if next_phase:
         number, phase, detail = next_phase
-        print(f"NEXT: Phase {number} {phase['title']} — {detail}")
-        print(f"ACTION: {phase['manual']}")
+        section("NEXT COMPLETION", YELLOW)
+        print(f"  Phase {number:02} · {phase['title']}")
+        print(f"  상태: {detail}")
+        print(f"  필요: {phase['manual']}")
     else:
         print("NEXT: 모든 Phase가 완료되었습니다.")
 
