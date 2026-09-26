@@ -1,4 +1,4 @@
-# Phase 3: Loop runbook
+# Phase 4: Loop runbook
 
 This optional testnet-only slice runs Lightning Loop beside the existing LND
 node. Loop uses submarine swaps to move value between a Lightning channel and

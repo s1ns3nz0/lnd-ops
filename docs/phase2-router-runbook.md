@@ -1,4 +1,4 @@
-# Phase 2: testnet Router Node
+# Phase 3: testnet Router Node
 
 This phase turns the existing persistent `lnd-testnet/lnd-0` identity into a
 testnet routing candidate. It never creates a wallet, moves funds, opens or

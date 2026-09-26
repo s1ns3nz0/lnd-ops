@@ -29,7 +29,7 @@ test('lndops rejects deletion verbs before it enters the setup shell', () => {
 test('guided setup lists all cumulative phases and the requested ASCII banner', async () => {
   await chmod(start, 0o755);
   const output = execFileSync(start, ['--list'], {cwd: repo, encoding: 'utf8'});
-  for (let phase = 0; phase <= 10; phase += 1) assert.match(output, new RegExp(`\\[${phase}\\]`));
+  for (let phase = 0; phase <= 11; phase += 1) assert.match(output, new RegExp(`\\[${phase}\\]`));
   assert.match(output, /__\s+__\s+______/);
   assert.match(output, /WALLET STATUS/);
   assert.match(output, /Mac·WSL 재현성/);
@@ -38,29 +38,29 @@ test('guided setup lists all cumulative phases and the requested ASCII banner', 
   assert.match(output, /=+/);
 });
 
-test('guided setup previews only safe automatic work and stops at the first manual gate', () => {
-  const output = execFileSync(start, ['--to', '3', '--dry-run'], {cwd: repo, encoding: 'utf8'});
+test('guided setup previews safe automatic work through manual gates', () => {
+  const output = execFileSync(start, ['--to', '4', '--dry-run'], {cwd: repo, encoding: 'utf8'});
   assert.match(output, /PLAN ops\/doctor/);
   assert.match(output, /KUBECONFIG:/);
   assert.match(output, /PLAN ops\/bootstrap/);
   assert.match(output, /PLAN ops\/deploy regtest/);
-  assert.match(output, /STOP testnet Router Node 전환 — manual phase/);
+  assert.match(output, /PENDING testnet Router Node 전환 — manual phase/);
   assert.match(output, /ops\/enable-router --external-ip PUBLIC_HOST/);
   assert.match(output, /APPLY ROUTER POLICY/);
   assert.doesNotMatch(output, /PLAN ops\/deploy-monitoring/);
 });
 
-test('guided setup treats an existing failed Kubernetes phase as partial', async () => {
+test('guided setup reserves partial status for an explicit operator gate', async () => {
   const contents = await readFile(start, 'utf8');
-  assert.match(contents, /existing Kubernetes resources did not pass verification/);
-  assert.match(contents, /\["kubectl", "get", "namespace", namespace\]/);
+  assert.match(contents, /if result\.returncode == 10:\n        return "partial", "operator gate pending"/);
+  assert.doesNotMatch(contents, /existing Kubernetes resources did not pass verification/);
   assert.match(contents, /post-build verification/);
   assert.match(contents, /ops\/wallet-status/);
   assert.match(contents, /return "failed", detail\[-1\]/);
 });
 
 test('guided setup validates target numbers and refuses noninteractive unspecified input', () => {
-  const invalid = spawnSync(start, ['--to', '11'], {cwd: repo, encoding: 'utf8'});
+  const invalid = spawnSync(start, ['--to', '12'], {cwd: repo, encoding: 'utf8'});
   assert.equal(invalid.status, 2);
   assert.match(invalid.stderr, /invalid choice/);
   const unavailable = spawnSync(start, [], {cwd: repo, encoding: 'utf8', input: ''});
@@ -114,4 +114,12 @@ test('delete menu trims comma-separated selections and asks before deleting wall
   assert.match(contents, /지갑 PVC도 삭제합니까/);
   assert.match(contents, /--delete-wallet-data/);
   assert.match(contents, /wallet-data/);
+});
+
+test('Phase zero is a resource and next-action status view', async () => {
+  const contents = await readFile(start, 'utf8');
+  assert.match(contents, /CURRENT RESOURCES/);
+  assert.match(contents, /statefulsets,deployments,daemonsets,pods,services/);
+  assert.match(contents, /NEXT: Phase/);
+  assert.match(contents, /if target == 0:/);
 });

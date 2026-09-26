@@ -274,20 +274,6 @@ def execute(command, dry_run=False):
     return result
 
 
-def existing_namespace(namespaces):
-    if not namespaces:
-        return False
-    environment = runtime_environment()
-    for namespace in namespaces:
-        try:
-            result = subprocess.run(["kubectl", "get", "namespace", namespace], text=True, capture_output=True, env=environment)
-        except FileNotFoundError:
-            return False
-        if result.returncode == 0:
-            return True
-    return False
-
-
 def inspect(number):
     phase = PHASES[number]
     command = phase["probe"]
@@ -302,8 +288,6 @@ def inspect(number):
         return "partial", "operator gate pending"
     if result.returncode == 127:
         return "missing", "required host tool is unavailable"
-    if existing_namespace(phase["namespaces"]):
-        return "partial", "existing Kubernetes resources did not pass verification"
     detail = (result.stderr or result.stdout).strip().splitlines()
     return "failed", detail[-1] if detail else "verification failed without output"
 
@@ -315,9 +299,9 @@ def print_wallet_overview():
 
 def print_phase_catalog():
     section("LND OPS SETUP", CYAN)
-    print("번호를 고르면 Phase 0부터 해당 Phase까지 실제 상태를 확인합니다.")
-    print("완료된 Phase는 건너뛰고 수동 단계에서는 안내 후 멈춥니다.")
-    for number, phase in enumerate(PHASES):
+    print("[0] 현재 상태와 다음 완료 Phase를 조회합니다.")
+    print("[1-11] 선택한 번호까지 안전한 인프라를 자동 구축합니다. 수동 실습은 PENDING으로 남습니다.")
+    for number, phase in enumerate(PHASES, 1):
         print(paint(f"\n[{number}] {phase['title']}", YELLOW))
         print(f"  {phase['environment']}")
     print_commands()
@@ -325,7 +309,8 @@ def print_phase_catalog():
 
 def print_commands():
     section("COMMANDS", CYAN)
-    print("  0-9        선택한 번호까지 Phase를 순서대로 확인·구성")
+    print("  0          현재 resource·Phase 상태와 다음 수행 Phase 조회")
+    print("  1-11       선택한 번호까지 안전한 인프라 자동 구축")
     print("  wallet     기존 또는 새 wallet workspace 선택")
     print("  status     모든 Phase의 현재 상태만 확인")
     print("  delete     삭제할 project resource를 직접 선택")
@@ -340,53 +325,97 @@ def print_catalog():
 
 
 def print_status():
-    print("\n현재 환경")
-    for number, phase in enumerate(PHASES):
-        state, detail = inspect(number)
+    section("CURRENT RESOURCES", GREEN)
+    namespaces = tuple(dict.fromkeys(namespace for phase in PHASES for namespace in phase["namespaces"]))
+    for namespace in namespaces:
+        result = subprocess.run(["kubectl", "get", "namespace", namespace, "-o", "jsonpath={.status.phase}"], text=True, capture_output=True, env=runtime_environment(), timeout=15)
+        if result.returncode:
+            print(f"  {namespace}: absent")
+            continue
+        resources = subprocess.run(["kubectl", "-n", namespace, "get", "statefulsets,deployments,daemonsets,pods,services", "--no-headers"], text=True, capture_output=True, env=runtime_environment(), timeout=20)
+        lines = [line for line in resources.stdout.splitlines() if line.strip()]
+        summary = "; ".join(lines[:4]) or "no workloads"
+        suffix = " …" if len(lines) > 4 else ""
+        print(f"  {namespace}: {result.stdout.strip()} — {summary}{suffix}")
+    section("PHASE STATUS", CYAN)
+    next_phase = None
+    for number, phase in enumerate(PHASES, 1):
+        state, detail = inspect(number - 1)
         print(f"[{number}] {state:8} {phase['title']} — {detail}")
+        if next_phase is None and state != "complete":
+            next_phase = (number, phase, detail)
+    if next_phase:
+        number, phase, detail = next_phase
+        print(f"NEXT: Phase {number} {phase['title']} — {detail}")
+        print(f"ACTION: {phase['manual']}")
+    else:
+        print("NEXT: 모든 Phase가 완료되었습니다.")
 
 
 def build_through(target, dry_run=False):
-    print(f"\nPhase 0 → {target} 확인 및 구성")
+    if target == 0:
+        print_status()
+        return 0
+    print(f"\nPhase 1 → {target} 자동 구축")
     print(f"KUBECONFIG: {runtime_environment()['KUBECONFIG']}")
     if not dry_run:
         gate = selection_gate()
         if gate:
             print(f"STOP: {gate}")
             return 10
-    for number, phase in enumerate(PHASES[:target + 1]):
-        state, detail = inspect(number) if not dry_run else ("missing", "dry-run")
+    pending = False
+    for index, phase in enumerate(PHASES[:target]):
+        number = index + 1
+        phase_pending = False
+        state, detail = inspect(index) if not dry_run else ("missing", "dry-run")
         if state == "complete":
             print(f"[{number}] SKIP {phase['title']} — already complete")
             continue
         if state == "partial":
-            print(f"[{number}] STOP {phase['title']} — {detail}")
+            pending = True
+            phase_pending = True
+            print(f"[{number}] PENDING {phase['title']} — {detail}")
             print(f"ACTION: {phase['manual']}")
-            return 0 if dry_run else 10
+            continue
         if state == "failed":
             print(f"[{number}] STOP {phase['title']} — {detail}", file=sys.stderr)
             print("ACTION: fix the reported verifier error, then rerun this selection.", file=sys.stderr)
             return 1
         if not phase["build"]:
-            print(f"[{number}] STOP {phase['title']} — manual phase")
+            pending = True
+            print(f"[{number}] PENDING {phase['title']} — manual phase")
             print(f"ACTION: {phase['manual']}")
-            return 0 if dry_run else 10
+            continue
         print(f"[{number}] BUILD {phase['title']} — {detail}")
         for command in phase["build"]:
             code = execute(command, dry_run)
             if code:
                 if code == 10:
+                    pending = True
+                    phase_pending = True
                     print(f"ACTION: {phase['manual']}")
+                    break
                 else:
                     print(f"FAIL: {display(command)} exited {code}", file=sys.stderr)
-                return code
+                    return code
         if phase.get("post_verify", True) and not dry_run:
             verified, verified_detail = inspect(number)
             if verified != "complete":
-                print(f"[{number}] STOP {phase['title']} — post-build verification: {verified_detail}", file=sys.stderr)
-                print(f"ACTION: {phase['manual']}", file=sys.stderr)
-                return 10 if verified == "partial" else 1
-        print(f"[{number}] {'PLANNED' if dry_run else 'DONE'} {phase['title']}")
+                if verified == "partial":
+                    pending = True
+                    phase_pending = True
+                    print(f"[{number}] PENDING {phase['title']} — post-build verification: {verified_detail}")
+                    print(f"ACTION: {phase['manual']}")
+                else:
+                    print(f"[{number}] STOP {phase['title']} — post-build verification: {verified_detail}", file=sys.stderr)
+                    return 1
+        if phase_pending:
+            print(f"[{number}] PENDING {phase['title']} — automatic build completed; manual gate remains")
+        else:
+            print(f"[{number}] {'PLANNED' if dry_run else 'DONE'} {phase['title']}")
+    if pending:
+        print(f"PENDING: Phase {target}까지 인프라는 자동 구축했고, 위 수동 실습 gate가 남아 있습니다.")
+        return 0 if dry_run else 10
     print(f"DONE: Phase {target}까지의 자동 구성이 끝났습니다.")
     return 0
 
@@ -425,19 +454,19 @@ def repl():
                 confirm = input(f"실행하려면 정확히 입력: {phrase}\n> ").strip()
                 if confirm == phrase:
                     subprocess.run([*options, "--confirm", confirm], cwd=REPO)
-        elif answer == "status":
+        elif answer in ("0", "status"):
             print_status()
-        elif answer.isdigit() and 0 <= int(answer) < len(PHASES):
+        elif answer.isdigit() and 1 <= int(answer) <= len(PHASES):
             build_through(int(answer))
         elif answer:
-            print("0부터 9, status, help, quit 중 하나를 입력하세요.", file=sys.stderr)
+            print("0부터 11, status, help, quit 중 하나를 입력하세요.", file=sys.stderr)
 
 
 def parse_args(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="show the phase catalog and exit")
     parser.add_argument("--status", action="store_true", help="inspect every phase and exit")
-    parser.add_argument("--to", type=int, choices=range(len(PHASES)), metavar="N", help="build cumulatively through phase N")
+    parser.add_argument("--to", type=int, choices=range(len(PHASES) + 1), metavar="N", help="show status at 0 or build cumulatively through phase N")
     parser.add_argument("--dry-run", action="store_true", help="show the cumulative build plan without executing it")
     parser.add_argument("--select", choices=WALLET_CHOICES, help="persist a wallet workspace selection")
     return parser.parse_args(arguments)
@@ -457,7 +486,7 @@ def main(arguments):
     if args.to is not None:
         return build_through(args.to, args.dry_run)
     if not sys.stdin.isatty():
-        print("interactive input unavailable; use --list, --status, or --to 0..9", file=sys.stderr)
+        print("interactive input unavailable; use --list, --status, or --to 0..11", file=sys.stderr)
         return 2
     return repl()
 
