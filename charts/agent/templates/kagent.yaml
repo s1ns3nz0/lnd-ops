@@ -6,7 +6,7 @@ metadata:
 spec:
   description: Constrained LND operations evidence and response gateway
   protocol: STREAMABLE_HTTP
-  url: http://runbook-gateway.lnd-agent.svc.cluster.local:8080/mcp
+  url: http://runbook-gateway.lndops-agent.svc.cluster.local:8080/mcp
   timeout: 30s
 ---
 apiVersion: kagent.dev/v1alpha2

@@ -10,23 +10,23 @@ plugin_dir="$repo_dir/ops/helm-plugins/lnd-ops-security-images"
 helm plugin uninstall lnd-ops-security-images >/dev/null 2>&1 || true
 helm plugin install "$plugin_dir" >/dev/null
 
-kubectl create namespace kyverno --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl label namespace kyverno pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
+kubectl create namespace lndops-kyverno --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl label namespace lndops-kyverno pod-security.kubernetes.io/enforce=baseline --overwrite >/dev/null
 helm upgrade --install kyverno "$repo_dir/charts/vendor/kyverno-3.9.1.tgz" \
-  --namespace kyverno --values "$repo_dir/charts/security/kyverno-values.yaml" \
+  --namespace lndops-kyverno --values "$repo_dir/charts/security/kyverno-values.yaml" \
   --post-renderer lnd-ops-security-images \
   --wait --timeout 15m
 kubectl wait --for=condition=Established crd/clusterpolicies.kyverno.io --timeout=2m
 kubectl apply -f "$repo_dir/charts/security/kyverno-policy.yaml"
 kubectl wait --for=condition=Ready clusterpolicy/lnd-ops-workload-baseline --timeout=2m
 
-kubectl create namespace falco --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl label namespace falco pod-security.kubernetes.io/enforce=privileged --overwrite >/dev/null
+kubectl create namespace lndops-falco --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl label namespace lndops-falco pod-security.kubernetes.io/enforce=privileged --overwrite >/dev/null
 helm upgrade --install falco "$repo_dir/charts/vendor/falco-9.2.0.tgz" \
-  --namespace falco --values "$repo_dir/charts/security/falco-values.yaml" \
+  --namespace lndops-falco --values "$repo_dir/charts/security/falco-values.yaml" \
   --post-renderer lnd-ops-security-images \
   --wait --timeout 15m
 
-kubectl -n kyverno get pods
-kubectl -n falco get pods
+kubectl -n lndops-kyverno get pods
+kubectl -n lndops-falco get pods
 echo 'OK: Kyverno enforcement and Falco runtime security deployed'

@@ -2,7 +2,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: lnd-ops-infrastructure
-  namespace: lnd-monitoring
+  namespace: lndops-monitoring
   labels:
     release: lnd-ops-monitoring
 spec:

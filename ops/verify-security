@@ -53,13 +53,13 @@ def server_dry_run(document, should_pass):
 
 def prometheus(query):
     encoded = urllib.parse.urlencode({"query": query})
-    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
+    path = "/api/v1/namespaces/lndops-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
     data = json.loads(kubectl("get", "--raw", path).stdout)
     return data.get("data", {}).get("result", [])
 
 
 def alertmanager():
-    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
+    path = "/api/v1/namespaces/lndops-monitoring/services/http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
     return json.loads(kubectl("get", "--raw", path).stdout)
 
 
@@ -70,7 +70,7 @@ def main(arguments):
     image = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
     falco_probe_created = False
     try:
-        for namespace in ("kyverno", "falco"):
+        for namespace in ("lndops-kyverno", "lndops-falco"):
             workloads = json.loads(kubectl("-n", namespace, "get", "deployments,daemonsets", "-o", "json").stdout)
             for workload in workloads.get("items", []):
                 for container in workload["spec"]["template"]["spec"].get("initContainers", []) + workload["spec"]["template"]["spec"].get("containers", []):
@@ -113,10 +113,10 @@ def main(arguments):
         finally:
             kubectl("-n", "lnd-testnet", "delete", "pod", "lnd-ops-network-probe", "--ignore-not-found", "--wait=true", check=False)
 
-        daemonset = json.loads(kubectl("-n", "falco", "get", "daemonset", "falco", "-o", "json").stdout)
+        daemonset = json.loads(kubectl("-n", "lndops-falco", "get", "daemonset", "falco", "-o", "json").stdout)
         if daemonset["status"].get("numberReady", 0) != daemonset["status"].get("desiredNumberScheduled", -1):
             raise Failure("Falco DaemonSet is not Ready")
-        logs = kubectl("-n", "falco", "logs", "daemonset/falco", "-c", "falco", "--tail=200").stdout
+        logs = kubectl("-n", "lndops-falco", "logs", "daemonset/falco", "-c", "falco", "--tail=200").stdout
         if not any(marker in logs.lower() for marker in ("modern_ebpf", "modern ebpf", "modern bpf")):
             raise Failure("Falco logs do not prove the modern eBPF driver is active")
 

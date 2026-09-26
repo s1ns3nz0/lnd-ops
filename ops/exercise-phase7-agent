@@ -91,7 +91,7 @@ def pod_mcp(method, params=None, request_id=1):
         "print(urllib.request.urlopen(r,timeout=30).read().decode())"
     )
     result = run([
-        "kubectl", "-n", "lnd-agent", "exec", "deployment/runbook-gateway", "-c", "gateway", "--",
+        "kubectl", "-n", "lndops-agent", "exec", "deployment/runbook-gateway", "-c", "gateway", "--",
         "python3", "-c", client, json.dumps(payload),
     ])
     response = json.loads(result.stdout)
@@ -123,7 +123,7 @@ def main():
         if run(["git", "-C", str(REPO), "status", "--porcelain"]).stdout:
             raise RuntimeError("repository worktree must be clean before Phase 7 exercise")
         controller = subprocess.Popen(
-            ["kubectl", "-n", "kagent", "port-forward", "service/kagent-controller", "18083:8083"],
+            ["kubectl", "-n", "lndops-kagent", "port-forward", "service/kagent-controller", "18083:8083"],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
         wait_port(18083, controller)
@@ -175,7 +175,7 @@ def main():
                 with os.fdopen(descriptor, "w") as stream:
                     invoked = run([
                         str(REPO / "ops/kagent-cli"), "--kagent-url", "http://127.0.0.1:18083",
-                        "--namespace", "kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
+                        "--namespace", "lndops-kagent", "invoke", "--agent", "lnd-ops-runbook-agent",
                         "--task", task, "--timeout", "8m",
                     ], check=False, timeout=540, stdout=stream)
                 if invoked.returncode:
@@ -232,7 +232,7 @@ def main():
         # A previous successful exercise may have left the durable five-minute
         # cooldown active. Wait for that safety state instead of mutating it.
         def cooldown_expired():
-            state = kubectl_json("-n", "lnd-agent", "get", "configmap", "runbook-action-state")
+            state = kubectl_json("-n", "lndops-agent", "get", "configmap", "runbook-action-state")
             return time.time() - int(state.get("data", {}).get("lastRestartEpoch", "0")) >= 300
         wait_for("existing response cooldown to expire", cooldown_expired, timeout=360)
         allowed = pod_tool("execute_allowlisted_response", {"action": "restart_diagnostic_probe"})
@@ -244,8 +244,8 @@ def main():
         forbidden = pod_tool("execute_allowlisted_response", {"action": "unlock_wallet"})
         if forbidden.get("allowed") or not forbidden.get("audit_recorded"):
             raise RuntimeError("forbidden response was not denied and audited")
-        run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=2m"])
-        events = json.loads(run(["kubectl", "-n", "lnd-agent", "get", "events", "-o", "json"]).stdout)
+        run(["kubectl", "-n", "lndops-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=2m"])
+        events = json.loads(run(["kubectl", "-n", "lndops-agent", "get", "events", "-o", "json"]).stdout)
         reasons = {item.get("reason") for item in events.get("items", [])}
         if not {"RunbookActionAllowed", "RunbookActionDenied"}.issubset(reasons):
             raise RuntimeError("allowed and denied audit events were not both observable")

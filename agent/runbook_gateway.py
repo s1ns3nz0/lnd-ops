@@ -16,7 +16,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-NAMESPACES = {"lnd-regtest", "lnd-testnet", "lnd-monitoring", "falco", "lnd-agent"}
+NAMESPACES = {"lnd-regtest", "lnd-testnet", "lndops-monitoring", "lndops-falco", "lndops-agent"}
 WORKLOAD_KINDS = {
     "pods": "api/v1/namespaces/{namespace}/pods",
     "events": "api/v1/namespaces/{namespace}/events",
@@ -45,7 +45,7 @@ SCENARIOS = {
 }
 RUNBOOKS = {name for name in os.environ.get("RUNBOOK_ALLOWLIST", "").split(",") if name}
 PROMETHEUS = os.environ.get(
-    "PROMETHEUS_URL", "http://lnd-ops-monitoring-kube-pr-prometheus.lnd-monitoring.svc:9090"
+    "PROMETHEUS_URL", "http://lnd-ops-monitoring-kube-pr-prometheus.lndops-monitoring.svc:9090"
 )
 KUBE_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
 KUBE_PORT = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")
@@ -172,7 +172,7 @@ def tool_runbook(arguments):
 def tool_verify(_arguments):
     return {
         "prometheus_ready": bool(prometheus_query("up")),
-        "probe": tool_status({"namespace": "lnd-agent", "kind": "pods"}),
+        "probe": tool_status({"namespace": "lndops-agent", "kind": "pods"}),
         "automation_eligible": True,
     }
 
@@ -182,18 +182,18 @@ def tool_response(arguments):
     if action != "restart_diagnostic_probe":
         audit("RunbookActionDenied", action or "unspecified", "denied")
         return {"allowed": False, "reason": "action is not in the mutation allowlist", "audit_recorded": True}
-    state = kube_request("api/v1/namespaces/lnd-agent/configmaps/runbook-action-state")
+    state = kube_request("api/v1/namespaces/lndops-agent/configmaps/runbook-action-state")
     last = int(state.get("data", {}).get("lastRestartEpoch", "0"))
     now = int(time.time())
     if now - last < COOLDOWN_SECONDS:
         audit("RunbookActionDenied", action, "cooldown")
         return {"allowed": False, "reason": "cooldown active", "retry_after_seconds": COOLDOWN_SECONDS - (now - last), "audit_recorded": True}
     kube_request(
-        "apis/apps/v1/namespaces/lnd-agent/deployments/runbook-diagnostic-probe", "PATCH",
+        "apis/apps/v1/namespaces/lndops-agent/deployments/runbook-diagnostic-probe", "PATCH",
         {"spec": {"template": {"metadata": {"annotations": {"lnd-ops/restarted-at": str(now)}}}}},
     )
     kube_request(
-        "api/v1/namespaces/lnd-agent/configmaps/runbook-action-state", "PATCH",
+        "api/v1/namespaces/lndops-agent/configmaps/runbook-action-state", "PATCH",
         {"data": {"lastRestartEpoch": str(now)}},
     )
     audit("RunbookActionAllowed", action, "allowed")

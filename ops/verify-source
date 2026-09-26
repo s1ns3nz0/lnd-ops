@@ -64,10 +64,10 @@ helm template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-r
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml --set monitoring.enabled=true --set loop.enabled=true >/dev/null
 helm template lnd-ops-monitoring charts/vendor/kube-prometheus-stack-91.4.1.tgz \
-  -n lnd-monitoring -f charts/monitoring-values.yaml >/dev/null
-helm template kyverno charts/vendor/kyverno-3.9.1.tgz -n kyverno -f charts/security/kyverno-values.yaml | \
+  -n lndops-monitoring -f charts/monitoring-values.yaml >/dev/null
+helm template kyverno charts/vendor/kyverno-3.9.1.tgz -n lndops-kyverno -f charts/security/kyverno-values.yaml | \
   ops/helm-plugins/lnd-ops-security-images/render.py >/dev/null
-helm template falco charts/vendor/falco-9.2.0.tgz -n falco -f charts/security/falco-values.yaml | \
+helm template falco charts/vendor/falco-9.2.0.tgz -n lndops-falco -f charts/security/falco-values.yaml | \
   ops/helm-plugins/lnd-ops-security-images/render.py >/dev/null
 
 printf 'OK: syntax/JSON (%d Bash, %d Python, %d dashboards), discovered unit tests, and configured Helm lint/renders passed\n' \

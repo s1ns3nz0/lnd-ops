@@ -4,7 +4,7 @@ umask 077
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
-namespace=lnd-monitoring
+namespace=lndops-monitoring
 chart=$repo_dir/charts/vendor/kube-prometheus-stack-91.4.1.tgz
 expected=1bd5e7a88e758ed3ec22db0fe6e72b1352f3f0e7e5a93c79979f7edf361becdb
 if command -v shasum >/dev/null 2>&1; then

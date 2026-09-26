@@ -145,7 +145,7 @@ spec:
         - ipBlock: {cidr: {{ .Values.kubeApi.serverCIDR | quote }}}
       ports: [{protocol: TCP, port: {{ .Values.kubeApi.port }}}]
     - to:
-        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lnd-monitoring}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lndops-monitoring}}
       ports: [{protocol: TCP, port: 9090}]
 ---
 apiVersion: networking.k8s.io/v1
@@ -179,7 +179,7 @@ spec:
         - ipBlock: {cidr: {{ .Values.kubeApi.serverCIDR | quote }}}
       ports: [{protocol: TCP, port: {{ .Values.kubeApi.port }}}]
     - to:
-        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lnd-agent}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lndops-agent}}
           podSelector: {matchLabels: {app.kubernetes.io/name: runbook-gateway}}
       ports: [{protocol: TCP, port: 8080}]
     - to:

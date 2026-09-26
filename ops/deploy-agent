@@ -96,23 +96,23 @@ def main(argv):
         for required in (f"kagent-{KAGENT_VERSION}.tgz", f"kagent-crds-{KAGENT_VERSION}.tgz"):
             if f"{required}: OK" not in checks:
                 raise RuntimeError(f"vendor checksum did not verify {required}")
-        for namespace, level in (("kagent", "baseline"), ("lnd-agent", "restricted")):
+        for namespace, level in (("lndops-kagent", "baseline"), ("lndops-agent", "restricted")):
             manifest = run(["kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "yaml"])
             run(["kubectl", "apply", "-f", "-"], manifest)
             run(["kubectl", "label", "namespace", namespace, f"pod-security.kubernetes.io/enforce={level}", "--overwrite"])
         run(["helm", "upgrade", "--install", "kagent-crds", str(vendor / f"kagent-crds-{KAGENT_VERSION}.tgz"),
-             "--namespace", "kagent", "--wait", "--timeout", "10m"])
+             "--namespace", "lndops-kagent", "--wait", "--timeout", "10m"])
         run(["kubectl", "wait", "--for=condition=Established", "crd/agents.kagent.dev", "crd/modelconfigs.kagent.dev",
              "crd/remotemcpservers.kagent.dev", "--timeout=2m"])
         run(["helm", "upgrade", "--install", "kagent", str(vendor / f"kagent-{KAGENT_VERSION}.tgz"),
-             "--namespace", "kagent", "--values", str(REPO / "charts/kagent-values.yaml"),
+             "--namespace", "lndops-kagent", "--values", str(REPO / "charts/kagent-values.yaml"),
              "--set-string", f'providers.ollama.model={config["model"]}',
              "--set-string", f'providers.ollama.config.host={config["endpoint"]}',
              "--wait", "--timeout", "15m"])
-        source = run(["kubectl", "-n", "lnd-agent", "create", "configmap", "runbook-gateway-source",
+        source = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-gateway-source",
                       "--from-file", str(REPO / "agent/runbook_gateway.py"), "--dry-run=client", "-o", "yaml"])
         run(["kubectl", "apply", "-f", "-"], source)
-        runbooks = run(["kubectl", "-n", "lnd-agent", "create", "configmap", "runbook-agent-runbooks",
+        runbooks = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-agent-runbooks",
                         "--from-file", str(REPO / "docs/runbooks/channel-inactive.md"),
                         "--from-file", str(REPO / "docs/runbooks/pod-not-ready.md"),
                         "--from-file", str(REPO / "docs/runbooks/falco-runtime-event.md"),
@@ -137,19 +137,19 @@ def main(argv):
         if len(api_addresses) != 1 or len(api_ports) != 1:
             raise RuntimeError("Phase 7 requires exactly one IPv4 Kubernetes API endpoint")
         run(["helm", "upgrade", "--install", "lnd-ops-agent", str(REPO / "charts/agent"),
-             "--namespace", "lnd-agent", "--set-string", f'ollama.serverCIDR={config["server_cidr"]}',
+             "--namespace", "lndops-agent", "--set-string", f'ollama.serverCIDR={config["server_cidr"]}',
              "--set", f"ollama.port={port}",
              "--set-string", f"kubeApi.serverCIDR={api_addresses[0]}/32",
              "--set", f"kubeApi.port={api_ports[0]}", "--wait", "--timeout", "10m"])
         if subprocess.run(
-            ["kubectl", "-n", "lnd-agent", "get", "configmap", "runbook-action-state"],
+            ["kubectl", "-n", "lndops-agent", "get", "configmap", "runbook-action-state"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ).returncode:
-            run(["kubectl", "-n", "lnd-agent", "create", "configmap", "runbook-action-state",
+            run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-action-state",
                  "--from-literal=lastRestartEpoch=0"])
-        run(["kubectl", "-n", "lnd-agent", "rollout", "restart", "deployment/runbook-gateway"])
-        run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
-        run(["kubectl", "-n", "lnd-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
+        run(["kubectl", "-n", "lndops-agent", "rollout", "restart", "deployment/runbook-gateway"])
+        run(["kubectl", "-n", "lndops-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
+        run(["kubectl", "-n", "lndops-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
         print(f'OK Phase 7 agent deployed: kagent={KAGENT_VERSION} provider=Ollama model={config["model"]}')
         print("Ollama endpoint configuration is owner-only under the project state directory")
         return 0

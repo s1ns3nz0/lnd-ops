@@ -55,6 +55,6 @@ test('Phase 7 uses pinned kagent artifacts and external Ollama input', async () 
 });
 
 test('Phase 7 chart renders', () => {
-  execFileSync('helm', ['lint', 'charts/agent', '--namespace', 'lnd-agent'], {cwd: repo, stdio: 'pipe'});
-  execFileSync('helm', ['template', 'lnd-ops-agent', 'charts/agent', '--namespace', 'lnd-agent'], {cwd: repo, stdio: 'pipe'});
+  execFileSync('helm', ['lint', 'charts/agent', '--namespace', 'lndops-agent'], {cwd: repo, stdio: 'pipe'});
+  execFileSync('helm', ['template', 'lnd-ops-agent', 'charts/agent', '--namespace', 'lndops-agent'], {cwd: repo, stdio: 'pipe'});
 });

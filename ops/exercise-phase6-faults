@@ -48,7 +48,7 @@ def lncli(namespace, pod, *args, check=True):
 
 def prometheus(query):
     encoded = urllib.parse.urlencode({"query": query})
-    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
+    path = "/api/v1/namespaces/lndops-monitoring/services/http:lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + encoded
     payload = json.loads(kubectl("get", "--raw", path).stdout)
     if payload.get("status") != "success":
         raise Failure("Prometheus query failed")
@@ -56,7 +56,7 @@ def prometheus(query):
 
 
 def alertmanager_has(name, expected=None):
-    path = "/api/v1/namespaces/lnd-monitoring/services/http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
+    path = "/api/v1/namespaces/lndops-monitoring/services/http:lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy/api/v2/alerts"
     alerts = json.loads(kubectl("get", "--raw", path).stdout)
     expected = expected or {}
     return any(
@@ -207,7 +207,7 @@ def security_fault():
     require_runbook(alert, runbook)
     before = prometheus('sum(falcosecurity_falcosidekick_falco_events_total{rule="LND Ops Runtime Test Event"})')
     baseline = float(before[0]["value"][1]) if before else 0
-    daemonset_before = kubectl_json("-n", "falco", "get", "daemonset", "falco")
+    daemonset_before = kubectl_json("-n", "lndops-falco", "get", "daemonset", "falco")
     desired_before = daemonset_before["status"].get("desiredNumberScheduled", -1)
     ready_before = daemonset_before["status"].get("numberReady", 0)
     if ready_before != desired_before or desired_before < 1:
@@ -222,7 +222,7 @@ def security_fault():
         180,
     )
     fired = wait_alert(alert, timeout=180)
-    daemonset = kubectl_json("-n", "falco", "get", "daemonset", "falco")
+    daemonset = kubectl_json("-n", "lndops-falco", "get", "daemonset", "falco")
     if daemonset["status"].get("numberReady", 0) != daemonset["status"].get("desiredNumberScheduled", -1):
         raise Failure("Falco is not healthy after the event")
     cleared = wait_alert_clear(alert, timeout=540)

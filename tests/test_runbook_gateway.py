@@ -52,7 +52,7 @@ class RunbookGatewayTests(unittest.TestCase):
         result = gateway.tool_response({"action": "restart_diagnostic_probe"})
         self.assertTrue(result["allowed"])
         paths = [call.args[0] for call in kube_request.call_args_list]
-        self.assertIn("apis/apps/v1/namespaces/lnd-agent/deployments/runbook-diagnostic-probe", paths)
+        self.assertIn("apis/apps/v1/namespaces/lndops-agent/deployments/runbook-diagnostic-probe", paths)
         self.assertNotIn("statefulsets", " ".join(paths))
         audit.assert_called_once_with("RunbookActionAllowed", "restart_diagnostic_probe", "allowed")
 

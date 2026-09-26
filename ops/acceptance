@@ -143,12 +143,12 @@ def live_state(now):
         raise ManualGate("lnd-0 needs a recent successful payment settled by lnd-1")
     if not activity["lnd-1"]["outgoing"].intersection(activity["lnd-0"]["incoming"]):
         raise ManualGate("lnd-1 needs a recent successful payment settled by lnd-0")
-    prom = kubectl_json("-n", "lnd-monitoring", "get", "pvc", PROM_PVC, "-o", "json")
+    prom = kubectl_json("-n", "lndops-monitoring", "get", "pvc", PROM_PVC, "-o", "json")
     cluster = kubectl_json("get", "namespace", "kube-system", "-o", "json")
     cluster_uid = cluster["metadata"]["uid"]
     try:
         lnd_history = json.loads(command(["helm", "-n", NAMESPACE, "history", "lnd-ops", "-o", "json"]))
-        monitoring_history = json.loads(command(["helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"]))
+        monitoring_history = json.loads(command(["helm", "-n", "lndops-monitoring", "history", "lnd-ops-monitoring", "-o", "json"]))
         helm_revisions = {
             "lnd-ops": int(lnd_history[-1]["revision"]),
             "lnd-ops-monitoring": int(monitoring_history[-1]["revision"]),
@@ -212,7 +212,7 @@ def verify_prometheus_history(after):
     except (KeyError, TypeError, ValueError) as exc:
         raise InvariantFailure("redeploy Prometheus evidence is malformed") from exc
     query = urllib.parse.urlencode({"query": 'up{job="node-exporter"}', "time": str(sample_time)})
-    path = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + query
+    path = "/api/v1/namespaces/lndops-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + query
     response = kubectl_json("get", "--raw", path)
     if response.get("status") != "success":
         raise InvariantFailure("Prometheus historical query failed")

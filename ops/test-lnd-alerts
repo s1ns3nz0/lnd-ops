@@ -15,8 +15,8 @@ os.environ.setdefault(
     "KUBECONFIG",
     str(pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops/kubeconfig"),
 )
-prometheus_api = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy"
-alertmanager_api = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy"
+prometheus_api = "/api/v1/namespaces/lndops-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy"
+alertmanager_api = "/api/v1/namespaces/lndops-monitoring/services/lnd-ops-monitoring-kube-pr-alertmanager:9093/proxy"
 
 
 def kubectl_json(path):

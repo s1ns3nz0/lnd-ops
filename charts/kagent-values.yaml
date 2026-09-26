@@ -1,5 +1,5 @@
 rbac:
-  namespaces: [kagent]
+  namespaces: [lndops-kagent]
 controller:
   auth:
     mode: unsecure

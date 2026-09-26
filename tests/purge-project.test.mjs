@@ -11,7 +11,7 @@ test('project purge trims selected items and preserves wallet PVCs by default', 
   await chmod(purge, 0o755);
   const output = execFileSync(purge, ['--select', 'testnet, monitoring', '--dry-run'], {cwd: repo, encoding: 'utf8'});
   assert.match(output, /lnd-testnet/);
-  assert.match(output, /lnd-monitoring/);
+  assert.match(output, /lndops-monitoring/);
   assert.match(output, /Wallet PVCs: PRESERVE/);
   assert.match(output, /K3s.*excluded/);
   assert.doesNotMatch(output, /lnd-regtest/);

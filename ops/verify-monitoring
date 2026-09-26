@@ -27,7 +27,7 @@ def kubectl(*args):
 
 
 def service_json(service, port, path):
-    prefix = f"/api/v1/namespaces/lnd-monitoring/services/http:{service}:{port}/proxy"
+    prefix = f"/api/v1/namespaces/lndops-monitoring/services/http:{service}:{port}/proxy"
     return json.loads(kubectl("get", "--raw", prefix + path))
 
 
@@ -43,10 +43,10 @@ def count(query):
     return float(result[0]["value"][1]) if result else 0.0
 
 
-prometheus = json.loads(kubectl("-n", "lnd-monitoring", "get", "prometheus", "lnd-ops-monitoring-kube-pr-prometheus", "-o", "json"))
+prometheus = json.loads(kubectl("-n", "lndops-monitoring", "get", "prometheus", "lnd-ops-monitoring-kube-pr-prometheus", "-o", "json"))
 if prometheus["spec"].get("retention") != "14d":
     sys.exit("Prometheus retention is not 14d")
-alertmanager = json.loads(kubectl("-n", "lnd-monitoring", "get", "alertmanager", "lnd-ops-monitoring-kube-pr-alertmanager", "-o", "json"))
+alertmanager = json.loads(kubectl("-n", "lndops-monitoring", "get", "alertmanager", "lnd-ops-monitoring-kube-pr-alertmanager", "-o", "json"))
 if alertmanager.get("status", {}).get("availableReplicas", 0) < 1:
     sys.exit("Alertmanager unavailable")
 grafana = service_json("lnd-ops-monitoring-grafana", 80, "/api/health")

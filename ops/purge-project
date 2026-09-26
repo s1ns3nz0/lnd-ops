@@ -14,11 +14,11 @@ PROFILES = {
     "regtest": ("lnd-regtest", "lnd-regtest-recovery"),
 }
 SHARED = {
-    "monitoring": ("lnd-monitoring",),
-    "kyverno": ("kyverno",),
-    "falco": ("falco",),
-    "kagent": ("kagent",),
-    "agent": ("lnd-agent",),
+    "monitoring": ("lndops-monitoring",),
+    "kyverno": ("lndops-kyverno",),
+    "falco": ("lndops-falco",),
+    "kagent": ("lndops-kagent",),
+    "agent": ("lndops-agent",),
 }
 ITEMS = PROFILES | SHARED
 

@@ -47,7 +47,7 @@ def prometheus_query(query, at=None):
     params = {"query": query}
     if at is not None:
         params["time"] = str(at)
-    path = "/api/v1/namespaces/lnd-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + urllib.parse.urlencode(params)
+    path = "/api/v1/namespaces/lndops-monitoring/services/lnd-ops-monitoring-kube-pr-prometheus:9090/proxy/api/v1/query?" + urllib.parse.urlencode(params)
     result = json.loads(kubectl("get", "--raw", path))
     if result.get("status") != "success":
         raise RuntimeError("Prometheus query failed")
@@ -57,7 +57,7 @@ def prometheus_query(query, at=None):
 def snapshot(scb_host, history_time=None, history_series=None):
     cluster_namespace = json.loads(kubectl("get", "namespace", "kube-system", "-o", "json"))
     pvc = json.loads(kubectl("-n", namespace, "get", "pvc", "data-lnd-0-0", "-o", "json"))
-    prom_pvc = json.loads(kubectl("-n", "lnd-monitoring", "get", "pvc", "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0", "-o", "json"))
+    prom_pvc = json.loads(kubectl("-n", "lndops-monitoring", "get", "pvc", "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0", "-o", "json"))
     info = lncli("getinfo")
     channels = lncli("listchannels").get("channels", [])
     if not info.get("identity_pubkey") or not channels:
@@ -90,7 +90,7 @@ def snapshot(scb_host, history_time=None, history_series=None):
         if source_hash != host_hash:
             raise ManualGate("SCB source and host copy differ; run ops/backup-scb")
     testnet_revision = int(json.loads(run("helm", "-n", namespace, "history", "lnd-ops", "-o", "json"))[-1]["revision"])
-    monitoring_revision = int(json.loads(run("helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"])
+    monitoring_revision = int(json.loads(run("helm", "-n", "lndops-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"])
     samples = prometheus_query('up{job="node-exporter"}', history_time)
     if history_series is not None:
         samples = [sample for sample in samples if sample["metric"] == history_series]
@@ -156,7 +156,7 @@ def regtest_lncli(pod, command):
 def regtest_snapshot(scb_hosts, history_time=None, history_series=None):
     cluster_namespace = json.loads(kubectl("get", "namespace", "kube-system", "-o", "json"))
     prom_pvc = json.loads(kubectl(
-        "-n", "lnd-monitoring", "get", "pvc",
+        "-n", "lndops-monitoring", "get", "pvc",
         "prometheus-lnd-ops-monitoring-kube-pr-prometheus-db-prometheus-lnd-ops-monitoring-kube-pr-prometheus-0",
         "-o", "json",
     ))
@@ -221,7 +221,7 @@ def regtest_snapshot(scb_hosts, history_time=None, history_series=None):
         "cluster_uid": cluster_namespace["metadata"]["uid"],
         "helm_revisions": {
             "lnd-ops": int(json.loads(run("helm", "-n", "lnd-regtest", "history", "lnd-ops", "-o", "json"))[-1]["revision"]),
-            "lnd-ops-monitoring": int(json.loads(run("helm", "-n", "lnd-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"]),
+            "lnd-ops-monitoring": int(json.loads(run("helm", "-n", "lndops-monitoring", "history", "lnd-ops-monitoring", "-o", "json"))[-1]["revision"]),
         },
         "prometheus_sample": samples[0]["value"],
         "prometheus_series": samples[0]["metric"],
@@ -274,7 +274,7 @@ def write_evidence(path, before, after, started_at, finished_at=None):
         "namespace": f"lnd-{profile}",
         "lnd_statefulsets": ["lnd-0", "lnd-1"] if profile == "regtest" else ["lnd-0"],
         "lnd_pvcs": ["data-lnd-0-0", "data-lnd-1-0"] if profile == "regtest" else ["data-lnd-0-0"],
-        "monitoring_namespace": "lnd-monitoring",
+        "monitoring_namespace": "lndops-monitoring",
         "prometheus_release": "lnd-ops-monitoring",
     }
     preserved = (

@@ -65,9 +65,9 @@ kubectl -n lnd-regtest rollout status statefulset/bitcoin --timeout=3m >/dev/nul
 kubectl -n lnd-regtest rollout status statefulset/lnd-0 --timeout=3m >/dev/null
 kubectl -n lnd-regtest rollout status statefulset/lnd-1 --timeout=3m >/dev/null
 kubectl -n lnd-testnet rollout status statefulset/lnd-0 --timeout=3m >/dev/null
-kubectl -n lnd-monitoring get prometheus,alertmanager >/dev/null
+kubectl -n lndops-monitoring get prometheus,alertmanager >/dev/null
 kubectl get clusterpolicy lnd-ops-workload-baseline >/dev/null
-kubectl -n falco rollout status daemonset/falco --timeout=5m >/dev/null
+kubectl -n lndops-falco rollout status daemonset/falco --timeout=5m >/dev/null
 
 export PHASE8_RUN_ID=$run_id PHASE8_VM_NAME=$vm_name PHASE8_REPO=$repo_dir
 output=$evidence_dir/phase8-clean-start-mac-$run_id.json
