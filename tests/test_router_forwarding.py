@@ -38,3 +38,22 @@ class ForwardingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RecentHistoryTests(unittest.TestCase):
+    def test_history_keeps_private_or_closed_channel_events_without_counting_as_router_proof(self):
+        event = ForwardingTests.event | {'chan_id_in': '9'}
+        result = observe(Mock(return_value={'forwarding_events': [event]}), ForwardingTests.channels, 100000)
+        self.assertEqual(result['forwarding_history_count'], 1)
+        self.assertEqual(result['forwarding_observed_count'], 0)
+        self.assertIsNone(result['forwarding_recent'][0]['incoming_peer'])
+        self.assertEqual(result['forwarding_recent'][0]['incoming_channel'], '9')
+
+    def test_recent_is_newest_first_and_total_is_not_limited_to_display_rows(self):
+        events = [ForwardingTests.event | {'timestamp_ns': str((99900 + i) * 1000000000)} for i in range(7)]
+        result = observe(Mock(return_value={'forwarding_events': events}), ForwardingTests.channels, 100000)
+        self.assertEqual(result['forwarding_history_count'], 7)
+        self.assertEqual(result['forwarding_history_fee_msat'], 700)
+        self.assertEqual(len(result['forwarding_recent']), 5)
+        self.assertEqual(result['forwarding_recent'][0]['timestamp'], 99906)
+        self.assertEqual(result['forwarding_recent'][0]['incoming_peer'], 'a')

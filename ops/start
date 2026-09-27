@@ -537,6 +537,27 @@ def router_progress_summary(snapshot, fresh, external):
     return rows
 
 
+def router_forwarding_rows(snapshot, fresh, limit=2):
+    label = '최근 24시간 중계' if fresh else '이전 조회 중계 · 재조회 필요'
+    count = snapshot.get('forwarding_history_count')
+    if count is None:
+        return ['  == 중계 기록 ==', '  아직 조회하지 못했습니다 · 0건으로 판단하지 않습니다.']
+    fee = snapshot.get('forwarding_history_fee_msat', 0)
+    partial = ' · 일부 기록(조회 상한 도달)' if snapshot.get('forwarding_window_capped') else ''
+    rows = [f'  == {label} · {ROUTER_POLL_SECONDS}초마다 조회 ==',
+            f'  {count:,}건 / 수수료 {fee / 1000:,.3f} sat' + partial + f' · 최근 {min(count, limit)}건 표시']
+    for event in snapshot.get('forwarding_recent', [])[:limit]:
+        def peer(direction):
+            value = event.get(direction + '_peer')
+            return value[:10] + '…' if value else '채널 ' + event[direction + '_channel']
+        stamp = time.strftime('%m-%d %H:%M:%S', time.localtime(event['timestamp']))
+        rows += [f"  {stamp} · 출금 {event['amount_msat'] / 1000:,.3f} sat · 수수료 {event['fee_msat'] / 1000:,.3f} sat",
+                 f"    {peer('incoming')} → 이 노드 → {peer('outgoing')}"]
+    if count == 0:
+        rows.append('  조회한 24시간 중계 없음 · 송신/수신 결제는 별도')
+    return rows
+
+
 def render_router_snapshot(snapshot, changed_at, last_success, started_at, previous_lines, *, compact=False):
     now = time.time()
     fresh = last_success is not None and 0 <= now - last_success <= 30 and snapshot.get('code') != 'query_error'
@@ -603,6 +624,7 @@ def render_router_snapshot(snapshot, changed_at, last_success, started_at, previ
                  '  e: 외부망 검사 요청 / 결과 가져오기']
     else:
         rows.append('  ' + snapshot.get('message', '상태 조회 중'))
+    rows += router_forwarding_rows(snapshot, fresh, limit=5)
     rows += ['  == 조작: 키 입력 후 Enter ==',
              '  r 재조회·재시도 / m 지속 감시 설정 / c 채널 종료',
              '  v 감시 상태 / o 관측·백업 / e 외부 검사',
@@ -621,6 +643,7 @@ def render_router_snapshot(snapshot, changed_at, last_success, started_at, previ
             remaining = item.get('confirmations_until_active')
             rows.append(f"  개설 대기: {peer[:12]}… · {connected}")
             rows.append(f"    채널 용량 {format(amount, ',') if type(amount) is int else '?'} sat · 블록 확인 {remaining if type(remaining) is int else '?'}회 남음")
+        rows += router_forwarding_rows(snapshot, fresh)
         rows += ['  d 상세 / r 재조회 / e 외부 검사 / c 채널 종료',
                  '  m 백그라운드 감시 / v 감시 상태 / o 관측·백업 / q 나가기',
                  '  최근 조회: ' + (time.strftime('%H:%M:%S', time.localtime(last_success)) if last_success else '아직 없음') + ' / 화면 ' + clock.strip()]

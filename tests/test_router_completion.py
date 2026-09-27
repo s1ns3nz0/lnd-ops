@@ -128,6 +128,13 @@ class RouterCompletionTests(unittest.TestCase):
              patch('router_observation.time.time', return_value=now):
             return verify.snapshot()
 
+    def test_history_is_observed_even_when_current_readiness_is_incomplete(self):
+        result = self.snapshot(ready=False, forwarding=False, receipt=False, observed=True)
+        self.assertEqual(result['forwarding_observed_count'], 1)
+        self.assertEqual(result['forwarding_proof'], 'observed')
+        self.assertEqual(result['code'], 'syncing')
+        self.assertFalse(result['complete'])
+
     def test_completion_requires_readiness_forwarding_and_fresh_external_result(self):
         for ready, forwarding, receipt in ((False, True, True), (True, False, True), (True, True, False)):
             with self.subTest(ready=ready, forwarding=forwarding, receipt=receipt):

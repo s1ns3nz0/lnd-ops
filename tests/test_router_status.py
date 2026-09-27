@@ -293,3 +293,22 @@ class ProgressSummaryTests(unittest.TestCase):
             rows[-2] = '경과 시간 2'
             start.render_router_lines(rows, previous)
         self.assertEqual(output.getvalue(), '')
+
+
+class LiveForwardingRowsTests(unittest.TestCase):
+    def test_exact_millisat_fee_and_direction_are_visible(self):
+        snapshot = dict(forwarding_history_count=1, forwarding_history_fee_msat=1005,
+                        forwarding_recent=[dict(timestamp=1790489966, amount_msat=11000, fee_msat=1005,
+                                                incoming_peer='Mac', outgoing_peer='External')])
+        text = '\n'.join(start.router_forwarding_rows(snapshot, True))
+        self.assertIn('1건', text)
+        self.assertIn('1.005 sat', text)
+        self.assertIn('출금 11.000 sat', text)
+        self.assertIn('Mac… → 이 노드 → External…', text)
+        self.assertIn('10초마다 조회', text)
+        self.assertIn('이전 조회', '\n'.join(start.router_forwarding_rows(snapshot, False)))
+
+    def test_unknown_history_is_not_zero_and_capped_is_explicit(self):
+        self.assertIn('아직 조회하지 못했습니다', '\n'.join(start.router_forwarding_rows({}, True)))
+        self.assertIn('일부 기록', '\n'.join(start.router_forwarding_rows(
+            dict(forwarding_history_count=50000, forwarding_window_capped=True), True)))
