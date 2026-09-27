@@ -85,6 +85,12 @@ def main(argv):
         return 2
 
     environment = os.environ | {"KUBECONFIG": os.environ.get("KUBECONFIG", str(STATE / "kubeconfig"))}
+    # Check all selected profiles before deleting any resource.
+    for profile in profiles:
+        check = subprocess.run([str(pathlib.Path(__file__).with_name("flux-phase")),
+                                "guard", PROFILES[profile][0], "lnd-ops"], env=environment)
+        if check.returncode:
+            return check.returncode
     for profile in profiles:
         if args.delete_wallet_data:
             for namespace in PROFILES[profile]:

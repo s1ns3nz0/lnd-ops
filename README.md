@@ -71,14 +71,17 @@ Phase 3 turns the retained testnet identity into a guarded [routing-node candida
 ## Guided setup
 
 Run `./lndops` to enter the interactive setup shell. Run
-`ops/install-command` once to make `lndops` available from any directory. Phase 0 shows live resources and the next incomplete phase; Phases 1–11
-checks the live environment before every selection, skips completed work, and
+`ops/install-command` once to make `lndops` available from any directory. Phase 0 shows live resources and the next incomplete phase; the runner checks
+the live environment before selections in Phases 1–12, skips completed work, and
 builds only the safe automatic portion up to the selected phase. Wallets,
 funding, secrets, recovery, and fault injection remain explicit manual gates.
 Its banner reads each existing wallet's status, confirmed balance, active-channel
 count, and an already-existing external address. On older LND versions it shows
 an existing UTXO address instead. It never creates an address; an absent or
 locked wallet is shown as such.
+
+The interactive catalog now includes **Phase 8: Flux GitOps transition** after backup/recovery. Use the `gitops` menu to install the pinned controllers, connect Git, verify a disposable release, and hand off the existing testnet Helm release. Completion requires live Git/Helm and wallet-preservation checks. See the [transition plan](docs/flux-gitops-transition.md). Later UI phases are 9–12; historical evidence identifiers remain unchanged.
+
 Use `lndops --status` for a read-only overview; evidence and fault phases
 are shown as manual gates so this overview never creates evidence or probe Pods.
 Use

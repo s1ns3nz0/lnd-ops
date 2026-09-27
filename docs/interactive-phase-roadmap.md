@@ -8,14 +8,15 @@ or the operator explicitly interrupts it.
 
 ## Implemented runner contract
 
-The runner now assigns every Phase a stable internal ID, a read-only completion
-probe, and an interactive route. Phase 1 checks regtest wallets, channels,
+The runner assigns every Phase a stable internal ID and an interactive route.
+Every phase has a read-only completion probe. Phase 8 verifies Flux, Git
+reconciliation evidence and the existing testnet release handoff. Phase 1 checks regtest wallets, channels,
 and payments. Phase 2 checks the testnet wallet, synchronization and peers.
 Phase 3 keeps its Router screen active and patches compact rows rather than
 appending polling logs. The timer updates independently of its RPC worker.
 Phase 4 is optional; cumulative builds for later phases skip it. Selecting 4
 explicitly still runs its setup and quote verification. Phase 5 verifies live
-testnet metrics without requiring recent personal payments. Phase 6 through 11 use their existing
+testnet metrics without requiring recent personal payments. Phases 6–7 and 9–12 use their existing
 acceptance evidence as the completion contract, and invoke their existing
 interactive scripts only after their own confirmation prompt.
 
@@ -108,7 +109,24 @@ explicit per-step confirmation before any recovery rehearsal that can change a
 wallet or PVC. Keep the recovery run isolated, collect its evidence, restore
 the original environment, and verify the acceptance gate before completion.
 
-## Phase 8 · fault and alert exercise
+## Phase 8 · Flux GitOps transition
+
+**Implemented:** the `gitops` menu prepares per-host Git files, installs pinned
+Flux controllers, connects the source and verifies the disposable Helm release's
+Git change/failure/recovery sequence. It exports a suspended testnet HelmRelease,
+checks the current manifest and wallet baseline, and enables handoff through a
+reviewed Git change. Direct Helm deployment/deletion helpers reject Flux-owned
+releases. Completion checks current Git/Helm revisions and retained PVCs,
+identities and channels; controller installation alone cannot complete this phase.
+
+Git commit/push remains an explicit operator action. The standalone `gitops`
+menu can resume this phase without rerunning earlier cumulative phases.
+See [the transition runbook](flux-gitops-transition.md).
+
+UI phases 9–12 replace the former UI phases 8–11. Historical evidence filenames
+and commands such as `ops/phase8-acceptance` retain their original identifiers.
+
+## Phase 9 · fault and alert exercise
 
 **Current gap:** the runner only points at the fault exercise.
 
@@ -117,7 +135,7 @@ immediately before injection, stream concise exercise progress, confirm every
 resource has been restored, then run the acceptance verifier. No next Phase is
 available while restoration is incomplete.
 
-## Phase 9 · constrained kagent
+## Phase 10 · constrained kagent
 
 **Current gap:** there is no interactive collection or validation of the
 Ollama endpoint, model, or network range.
@@ -125,9 +143,9 @@ Ollama endpoint, model, or network range.
 **Change:** collect endpoint, model, server CIDR, and an explicit transport
 confirmation; test the endpoint; deploy the constrained agent; verify its
 allowlist and RBAC; run the controlled diagnostic exercise; and complete only
-after Phase 9 acceptance evidence exists.
+after kagent acceptance evidence exists.
 
-## Phase 10 · Mac and WSL reproducibility
+## Phase 11 · Mac and WSL reproducibility
 
 **Implemented:** combined host evidence must reference both platforms and pass
 the runtime/command checks. Completion additionally requires current Router
@@ -140,7 +158,7 @@ source tests do not supply them. Counterpart record transfer is an operator task
 checks, retain the generated evidence location, then ask for the counterpart
 host evidence when needed. The combined acceptance check decides completion.
 
-## Phase 11 · portfolio demo
+## Phase 12 · portfolio demo
 
 **Current gap:** the runner directs the operator to a separate demo command.
 

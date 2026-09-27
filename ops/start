@@ -120,6 +120,15 @@ PHASES = (
         "manual": "지갑 상태를 바꾸므로 runbook의 수동 절차와 `ops/phase5-acceptance`만 사용하세요.",
     },
     {
+        "id": "gitops",
+        "title": "Flux GitOps 전환",
+        "environment": "Flux 설치·Git 연결·테스트 release 실패/복구를 검증하고 기존 testnet Helm release를 인계합니다.",
+        "probe": ("ops/flux-phase", "verify-auto"),
+        "namespaces": (),
+        "build": (),
+        "manual": "docs/flux-gitops-transition.md를 따라 Git 변경을 검토·반영하고 기존 release를 인계합니다.",
+    },
+    {
         "id": "faults",
         "title": "장애·경보 실습",
         "environment": "regtest 채널, Kubernetes CrashLoop, Falco 이벤트 장애를 주입하고 자동 복구를 검증합니다.",
@@ -1140,7 +1149,65 @@ def guide_evidence_phase(number, phase):
             return "partial"
 
 
+def guide_gitops(number, phase):
+    section("PHASE 08 · FLUX GITOPS", CYAN)
+    print("  Git commit/push는 자동 실행하지 않습니다. 각 단계 후 Git 반영을 확인하세요.")
+    try:
+        host = input("  대상 설정 [wsl/mac, Enter=wsl]: ").strip() or "wsl"
+        if host not in ("wsl", "mac"):
+            print("  wsl 또는 mac을 입력하세요.")
+            return "partial"
+        while True:
+            print("  1 준비 파일 생성 / 2 Flux 설치 / 3 Git 연결 / 4 상태 조회")
+            print("  5 테스트 설정 변경 / 6 테스트 결과 확인 / 7 LND 인계 파일 생성")
+            print("  8 LND 인계 활성화 / 9 인계 검증·증거 저장 / u Git values 수정 / q 돌아가기")
+            choice = input("  선택 > ").strip().lower()
+            base = ("ops/flux-phase",)
+            command = None
+            confirmation = "Enter=실행"
+            if choice == "q":
+                return "partial"
+            if choice == "1":
+                url = input("  Git URL [Enter=https://github.com/s1ns3nz0/lnd-ops.git]: ").strip() or "https://github.com/s1ns3nz0/lnd-ops.git"
+                branch = input("  추적 branch: ").strip()
+                secret = input("  기존 flux-system Git Secret 이름 [공개 저장소=Enter]: ").strip()
+                command = (*base, "prepare", "--host", host, "--url", url, "--branch", branch, "--secret-name", secret)
+            elif choice in ("2", "3", "7", "8"):
+                action = {"2": "install", "3": "connect", "7": "export-lnd", "8": "adopt"}[choice]
+                command = (*base, action, "--host", host, "--confirm", action.upper())
+                confirmation = "TYPE " + action.upper()
+                if action == "export-lnd" and (REPO / "gitops/clusters" / host / "workloads/lnd.json").exists():
+                    if input("  기존 suspended 인계 준비를 갱신합니까? [y/N]: ").strip().lower() == "y":
+                        command += ("--refresh",)
+            elif choice == "4":
+                command = (*base, "status")
+            elif choice in ("5", "6"):
+                stage = input("  단계 [baseline/failure/recovery]: ").strip()
+                if stage not in ("baseline", "failure", "recovery"):
+                    continue
+                action = "stage-probe" if choice == "5" else "record-probe"
+                command = (*base, action, "--host", host, "--stage", stage)
+                if choice == "6":
+                    command += ("--confirm", "RECORD-PROBE")
+            elif choice == "9":
+                if run_confirmed("인계 검증·증거 저장", (*base, "accept", "--host", host, "--confirm", "ACCEPT")):
+                    return "complete"
+                continue
+            elif choice == "u":
+                patch = input("  values 변경 JSON 파일 경로: ").strip()
+                command = (*base, "edit-values", "--host", host, "--patch", patch)
+            if command:
+                run_confirmed("Flux " + command[1], command, confirmation)
+    except EOFError:
+        return "partial"
+
+
 def guide_operator(number, phase, detail, interactive):
+    if phase["id"] == "gitops":
+        if interactive:
+            return guide_gitops(number, phase)
+        print("  다음 작업: 8번 또는 gitops 메뉴에서 Flux 설치·Git 연결을 진행하세요.")
+        return "partial"
     if interactive and phase["id"] == "router":
         return guide_router(number, phase)
     if interactive and phase["id"] == "regtest":
@@ -1351,7 +1418,7 @@ def print_wallet_overview():
 def print_phase_catalog():
     section("LND OPS SETUP", CYAN)
     print("[0] 현재 상태와 다음 완료 Phase를 조회합니다.")
-    print("[1-11] 선택한 번호까지 안전한 인프라를 자동 구축합니다. 수동 실습은 PENDING으로 남습니다.")
+    print(f"[1-{len(PHASES)}] 선택한 번호까지 안전한 인프라를 자동 구축합니다. 수동 실습은 PENDING으로 남습니다.")
     for number, phase in enumerate(PHASES, 1):
         print(paint(f"\n[{number}] {phase['title']}", YELLOW))
         print(f"  {phase['environment']}")
@@ -1361,10 +1428,11 @@ def print_phase_catalog():
 def print_commands():
     section("COMMANDS", CYAN)
     print("  0          현재 resource·Phase 상태와 다음 수행 Phase 조회")
-    print("  1-11       선택한 번호까지 안전한 인프라 자동 구축")
+    print(f"  1-{len(PHASES)}       선택한 번호까지 안전한 인프라 자동 구축")
     print("  wallet     기존 또는 새 wallet workspace 선택")
     print("  status     모든 Phase의 현재 상태만 확인")
     print("  channels   현재 testnet 채널 조회·일반 종료·종료 상태 확인")
+    print("  gitops     Phase 8 Flux 설치·전환 메뉴")
     print("  progress   라우팅 실습 진행 상황만 지속 조회")
     print("  delete     삭제할 project resource를 직접 선택")
     print("  help 또는 ?  이 명령 목록 다시 보기")
@@ -1538,6 +1606,8 @@ def repl():
             prompt_wallet_selection()
         elif answer == "progress":
             guide_router(3, PHASES[2], actions_enabled=False)
+        elif answer == "gitops":
+            guide_gitops(8, PHASES[7])
         elif answer == "channels":
             subprocess.run([str(REPO / "ops/router-close")], cwd=REPO, env=runtime_environment())
         elif answer == "delete":
@@ -1560,7 +1630,7 @@ def repl():
         elif answer.isdigit() and 1 <= int(answer) <= len(PHASES):
             build_through(int(answer), interactive=True)
         elif answer:
-            print("0부터 11, status, help, quit 중 하나를 입력하세요.", file=sys.stderr)
+            print(f"0부터 {len(PHASES)}, status, gitops, help, quit 중 하나를 입력하세요.", file=sys.stderr)
 
 
 def parse_args(arguments):
@@ -1587,7 +1657,7 @@ def main(arguments):
     if args.to is not None:
         return build_through(args.to, args.dry_run)
     if not sys.stdin.isatty():
-        print("interactive input unavailable; use --list, --status, or --to 0..11", file=sys.stderr)
+        print(f"interactive input unavailable; use --list, --status, or --to 0..{len(PHASES)}", file=sys.stderr)
         return 2
     return repl()
 

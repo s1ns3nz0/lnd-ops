@@ -8,6 +8,7 @@ set -euo pipefail
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
 profile=$1
 namespace=lnd-$profile
+"$(dirname "${BASH_SOURCE[0]}")/flux-phase" guard "$namespace" lnd-ops
 if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
   echo "$namespace is absent"
   exit 0

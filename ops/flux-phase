@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from flux_ops import main
+raise SystemExit(main())

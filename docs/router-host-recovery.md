@@ -49,7 +49,7 @@ and separately compares the historical wallet/channel set to the current one.
 Re-reading historical evidence does not inspect that host's disk again.
 
 External P2P reconnection, address-change recovery and new forwarding remain
-separate evidence requirements. Passing this reboot check does not complete Phase 11.
+separate evidence requirements. Passing this reboot check does not complete Phase 12.
 Unit tests cover state transitions; native Mac and Windows reads have been
 checked without rebooting. Actual reboot-and-recovery trials remain outstanding.
 
@@ -91,7 +91,7 @@ external checking. It is not outage duration or proof of unattended recovery.
 The report revalidates these records at their original observation times and
 compares their wallet/channel set with the current one. Old observations remain
 historical evidence after expiry; current external reachability is checked
-separately. Phase 11's report gate requires Pod recovery, Mac and Windows reboot
+separately. Phase 12's report gate requires Pod recovery, Mac and Windows reboot
 and address-change histories, ready resources, current Router completion and a
 fresh unexpired external check. Automatic startup and actual host trials still
 need runtime verification; synthetic tests do not supply those records.

@@ -29,7 +29,7 @@ test('lndops rejects deletion verbs before it enters the setup shell', () => {
 test('guided setup lists all cumulative phases and the requested ASCII banner', async () => {
   await chmod(start, 0o755);
   const output = execFileSync(start, ['--list'], {cwd: repo, encoding: 'utf8'});
-  for (let phase = 0; phase <= 11; phase += 1) assert.match(output, new RegExp(`\\[${phase}\\]`));
+  for (let phase = 0; phase <= 12; phase += 1) assert.match(output, new RegExp(`\\[${phase}\\]`));
   assert.match(output, /__\s+__\s+______/);
   assert.match(output, /WALLET STATUS/);
   assert.match(output, /Mac·WSL 재현성/);
@@ -125,7 +125,7 @@ test('guided setup reserves partial status for an explicit operator gate', async
 });
 
 test('guided setup validates target numbers and refuses noninteractive unspecified input', () => {
-  const invalid = spawnSync(start, ['--to', '12'], {cwd: repo, encoding: 'utf8'});
+  const invalid = spawnSync(start, ['--to', '13'], {cwd: repo, encoding: 'utf8'});
   assert.equal(invalid.status, 2);
   assert.match(invalid.stderr, /invalid choice/);
   const unavailable = spawnSync(start, [], {cwd: repo, encoding: 'utf8', input: ''});

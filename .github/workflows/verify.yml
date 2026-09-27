@@ -38,6 +38,20 @@ jobs:
           & ./ops/windows-backup-acl.ps1 -Path $file
           & ./ops/windows-backup-acl.ps1 -Path $file -Verify
 
+  flux-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install checksum-locked Kind, kubectl and Helm
+        run: |
+          python3 tests/flux/install_tools.py
+          echo "$PWD/.cache/flux-bin" >> "$GITHUB_PATH"
+      - name: Verify Flux install, Git failure/recovery and retained Helm release
+        run: python3 tests/integration_flux.py
+
   linux:
     runs-on: ubuntu-24.04
     env:

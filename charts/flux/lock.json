@@ -1,0 +1,13 @@
+{
+  "version": "v2.9.5",
+  "file": "install-v2.9.5.yaml",
+  "sha256": "f7a7f1ffefa2330ccaf6ccbcfc77c0f2a1b86425a14080eb75460321c817fab2",
+  "source": "https://github.com/fluxcd/flux2/releases/download/v2.9.5/install.yaml",
+  "generator": "flux v2.9.5 install --version=v2.9.5 --components=source-controller,kustomize-controller,helm-controller,notification-controller --export",
+  "images": {
+    "ghcr.io/fluxcd/source-controller:v1.9.5": "6f20d232d596a758c923d2861f23511718fc303b8a2e36a1434a7c736b9f4268",
+    "ghcr.io/fluxcd/kustomize-controller:v1.9.5": "a3a955eb2bc432c2eaa94d2d3714e3beae7fdf17586fd23aadf71ab597ac3339",
+    "ghcr.io/fluxcd/helm-controller:v1.6.4": "8ff15409e46d354338045f483d58ca9cb35dffa2f87e4addd1f5eba1e6a9175f",
+    "ghcr.io/fluxcd/notification-controller:v1.9.4": "840f318265ee26f0d2c48a158bf7896b22aa4e998e320a18646309f0e40b15da"
+  }
+}

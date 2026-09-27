@@ -47,6 +47,7 @@ case "$command" in
     exec "$repo_dir/ops/router-proof" "$@"
     ;;
   enable)
+    "$repo_dir/ops/flux-phase" guard "$namespace" "$release"
     [[ $# -eq 0 ]] || usage
     helm -n "$namespace" status "$release" >/dev/null 2>&1 || {
       echo 'ACTION: deploy and initialize the persistent testnet lnd-0 node first' >&2

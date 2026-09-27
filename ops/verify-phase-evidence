@@ -32,7 +32,7 @@ def validate(payload, phase, now=None):
         expected = [(number, stage["id"]) for number, stage in enumerate(stages, 1)]
         actual = [(stage.get("number"), stage.get("id")) for stage in payload.get("completed", [])]
         if payload.get("requested_through") != len(stages) or actual != expected:
-            raise ValueError("partial demo evidence does not complete Phase 11")
+            raise ValueError("partial demo evidence does not complete Phase 12")
     else:
         hosts = payload.get('hosts', {})
         if set(hosts) != {'mac-arm64', 'windows-wsl2-amd64'} or any(

@@ -21,7 +21,7 @@ class SupportMenuTests(unittest.TestCase):
                 patch.object(start, 'router_recovery_menu') as menu, \
                 patch.object(start.subprocess, 'run') as command, \
                 patch.object(start, 'run_confirmed') as action, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(start.guide_evidence_phase(10, start.PHASES[9]), 'partial')
+            self.assertEqual(start.guide_evidence_phase(11, start.PHASES[10]), 'partial')
         menu.assert_called_once()
         action.assert_not_called()
         self.assertTrue(command.call_args.args[0][0].endswith('/ops/router-report'))

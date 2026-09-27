@@ -38,6 +38,7 @@ export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/ku
 [[ -r "$KUBECONFIG" ]] || { echo "Kubeconfig missing: $KUBECONFIG; run ops/bootstrap" >&2; exit 1; }
 kubectl get nodes >/dev/null
 namespace=lnd-$profile
+"$repo_dir/ops/flux-phase" guard "$namespace" lnd-ops
 if [[ "$profile" == regtest ]]; then
   recovery_state=$(kubectl get namespace "$namespace" -o json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("metadata",{}).get("labels",{}).get("lnd-ops-recovery",""))' 2>/dev/null || true)
   [[ "$recovery_state" != started ]] || {

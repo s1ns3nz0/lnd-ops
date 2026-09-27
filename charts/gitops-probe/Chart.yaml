@@ -1,0 +1,4 @@
+apiVersion: v2
+name: lnd-ops-gitops-probe
+version: 0.1.0
+description: Disposable ConfigMap-only Git reconciliation exercise

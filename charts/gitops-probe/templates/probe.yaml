@@ -1,0 +1,12 @@
+{{- if .Values.fail }}
+{{- fail "intentional GitOps probe failure; restore fail=false in Git" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lnd-ops-gitops-probe
+  labels:
+    app.kubernetes.io/part-of: lnd-ops
+    lnd-ops-gitops-probe: "true"
+data:
+  marker: {{ required "marker required" .Values.marker | quote }}

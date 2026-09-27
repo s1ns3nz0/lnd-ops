@@ -170,10 +170,10 @@ deletion removes every namespaced resource and its PVCs; a reclaim policy may
 also remove their backing volumes. Monitoring, security, agent namespaces, the
 K3s cluster, the Lima VM, Docker images, host backups, and evidence are never
 deleted by this command.
-## Router operation evidence in UI Phase 11
+## Router operation evidence in UI Phase 12
 
 `ops/router-report` is a read-only status view available without running the
-cumulative demo. UI Phase 11 and the demo's Lightning stage also display it.
+cumulative demo. UI Phase 12 and the demo's Lightning stage also display it.
 Resource presence, Pod/PVC readiness, current routing readiness, dated forwarding
 proof, external P2P verification and recovery evidence appear separately.
 
@@ -206,4 +206,4 @@ does not substitute for it. Monitoring and backup support remain independently a
 Completion now rejects partial or reordered demo records and future timestamps.
 It also requires the separate Router operation evidence check, which remains
 pending while address-change collection and external verification are unfinished. A successful individual
-demo stage does not complete UI Phase 11.
+demo stage does not complete UI Phase 12.
