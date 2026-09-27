@@ -429,6 +429,9 @@ def render_router_wait(phase, active_channels, detail, channel_synced_at, starte
     return render_router_lines(raw_lines, previous_lines)
 
 
+ROUTER_INPUT_PROMPT = "  입력 > "
+
+
 def render_router_lines(raw_lines, previous_lines=None):
     columns = shutil.get_terminal_size((80, 24)).columns
     lines = tuple(fit_terminal_line(line, columns) for line in raw_lines)
@@ -436,6 +439,23 @@ def render_router_lines(raw_lines, previous_lines=None):
         color = CYAN if '==' in line else GREEN if '[완료]' in line or '[관측]' in line or '[확인] 외부' in line else YELLOW if '[' in line else None
         return paint(line, color) if color else line
     if sys.stdout.isatty():
+        if previous_lines and previous_lines[-1] == lines[-1] == ROUTER_INPUT_PROMPT:
+            # Canonical terminal input owns the last row. Keep its text and
+            # cursor intact while updating only the dashboard above it.
+            delta = len(lines) - len(previous_lines)
+            sys.stdout.write('\0337')
+            if delta:
+                sys.stdout.write(f'\033[{len(previous_lines) - 1}A\r')
+                sys.stdout.write(f'\033[{abs(delta)}{"L" if delta > 0 else "M"}')
+                sys.stdout.write('\0338')
+                sys.stdout.write(f'\033[{abs(delta)}{"B" if delta > 0 else "A"}')
+                sys.stdout.write('\0337')
+            for index, current in enumerate(lines[:-1]):
+                if not delta and previous_lines[index] == current:
+                    continue
+                sys.stdout.write(f'\033[{len(lines) - 1 - index}A\r\033[2K{styled(current)}\0338')
+            sys.stdout.flush()
+            return lines
         if previous_lines is not None and len(previous_lines) != len(lines):
             if len(previous_lines) > 1:
                 sys.stdout.write(f"\033[{len(previous_lines) - 1}A")
@@ -471,7 +491,10 @@ def render_router_snapshot(snapshot, changed_at, last_success, started_at, previ
     external = fresh and snapshot.get('external_reachability') == 'operator_attested' and snapshot.get('external_expires_at', 0) > now
     clock = f"  경과 시간  {elapsed_time(time.monotonic() - started_at)}"
     if snapshot.get('code') == 'loading':
-        return render_router_lines(('  [조회 중] 노드 상태를 가져오고 있습니다.', clock), previous_lines)
+        rows = ['  [조회 중] 노드 상태를 가져오고 있습니다.', clock]
+        if sys.stdout.isatty():
+            rows.append(ROUTER_INPUT_PROMPT)
+        return render_router_lines(rows, previous_lines)
     ready = '조회 실패' if snapshot.get('code') == 'query_error' else '새 조회 필요' if not fresh else '준비 완료' if snapshot.get('ready') else '조건 확인 중'
     proof = snapshot.get('forwarding_proof')
     forwarded = proof in ('observed', 'verified')
@@ -518,6 +541,8 @@ def render_router_snapshot(snapshot, changed_at, last_success, started_at, previ
                 line = '  '
             line += char
         wrapped.append(line)
+    if sys.stdout.isatty():
+        wrapped.append(ROUTER_INPUT_PROMPT)
     return render_router_lines(wrapped, previous_lines)
 
 

@@ -22,6 +22,34 @@ class InteractiveOutput(io.StringIO):
 
 
 class RouterStatusTests(unittest.TestCase):
+    def test_prompt_stays_below_clock_and_refresh_does_not_erase_input(self):
+        output = InteractiveOutput()
+        prompt = start.ROUTER_INPUT_PROMPT
+        with unittest.mock.patch.object(start.sys, 'stdout', output):
+            start.render_router_lines(('status', 'clock 2', prompt), ('status', 'clock 1', prompt))
+        update = output.getvalue()
+        self.assertIn('\0337', update)
+        self.assertIn('\033[1A\r\033[2Kclock 2\0338', update)
+        self.assertNotIn(prompt, update)
+        self.assertNotIn('\n', update)
+
+    def test_dashboard_growth_moves_prompt_without_reprinting_it(self):
+        output = InteractiveOutput()
+        prompt = start.ROUTER_INPUT_PROMPT
+        with unittest.mock.patch.object(start.sys, 'stdout', output):
+            start.render_router_lines(('status', 'channels', 'clock', prompt), ('loading', 'clock', prompt))
+        update = output.getvalue()
+        self.assertIn('\033[1L', update)
+        self.assertNotIn(prompt, update)
+        self.assertNotIn('\033[J', update)
+
+    def test_loading_has_a_dedicated_input_row_in_a_terminal(self):
+        output = InteractiveOutput()
+        with unittest.mock.patch.object(start.sys, 'stdout', output):
+            rows = start.render_router_snapshot({'code': 'loading'}, None, None, 0, None)
+        self.assertEqual(rows[-1], start.ROUTER_INPUT_PROMPT)
+        self.assertTrue(output.getvalue().endswith('\n' + start.ROUTER_INPUT_PROMPT))
+
     def test_initial_loading_does_not_claim_unknown_resource_counts(self):
         with unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows):
             rows = start.render_router_snapshot({'code': 'loading'}, None, None, 0, None)
