@@ -472,7 +472,7 @@ def render_router_snapshot(snapshot, changed_at, last_success, started_at, previ
         f"  채널 상태  대기 {snapshot.get('pending_public', '?')} / 비활성 {snapshot.get('inactive_public', '?')} / 비공개 {snapshot.get('private', '?')}",
         f"  현재 작업  {snapshot.get('message', '상태 조회 중')}",
         f"  준비 상태  {'조회 실패' if snapshot.get('code') == 'query_error' else '새 조회 필요' if not fresh else '가능' if snapshot.get('ready') else '조건 확인 중'}",
-        f"  실경유 이력 {'확인 ' + time.strftime('%m-%d %H:%M', time.localtime(snapshot['proof_verified_at'])) if snapshot.get('forwarding_proof') == 'verified' and snapshot.get('proof_verified_at') else '미검증'}",
+        f"  실경유 이력 {'로컬 중계 관측 ' if snapshot.get('forwarding_proof') == 'observed' else '확인 ' if snapshot.get('forwarding_proof') == 'verified' else '트래픽 대기' if snapshot.get('ready') else '미검증'}{time.strftime('%m-%d %H:%M', time.localtime(snapshot['proof_verified_at'])) if snapshot.get('proof_verified_at') else ''}",
         f"  외부 접속  {'확인 (운영자 외부 실행)' if external_current else '미검증'}",
         f"  접속 만료  {time.strftime('%m-%d %H:%M:%S', time.localtime(snapshot['external_expires_at'])) if external_current else '검사 필요'}",
         f"  동기화     체인 {'완료' if snapshot.get('synced_to_chain') else '확인 중'} / 그래프 {'완료' if snapshot.get('synced_to_graph') else '확인 중'}",
@@ -555,23 +555,28 @@ def guide_router(number, phase):
                             [str(REPO / "ops/router-channel")], cwd=REPO, env=runtime_environment()),
                         "peer_disconnected": lambda: subprocess.run(
                             [str(REPO / "ops/router-peers")], cwd=REPO, env=runtime_environment()),
-                        "proof_required": lambda: subprocess.run(
-                            [str(REPO / "ops/router-proof")], cwd=REPO, env=runtime_environment()),
-                        "external_required": lambda: subprocess.run(
-                            [str(REPO / "ops/router-observation"), "interactive"], cwd=REPO, env=runtime_environment()),
                         "policy_required": lambda: run_confirmed(
                             "공개 채널 수수료 정책 적용", ("ops/configure-router-policy", "--confirm", "APPLY ROUTER POLICY")),
                     }
-                    if code in actions and not (code == "proof_required" and result.get("forwarding_proof") == "verified"):
+                    if code in actions:
                         previous_lines = close_router_wait(previous_lines)
                         print(f"  다음 작업: {result['message']}")
                         prompted = action_key
                         actions[code]()
                         worker.request_now()
                         continue
-                    if code in ("liquidity_required", "proof_required", "peer_disconnected", "funding_review"):
+                    if code in ("liquidity_required", "proof_required", "external_required", "peer_disconnected", "funding_review"):
                         previous_lines = close_router_wait(previous_lines)
                         print(f"  필요한 조건: {result['message']}")
+                        if code == 'proof_required':
+                            print('  추가 SSH 노드는 필요 없습니다. 이 노드의 최근 24시간 중계 기록을 자동 조회합니다.')
+                            print('  다른 사용자의 결제가 이 노드를 지나야 기록됩니다. 대기 시간은 정해져 있지 않습니다.')
+                            print('  m: 백그라운드 감시 설정 / q: 화면 종료 (노드는 계속 실행됩니다)')
+                        if code == 'external_required':
+                            if result.get('forwarding_proof') == 'observed':
+                                print('  LND에 기록된 중계입니다. 송·수신자 기록을 별도로 대조한 결과는 아닙니다.')
+                            print('  실제 중계와 외부에서 새로 접속 가능한지는 별개입니다. 완료로 처리하지 않습니다.')
+                            print('  e+Enter: 별도 외부망 검사 요청·결과 가져오기 (결과 유효기간 10분)')
                         if code == "liquidity_required":
                             print(f"  시험 금액 {result.get('test_sat', '?')} sat / 수수료 상한 {result.get('fee_limit_sat', '?')} sat")
                             reasons = {
@@ -608,6 +613,9 @@ def guide_router(number, phase):
                         configure_router_service()
                     if answer == "v":
                         subprocess.run([str(REPO / "ops/router-monitor"), "--status"], cwd=REPO, env=runtime_environment())
+                    if answer == "e":
+                        subprocess.run([str(REPO / "ops/router-observation"), "interactive"], cwd=REPO, env=runtime_environment())
+                        worker.request_now()
             else:
                 time.sleep(1)
     except (KeyboardInterrupt, EOFError):

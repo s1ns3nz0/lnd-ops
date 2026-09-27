@@ -116,7 +116,7 @@ class RouterCompletionTests(unittest.TestCase):
                        'network_origin': 'operator-attested-external'}
         self.receipt = import_result(self.root, observation, self.info, CONFIRM, now=103)
 
-    def snapshot(self, ready=True, forwarding=True, receipt=True, now=104):
+    def snapshot(self, ready=True, forwarding=True, receipt=True, now=104, observed=False):
         service = Mock(returncode=0, stdout=json.dumps(P2P_SERVICE))
         with patch.object(verify.subprocess, 'run', return_value=service), \
              patch.object(verify, 'call', return_value=self.info), \
@@ -124,6 +124,7 @@ class RouterCompletionTests(unittest.TestCase):
                                                            'identity': self.key, 'channels': [], 'message': 'waiting'}), \
              patch.object(verify, 'read', side_effect=[{'verified_at': 90}, self.receipt if receipt else None]), \
              patch.object(verify, 'current_evidence', return_value=forwarding), \
+             patch.object(verify, 'observe', return_value={'forwarding_observed_count': int(observed), 'forwarding_observed_at': 99 if observed else None}), \
              patch('router_observation.time.time', return_value=now):
             return verify.snapshot()
 
@@ -135,6 +136,14 @@ class RouterCompletionTests(unittest.TestCase):
         self.assertTrue(result['complete'])
         self.assertEqual(result['external_reachability'], 'operator_attested')
         self.assertEqual(result['external_provenance'], 'operator-controlled-unsigned')
+
+    def test_local_observation_is_distinct_from_controlled_proof_and_requires_external_check(self):
+        result = self.snapshot(forwarding=False, observed=True, receipt=False)
+        self.assertEqual(result['forwarding_proof'], 'observed')
+        self.assertEqual(result['forwarding_provenance'], 'local-lnd-history')
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['code'], 'external_required')
+        self.assertTrue(self.snapshot(forwarding=False, observed=True)['complete'])
 
     def test_expiry_and_address_change_reopen_external_work(self):
         result = self.snapshot(now=700)

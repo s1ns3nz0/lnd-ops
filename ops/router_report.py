@@ -125,7 +125,7 @@ def render(value):
              f"  Pod Ready  {'예' if construction.get('pod_ready') else '미확인'} / PVC Bound  {'예' if construction.get('pvc_bound') else '미확인'}",
              f"  현재 준비  {ready}",
              f"  조회 시각  {timestamp(value['readiness']['checked_at'])}",
-             f"  실경유     {'현재 구성의 성공 이력 있음' if proof['state'] == 'verified' else '미검증'}",
+             f"  실경유     {'현재 구성의 성공 이력 있음' if proof['state'] == 'verified' else '최근 24시간 로컬 중계 관측' if proof['state'] == 'observed' else '미검증'}",
              f"  검증 시각  {timestamp(proof['verified_at'])}",
              f"  외부 P2P   {'확인 (운영자 외부 실행)' if value['external_p2p']['state'] == 'operator_attested' else '미검증'}",
              "-" * 56,

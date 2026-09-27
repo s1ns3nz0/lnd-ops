@@ -178,7 +178,20 @@ capacity and negotiated pending-HTLC limits, independently of current balances.
 Partial RPC failure keeps the target saved; completion requires observed graph
 policies to match. It does not pay, fund, or close anything.
 
-`ops/router-proof` prompts for two operator-controlled external peers with direct
+The default Phase 3 screen needs only the Router node. It reads that node's
+settled forwarding history for the past 24 hours, matching distinct current
+public-channel peers and consistent forwarded amounts and fees. It does not
+request SSH endpoints or initiate a payment. No traffic means waiting, not a
+broken Router; the screen can be closed while LND continues running. A query
+examines up to 50,000 events, so the reported count is not an all-time total.
+`observed` identifies local LND evidence, distinct from a controlled payment's
+`verified` evidence. Neither proves inbound public P2P reachability. Phase
+completion still requires current readiness and a fresh external observation;
+press `e` to explicitly open its request/import menu when an external network
+is available. An idle node may lose the recent observation without losing
+readiness. No additional SSH node is required to operate this Router.
+
+For an optional controlled test, `ops/router-proof` prompts for two operator-controlled external peers with direct
 public channels to this Router. Existing SSH aliases and remote LND credentials
 are used; `PAY` approval bounds the amount and fee. Host clocks must be synchronized.
 Response loss triggers reconciliation of the same payment, never a blind resend.

@@ -38,7 +38,7 @@ test('Router commands separate exposure, policy mutation, and read-only verifica
   assert.match(policy, /APPLY ROUTER POLICY/);
   assert.match(policy, /--rate-ppm.*default=500/);
   assert.match(policy, /--max_htlc_msat=/);
-  assert.match(verify, /fwdinghistory/);
+  assert.match(await readFile(resolve(repo, 'ops/router_forwarding.py'), 'utf8'), /fwdinghistory/);
   assert.match(verify, /assess\(/);
   assert.match(verify, /NodePort 30973/);
   assert.match(verify, /node2_pub/);

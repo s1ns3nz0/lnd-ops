@@ -57,20 +57,33 @@ class RouterInteractionTests(unittest.TestCase):
         outcome, events, worker, render, output = self.drive(results)
         self.assertEqual(outcome, 'complete')
         self.assertEqual(events, ['unlock', 'exposure', 'router-peers', 'router-channel',
-                                  'policy', 'router-proof', 'router-observation'])
+                                  'policy'])
         self.assertEqual(worker.tick.call_count, len(results))
         self.assertEqual(worker.request_now.call_count, len(events))
         self.assertEqual([call.args[0]['code'] for call in render.call_args_list],
-                         ['syncing', 'funding_pending', 'graph_pending', 'liquidity_required'])
+                         ['syncing', 'funding_pending', 'graph_pending', 'liquidity_required', 'proof_required', 'external_required'])
         self.assertEqual(output.count('완료: Router'), 1)
 
     def test_action_success_is_not_completion_or_automatic_resubmission(self):
         outcome, events, worker, _, output = self.drive(
-            [status('proof_required'), status('proof_required')], answers=['q'])
+            [status('channel_required'), status('channel_required')], answers=['q'])
         self.assertEqual(outcome, 'partial')
-        self.assertEqual(events, ['router-proof'])
+        self.assertEqual(events, ['router-channel'])
         self.assertEqual(worker.tick.call_count, 2)
         self.assertNotIn('완료: Router', output)
+
+    def test_single_node_wait_never_prompts_for_ssh_or_starts_payment(self):
+        outcome, events, _, _, output = self.drive(
+            [status('proof_required', ready=True)], answers=['q'])
+        self.assertEqual(outcome, 'partial')
+        self.assertEqual(events, [])
+        self.assertIn('추가 SSH 노드는 필요 없습니다', output)
+
+    def test_external_check_is_explicit_and_never_automatic(self):
+        outcome, events, _, _, _ = self.drive(
+            [status('external_required'), status('external_required')], answers=['e', 'q'])
+        self.assertEqual(outcome, 'partial')
+        self.assertEqual(events, ['router-observation'])
 
     def test_declined_policy_waits_and_retries_only_on_explicit_input(self):
         outcome, events, worker, _, output = self.drive(

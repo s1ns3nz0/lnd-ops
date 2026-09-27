@@ -12,6 +12,7 @@ from router_proof import current_evidence
 from router_store import read, state_directory
 from router_policy import target
 from router_observation import current as current_observation
+from router_forwarding import observe
 
 
 def validate_p2p_service(service):
@@ -86,11 +87,14 @@ def snapshot(test_sat=10, fee_limit_sat=10):
                               external_expires_at=observation["observation"]["request"]["expires_at"],
                               external_provenance="operator-controlled-unsigned")
             if result["ready"]:
-                # Historical fwdinghistory events and an advertised URI alone
-                # are not evidence of a current end-to-end verification.
-                result.update(code="proof_required", message="라우팅 준비 완료 / 외부 접속·실경유 검증 필요")
-                if result["forwarding_proof"] == "verified":
-                    result.update(code="external_required", message="실경유 검증 완료 / 외부 P2P 접속 검증 필요")
+                result.update(observe(call, result.get('channels', []), time.time()))
+                if result['forwarding_observed_count'] and result['forwarding_proof'] != 'verified':
+                    result.update(forwarding_proof='observed',
+                                  proof_verified_at=result['forwarding_observed_at'],
+                                  forwarding_provenance='local-lnd-history')
+                result.update(code="proof_required", message="라우팅 준비 완료 / 실제 중계 트래픽 대기")
+                if result["forwarding_proof"] in ("verified", "observed"):
+                    result.update(code="external_required", message="실제 중계 이력 확인 / 외부 P2P 접속은 미검증")
                     if result["external_reachability"] == "operator_attested":
                         result.update(complete=True, code="complete",
                                       message="현재 라우팅 준비·실경유 이력 확인 / 외부 접속은 운영자 실행 결과로 확인")
