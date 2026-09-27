@@ -68,7 +68,7 @@ def policy_allows(policy, amount_msat):
     )
 
 
-def funding_progress(pending):
+def funding_progress(pending, peers=()):
     """Keep absent fields unknown; zero confirmations is not gossip proof."""
     def number(value, signed=False):
         if type(value) is int:
@@ -80,7 +80,11 @@ def funding_progress(pending):
         lower, upper = (-2**31, 2**31 - 1) if signed else (0, 2**32 - 1)
         return parsed if lower <= parsed <= upper else None
 
+    connected = {peer.get('pub_key') for peer in peers}
     rows = [{'point': item.get('channel', {}).get('channel_point'),
+             'peer': item.get('channel', {}).get('remote_node_pub'),
+             'capacity_sat': number(item.get('channel', {}).get('capacity')),
+             'peer_connected': item.get('channel', {}).get('remote_node_pub') in connected,
              'confirmations_until_active': number(item.get('confirmations_until_active')),
              'funding_expiry_blocks': number(item.get('funding_expiry_blocks'), signed=True)} for item in pending]
     known = [row['confirmations_until_active'] for row in rows if row['confirmations_until_active'] is not None]
@@ -121,7 +125,7 @@ def assess(info, channels, pending, peers, policies, *, test_sat=10, fee_limit_s
               "inactive_public": len(public) - len(active), "private": len(channels) - len(public),
               "pending_public": len(pending_public), "pending": pending_public,
               "channels": rows, "peers": len(peers), "test_sat": test_sat, "fee_limit_sat": fee_limit_sat}
-    result.update(funding_progress(pending_public))
+    result.update(funding_progress(pending_public, peers))
 
     def waiting(code, message):
         return result | {"code": code, "message": message}

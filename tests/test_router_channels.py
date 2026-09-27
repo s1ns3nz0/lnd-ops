@@ -4,10 +4,11 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "ops"))
 import router_channels as channels
-from router_store import read, operation_lock
+from router_store import read, write, operation_lock
 
 PEER = "02" + "a" * 64
 SELF = "03" + "b" * 64
@@ -18,6 +19,8 @@ class FakeLND:
     def __init__(self):
         self.calls = []
         self.fail_open = False
+        self.reserve = 20000
+        self.balance = 190000
         self.channels = []
         self.pending = []
         self.closing = []
@@ -38,7 +41,10 @@ class FakeLND:
         if command == "listpeers":
             return {"peers": [{"pub_key": PEER}]}
         if command == "walletbalance":
-            return {"confirmed_balance": 190000, "reserved_balance_anchor_chan": 10000}
+            return {"confirmed_balance": self.balance, "reserved_balance_anchor_chan": 10000}
+        if command == 'wallet':
+            assert args == ('requiredreserve', '--additional_channels=1')
+            return {'required_reserve': str(self.reserve)}
         if command == "listunspent":
             return {"utxos": self.utxos}
         if command == "listchaintxns":
@@ -51,6 +57,92 @@ class FakeLND:
 
 
 class ChannelOpenTests(unittest.TestCase):
+    def test_observed_balance_cannot_open_even_minimum_with_new_reserve(self):
+        self.rpc.balance = 36420
+        with self.assertRaisesRegex(ValueError, '6,580 sat 부족'):
+            channels.preview(PEER, 20000, 1, 3000, 200000, self.rpc)
+        self.assertFalse(any(name == 'openchannel' for name, _ in self.rpc.calls))
+
+    def test_reserve_change_requires_new_approval(self):
+        plan = self.preview()
+        self.rpc.reserve = 30000
+        with self.assertRaisesRegex(ValueError, '다시 승인'):
+            channels.submit(self.root, plan, self.rpc)
+        self.assertFalse(any(name == 'openchannel' for name, _ in self.rpc.calls))
+
+    def test_reserve_query_failure_and_malformed_response_block_preview(self):
+        for value in (None, -1, True, 'unknown'):
+            def rpc(command, *args):
+                return {'required_reserve': value} if command == 'wallet' else self.rpc(command, *args)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                channels.preview(PEER, 20000, 1, 3000, 200000, rpc)
+        def failed(command, *args):
+            if command == 'wallet':
+                raise RuntimeError('reserve unavailable')
+            return self.rpc(command, *args)
+        with self.assertRaisesRegex(RuntimeError, 'reserve unavailable'):
+            channels.preview(PEER, 20000, 1, 3000, 200000, failed)
+
+    def test_legacy_reserve_rejection_requires_separate_attestation(self):
+        self.legacy_record(amount=23420)
+        result = channels.acknowledge_minimum_rejection(self.root, self.versioned_rpc, rejection_kind='reserve')
+        self.assertEqual(result['rejection'], channels.RESERVE_REJECTION)
+        self.assertEqual(result['rejection_source'], 'operator-attested')
+        self.assertFalse(any(name == 'openchannel' for name, _ in self.rpc.calls))
+
+    def test_below_minimum_rejected_before_any_rpc(self):
+        with self.assertRaisesRegex(ValueError, '20,000'):
+            channels.preview(PEER, 17920, 1, 3000, 117920, self.rpc)
+        self.assertEqual(self.rpc.calls, [])
+
+    def test_exact_minimum_can_be_previewed(self):
+        self.assertEqual(channels.preview(PEER, 20000, 1, 3000, 200000, self.rpc)['amount_sat'], 20000)
+
+    def legacy_record(self, amount=17920, **extra):
+        record = self.preview() | {'state': 'uncertain', 'amount_sat': amount,
+                                  'request_id': 'legacy', 'memo': 'lndops-router-legacy', 'submitted_at': 1, **extra}
+        write(self.root, 'open-request.json', record)
+        return record
+
+    def versioned_rpc(self, command, *args):
+        result = self.rpc(command, *args)
+        if command == 'getinfo':
+            result['version'] = '0.21.3-beta commit=v0.21.3-beta'
+        return result
+
+    def test_legacy_rejection_requires_explicit_acknowledgement(self):
+        self.legacy_record()
+        self.assertEqual(channels.reconcile(self.root, self.versioned_rpc)['state'], 'uncertain')
+        result = channels.acknowledge_minimum_rejection(self.root, self.versioned_rpc)
+        self.assertEqual(result['state'], 'rejected')
+        self.assertEqual(result['rejection_source'], 'operator-attested')
+        self.assertEqual(read(self.root, 'open-legacy.json'), result)
+        self.assertFalse(any(name == 'openchannel' for name, _ in self.rpc.calls))
+
+    def test_acknowledgement_refuses_valid_amount_or_funding_reference(self):
+        for extra in ({'amount': 20000}, {'funding_txid': TXID}):
+            self.legacy_record(**extra)
+            with self.assertRaises(ValueError):
+                channels.acknowledge_minimum_rejection(self.root, self.versioned_rpc)
+            self.assertEqual(read(self.root, 'open-request.json')['state'], 'uncertain')
+
+    def test_acknowledgement_requires_pinned_version(self):
+        self.legacy_record()
+        with self.assertRaises(ValueError):
+            channels.acknowledge_minimum_rejection(self.root, self.rpc)
+
+    def test_explicit_rpc_rejection_is_retained_in_journal(self):
+        plan = self.preview()
+        def reject(command, *args):
+            if command == 'openchannel':
+                raise channels.ChannelTooSmall(channels.MINIMUM_REJECTION)
+            return self.rpc(command, *args)
+        with self.assertRaises(channels.ChannelTooSmall):
+            channels.submit(self.root, plan, reject)
+        record = read(self.root, 'open-request.json')
+        self.assertEqual(record['state'], 'rejected')
+        self.assertEqual(record['rejection_source'], 'rpc')
+
     def setUp(self):
         self.rpc = FakeLND()
         self.directory = tempfile.TemporaryDirectory()

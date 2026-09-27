@@ -18,6 +18,20 @@ class GraphEdgeMissing(RPCError):
     """LND answered GetChanInfo, but does not have the requested graph edge."""
 
 
+# Pinned v0.21.3-beta funding.MinChanFundingSize / parseOpenChannelReq.
+MIN_CHANNEL_SAT = 20000
+MINIMUM_REJECTION = f"[lncli] rpc error: code = Unknown desc = channel is too small, the minimum channel size is: {MIN_CHANNEL_SAT} SAT"
+RESERVE_REJECTION = '[lncli] rpc error: code = Unknown desc = reserved wallet balance invalidated: transaction would leave insufficient funds for fee bumping anchor channel closings (see debug log for details)'
+
+
+class ChannelTooSmall(RPCError):
+    """An explicit pre-funding RPC rejection, not a lost response."""
+
+
+class AnchorReserveRejected(RPCError):
+    """LND rejected the proposed funding reservation before channel funding."""
+
+
 def environment():
     state = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state"))
     return os.environ | {"KUBECONFIG": os.environ.get("KUBECONFIG", str(state / "lnd-ops/kubeconfig"))}
@@ -29,6 +43,12 @@ def call(*arguments, timeout=30):
     result = subprocess.run(command, env=environment(), capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
+        if arguments and arguments[0] == 'openchannel' and detail in (
+                MINIMUM_REJECTION, MINIMUM_REJECTION + '\ncommand terminated with exit code 1'):
+            raise ChannelTooSmall(detail)
+        if arguments and arguments[0] == 'openchannel' and detail in (
+                RESERVE_REJECTION, RESERVE_REJECTION + '\ncommand terminated with exit code 1'):
+            raise AnchorReserveRejected(detail)
         if any(text in detail.lower() for text in ("wallet locked", "wallet is locked", "unlock the wallet", "wallet not found")):
             raise WalletLocked("기존 testnet 지갑의 잠금을 해제해야 합니다")
         # Match the pinned LND NotFound response, not Kubernetes NotFound,

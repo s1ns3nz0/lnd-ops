@@ -19,11 +19,40 @@ UTXO = {'amount_sat': 179620, 'confirmations': 3, 'address_type': 4,
 
 
 class ChannelInputTests(unittest.TestCase):
+    def test_insufficient_balance_stops_before_amount_approval(self):
+        rpc = Mock(side_effect=[
+            {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'},
+            {'channels': []}, {'confirmed_balance': 36420, 'reserved_balance_anchor_chan': 10000},
+            {'peers': [{'pub_key': 'peer', 'address': 'host:9735'}]}, {'required_reserve': '20000'}])
+        with patch.object(cli, 'operation_lock', return_value=contextlib.nullcontext()), \
+                patch.object(cli, 'reconcile', return_value=None), patch.object(cli, 'call', rpc), \
+                patch('builtins.input', return_value='1') as ask, patch.object(cli, 'submit') as submit, \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, '6,580 sat 부족'):
+                cli.wizard()
+        self.assertEqual(ask.call_count, 1)
+        submit.assert_not_called()
+
+    def test_no_distinct_peer_passes_exclusions_and_reports_cancellation(self):
+        rpc = Mock(side_effect=[
+            {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'},
+            {'channels': [{'remote_pubkey': 'existing'}]}, {'confirmed_balance': 30920},
+            {'peers': [{'pub_key': 'existing', 'address': 'host:9735'}]}])
+        with patch.object(cli, 'operation_lock', return_value=contextlib.nullcontext()), \
+                patch.object(cli, 'reconcile', return_value=None), patch.object(cli, 'call', rpc), \
+                patch.object(cli, 'peer_wizard', return_value=False) as register, \
+                patch.object(cli, 'submit') as submit, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.wizard(), 10)
+        self.assertEqual(register.call_args.kwargs, {'excluded_peers': {'existing'}})
+        self.assertIn('등록을 취소했습니다', output.getvalue())
+        self.assertNotIn('연결 요청을 처리했습니다', output.getvalue())
+        submit.assert_not_called()
+
     def test_lower_balance_default_preserves_reserved_and_locked_funds(self):
         rpc = Mock(side_effect=[
             {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'},
             {'channels': []}, {'confirmed_balance': 90000, 'reserved_balance_anchor_chan': 10000, 'locked_balance': 20000},
-            {'peers': [{'pub_key': 'peer'}]}, {'utxos': [UTXO]}, {}])
+            {'peers': [{'pub_key': 'peer'}]}, {'required_reserve': '20000'}, {'utxos': [UTXO]}, {}])
         plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 0}
         with patch.object(cli, 'operation_lock', return_value=contextlib.nullcontext()), \
              patch.object(cli, 'reconcile', return_value=None), patch.object(cli, 'call', rpc), \
@@ -31,7 +60,7 @@ class ChannelInputTests(unittest.TestCase):
              patch('builtins.input', side_effect=['1', '', '', '', '', 's']), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.wizard(), 10)
-        preview.assert_called_once_with('peer', 57000, 1, 3000, 57000)
+        preview.assert_called_once_with('peer', 47000, 1, 3000, 47000)
         submit.assert_not_called()
 
     def test_enter_defaults_include_reserved_funds_and_pending_capacity_but_never_approve(self):
@@ -40,6 +69,7 @@ class ChannelInputTests(unittest.TestCase):
             {'channels': [{'capacity': '160000', 'remote_pubkey': 'old'}]},
             {'confirmed_balance': '190909', 'reserved_balance_anchor_chan': '10000'},
             {'peers': [{'pub_key': 'peer', 'address': 'host:9735'}]},
+            {'required_reserve': '20000'},
             {'utxos': [UTXO]}, {'pending_open_channels': [{'channel': {'capacity': '30000'}}]}])
         plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 190000}
         with patch.object(cli, 'operation_lock', return_value=contextlib.nullcontext()), \
@@ -112,7 +142,7 @@ class ChannelBackupStatusTests(unittest.TestCase):
         events = []
         info = {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'}
         rpc = Mock(side_effect=[info, {'channels': []}, {'confirmed_balance': 200000},
-                               {'peers': [{'pub_key': 'peer'}]}, {'utxos': [UTXO]}, {}])
+                               {'peers': [{'pub_key': 'peer'}]}, {'required_reserve': '20000'}, {'utxos': [UTXO]}, {}])
         plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 0}
 
         def submit(*args):

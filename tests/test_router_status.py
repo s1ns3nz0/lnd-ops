@@ -208,3 +208,88 @@ class RouterStatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FundingDetailTests(unittest.TestCase):
+    def test_funding_details_explain_accepted_request_and_remaining_block(self):
+        snapshot = dict(code='funding_pending', funding=[dict(peer='03' + 'a' * 64,
+            peer_connected=True, capacity_sat=23420, confirmations_until_active=1,
+            point='b' * 64 + ':1')])
+        with unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows), \
+             unittest.mock.patch.object(start.time, 'time', return_value=100):
+            rows = start.render_router_snapshot(snapshot, None, 100, 0, None)
+        text = '\n'.join(rows)
+        for expected in ['개설 접수됨', '연결됨', '23,420 sat', '블록 확인 1회 남음', '재개설 불필요', 'b' * 64]:
+            self.assertIn(expected, text)
+        snapshot['code'] = 'query_error'
+        with unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows), \
+             unittest.mock.patch.object(start.time, 'time', return_value=100):
+            rows = start.render_router_snapshot(snapshot, None, 100, 0, None)
+        text = '\n'.join(rows)
+        self.assertIn('이전 조회', text)
+        self.assertIn('현재 연결 미확인', text)
+        self.assertNotIn('재개설 불필요', text)
+
+
+class ProgressSummaryTests(unittest.TestCase):
+    def test_pending_is_not_failed_connection_or_router_ready(self):
+        text = '\n'.join(start.router_progress_summary(dict(code='funding_pending',
+            identity='mac-node', synced_to_chain=True, synced_to_graph=True,
+            public_peers=1, pending_public=1), True, False))
+        for part in ['mac-node', '동기화 [완료]', '개설 확인 대기', '실제 결제 중계 이력 [미검증]',
+                     '같은 채널을 다시 개설할 필요 없습니다']:
+            self.assertIn(part, text)
+        self.assertNotIn('라우팅 준비 완료', text)
+
+    def test_ready_does_not_mean_forwarded_or_external_verified(self):
+        text = '\n'.join(start.router_progress_summary(dict(code='proof_required', ready=True,
+            public_peers=2, synced_to_chain=True, synced_to_graph=True), True, False))
+        self.assertIn('실제 결제 중계 이력 [트래픽 대기]', text)
+        self.assertIn('외부망에서 P2P 접속 확인 [미검증]', text)
+        self.assertIn('자동 발생 시점은 알 수 없습니다', text)
+
+    def test_stale_complete_cannot_claim_current_completion(self):
+        text = '\n'.join(start.router_progress_summary(dict(code='complete', ready=True,
+            public_peers=2, forwarding_proof='verified'), False, False))
+        self.assertNotIn('[완료]', text)
+        self.assertIn('최신 상태를 확인하지 못했습니다', text)
+
+    def test_observation_mode_never_automatically_opens_channel(self):
+        worker = unittest.mock.Mock()
+        worker.tick.side_effect = [dict(code='channel_required', message='need channel', checked_at=100),
+                                   dict(code='wrong_network')]
+        with unittest.mock.patch.object(start, 'StatusWorker', return_value=worker), \
+             unittest.mock.patch.object(start.subprocess, 'run') as run, \
+             unittest.mock.patch.object(start, 'render_router_snapshot'), \
+             unittest.mock.patch.object(start.sys.stdin, 'isatty', return_value=False), \
+             unittest.mock.patch.object(start.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(start.guide_router(3, ROUTER, actions_enabled=False), 'failed')
+        run.assert_not_called()
+
+    def test_compact_pending_view_fits_standard_terminal(self):
+        snapshot = dict(code='funding_pending', identity='03' + 'a' * 64,
+            synced_to_chain=True, synced_to_graph=True, active_public=1,
+            public_peers=1, pending_public=1, inactive_public=0,
+            funding=[dict(peer='03' + 'b' * 64, capacity_sat=23420,
+                          peer_connected=True, confirmations_until_active=1)])
+        with unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows), \
+             unittest.mock.patch.object(start.sys.stdout, 'isatty', return_value=True), \
+             unittest.mock.patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((80, 24))), \
+             unittest.mock.patch.object(start.time, 'time', return_value=100):
+            rows = start.render_router_snapshot(snapshot, None, 100, 0, None, compact=True)
+        self.assertLessEqual(len(rows), 24)
+        self.assertEqual(rows[-1], start.ROUTER_INPUT_PROMPT)
+        self.assertIn('연결됨', '\n'.join(rows))
+        self.assertIn('1회 남음', '\n'.join(rows))
+
+    def test_small_window_never_cursor_updates_scrolled_rows(self):
+        output = InteractiveOutput()
+        rows = ['status'] * 8 + ['경과 시간 1', start.ROUTER_INPUT_PROMPT]
+        with unittest.mock.patch.object(start.sys, 'stdout', output), \
+             unittest.mock.patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((80, 5))):
+            previous = start.render_router_lines(rows)
+            output.seek(0)
+            output.truncate(0)
+            rows[-2] = '경과 시간 2'
+            start.render_router_lines(rows, previous)
+        self.assertEqual(output.getvalue(), '')

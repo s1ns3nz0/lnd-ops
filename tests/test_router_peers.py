@@ -3,9 +3,12 @@ import sys
 import subprocess
 import tempfile
 import unittest
+import contextlib
+import io
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "ops"))
-from router_peers import approve, reconnect, validate_peer
+from router_peers import approve, reconnect, validate_peer, wizard
 from router_store import read
 
 KEY = "02" + "a" * 64
@@ -34,6 +37,35 @@ class PeerTests(unittest.TestCase):
     def test_unapproved_peers_are_never_contacted(self):
         reconnect(self.root, self.rpc, now=100)
         self.assertEqual(self.attempts, [])
+
+    def test_empty_registration_cancels_without_address_or_mutation(self):
+        with patch('builtins.input', return_value='') as ask, contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(wizard(self.root, self.rpc))
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(self.attempts, [])
+        self.assertIsNone(read(self.root, 'peers.json'))
+
+    def test_existing_channel_peer_is_hidden_and_rejected_if_typed(self):
+        self.connected = [KEY]
+        with patch('builtins.input', side_effect=[KEY, '']), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(wizard(self.root, self.rpc, excluded_peers={KEY}))
+        self.assertNotIn('[1]', output.getvalue())
+        self.assertIn('이미 채널이 있는 상대', output.getvalue())
+        self.assertEqual(self.attempts, [])
+
+    def test_bad_key_or_out_of_range_number_reprompts_before_address(self):
+        with patch('builtins.input', side_effect=['1', 'bad-key', SELF, '']) as ask, contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(wizard(self.root, self.rpc))
+        self.assertTrue(all('공개키' in c.args[0] for c in ask.call_args_list))
+        self.assertIsNone(read(self.root, 'peers.json'))
+
+    def test_filtered_number_selects_remaining_peer(self):
+        other = '02' + 'c' * 64
+        self.connected = [KEY, other]
+        with patch('builtins.input', side_effect=['1', 'node.example:9735', 'CONNECT']), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(wizard(self.root, self.rpc, excluded_peers={KEY}))
+        self.assertEqual(set(read(self.root, 'peers.json')['peers']), {other})
 
     def test_retries_back_off_and_stop_after_three_even_across_calls(self):
         approve(self.root, KEY, "node.example:9735", self.rpc)

@@ -38,6 +38,19 @@ class RouterModelTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(len(result["routes"]), 2)
 
+    def test_funding_identifies_peer_capacity_and_connection(self):
+        result = self.assess({'pending_open_channels': [{'channel': {
+            'private': False, 'remote_node_pub': 'peer1', 'capacity': '23420',
+            'channel_point': 'funding:1'}, 'confirmations_until_active': 1}]})
+        item = result['funding'][0]
+        self.assertEqual(item['peer'], 'peer1')
+        self.assertEqual(item['capacity_sat'], 23420)
+        self.assertTrue(item['peer_connected'])
+        self.peers = []
+        result = self.assess({'pending_open_channels': [{'channel': {
+            'private': False, 'remote_node_pub': 'peer1'}}]})
+        self.assertFalse(result['funding'][0]['peer_connected'])
+
     def test_one_channel_requires_action_not_indefinite_wait(self):
         self.channels.pop()
         self.assertEqual(self.assess()["code"], "channel_required")

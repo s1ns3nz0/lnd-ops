@@ -84,19 +84,34 @@ def reconnect(root, rpc=call, now=None):
         return events
 
 
-def wizard(root, rpc=call):
+def wizard(root, rpc=call, excluded_peers=()):
     info = rpc("getinfo")
     require_testnet(info)
     print("  peer 운영자와 주소를 확인한 뒤 등록하세요. 승인한 주소만 자동 재연결합니다.")
-    connected = rpc("listpeers").get("peers", [])
+    excluded = set(excluded_peers)
+    connected = [peer for peer in rpc("listpeers").get("peers", []) if peer["pub_key"] not in excluded]
     for index, peer in enumerate(connected, 1):
         direction = "상대가 접속함; 표시 주소는 재연결 주소가 아닐 수 있음" if peer.get("inbound") else "현재 연결됨"
         print(f"  [{index}] {peer['pub_key']}\n      {peer.get('address', '?')} ({direction})")
-    answer = input("  등록할 peer 번호 또는 공개키 [s=취소]: ").strip()
-    if answer == "s":
-        return False
-    selected = connected[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= len(connected) else None
-    pubkey = selected["pub_key"] if selected else answer
+    if not connected:
+        print("  선택 가능한 연결 상대가 없습니다. 다른 노드의 공개키와 접속 주소가 필요합니다.")
+        print("  주소를 모르면 Enter로 돌아가세요. 기다리거나 재조회해도 상대가 자동으로 추가되지는 않습니다.")
+    while True:
+        answer = input("  등록할 peer 번호 또는 공개키 [Enter 또는 s=취소]: ").strip()
+        if answer.lower() in ("", "s"):
+            return False
+        selected = connected[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= len(connected) else None
+        pubkey = selected["pub_key"] if selected else answer
+        if pubkey in excluded:
+            print("  이미 채널이 있는 상대입니다. 두 번째 상대는 다른 노드여야 합니다.")
+            continue
+        if pubkey == info["identity_pubkey"]:
+            print("  자기 노드는 선택할 수 없습니다. 상대 노드 공개키를 입력하세요.")
+            continue
+        if not re.fullmatch(r"0[23][0-9a-f]{64}", pubkey):
+            print("  목록의 번호 또는 02/03으로 시작하는 66자리 공개키를 입력하세요.")
+            continue
+        break
     default = selected.get("address", "") if selected and not selected.get("inbound") else ""
     address = input(f"  공개 P2P 주소 [Enter={default}]: " if default else "  공개 P2P 주소 (DNS/IP:포트): ").strip() or default
     validate_peer(pubkey, address)

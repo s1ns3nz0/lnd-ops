@@ -7,9 +7,9 @@ set -euo pipefail
   exit 2
 }
 export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
-state=$(kubectl -n lnd-testnet exec lnd-0-0 -c lnd -- \
-  lncli --lnddir=/data/.lnd --network=testnet state | \
-  python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+echo 'LND 컨테이너와 지갑 상태 응답을 기다립니다 (최대 120초)...'
+state=$(python3 "$repo_dir/ops/wallet_wait.py")
 case "$state" in
   LOCKED)
     kubectl -n lnd-testnet exec -it lnd-0-0 -c lnd -- \

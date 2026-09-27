@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 
-from router_rpc import call, require_testnet
+from router_rpc import call, require_testnet, ChannelTooSmall, AnchorReserveRejected, MIN_CHANNEL_SAT, MINIMUM_REJECTION, RESERVE_REJECTION
 from router_store import operation_lock, read, write
 
 
@@ -54,11 +54,21 @@ def funding_selection(utxos, amount_sat, rate, fee_cap):
     raise ValueError("확인된 표준 UTXO와 수수료 상한으로 채널을 열 수 없습니다. 금액·예산을 조정하세요")
 
 
+def reserve_after_open(rpc=call):
+    """Ask LND for the total reserve after one more public channel; fail closed."""
+    value = rpc('wallet', 'requiredreserve', '--additional_channels=1').get('required_reserve')
+    if isinstance(value, bool) or not isinstance(value, (int, str)) or not re.fullmatch(r'[0-9]+', str(value)):
+        raise ValueError('새 공개 채널의 anchor 예약금을 확인하지 못했습니다')
+    return int(value)
+
+
 def preview(peer, amount_sat, sat_per_vbyte, fee_cap_sat, total_cap_sat, rpc=call):
     if not re.fullmatch(r"0[23][0-9a-f]{64}", peer):
         raise ValueError("peer 공개키 형식이 잘못되었습니다")
     if any(type(value) is not int or value <= 0 for value in (amount_sat, sat_per_vbyte, fee_cap_sat, total_cap_sat)):
         raise ValueError("채널 금액·수수료율·예산은 양의 정수여야 합니다")
+    if amount_sat < MIN_CHANNEL_SAT:
+        raise ValueError(f"채널 금액은 최소 {MIN_CHANNEL_SAT:,} sat이어야 합니다")
     info = rpc("getinfo")
     require_testnet(info)
     if peer == info["identity_pubkey"]:
@@ -77,15 +87,18 @@ def preview(peer, amount_sat, sat_per_vbyte, fee_cap_sat, total_cap_sat, rpc=cal
         raise ValueError("기존·대기 채널을 포함한 전체 채널 예산을 초과합니다")
     wallet = rpc("walletbalance")
     balance = int(wallet.get("confirmed_balance", 0))
-    reserved = int(wallet.get("reserved_balance_anchor_chan", 0))
+    current_reserved = int(wallet.get("reserved_balance_anchor_chan", 0))
+    reserved = max(current_reserved, reserve_after_open(rpc))
     locked = int(wallet.get("locked_balance", 0))
     if balance - reserved - locked < amount_sat + fee_cap_sat:
-        raise ValueError("예약금·잠긴 잔액·수수료 예산을 제외한 확정 잔액이 부족합니다")
+        shortage = amount_sat + fee_cap_sat + reserved + locked - balance
+        raise ValueError(f"개설 후 anchor 예약금 {reserved:,} sat·잠긴 잔액·수수료 예산 기준으로 확정 잔액이 {shortage:,} sat 부족합니다")
     selection = funding_selection(rpc("listunspent", "--min_confs=1").get("utxos", []), amount_sat, sat_per_vbyte, fee_cap_sat)
     return {"schema": "lnd-ops/router-open/v1", "identity": info["identity_pubkey"], "peer": peer,
             "amount_sat": amount_sat, "sat_per_vbyte": sat_per_vbyte, "fee_cap_sat": fee_cap_sat,
             "total_cap_sat": total_cap_sat, "committed_sat": committed,
-            "confirmed_sat": balance, "reserved_sat": reserved, "locked_sat": locked, **selection}
+            "confirmed_sat": balance, "reserved_sat": reserved, "current_reserved_sat": current_reserved,
+            "locked_sat": locked, **selection}
 
 
 def reconcile(root, rpc=call):
@@ -143,6 +156,33 @@ def reconcile(root, rpc=call):
     return record
 
 
+def acknowledge_minimum_rejection(root, rpc=call, rejection_kind='minimum'):
+    """Operator attests an exact pre-funding rejection for a legacy journal.
+
+    Explicit invocation is required because old journals did not save errors.
+    Never infer rejection merely from an empty pending-channel list.
+    """
+    if rejection_kind not in ('minimum', 'reserve'):
+        raise ValueError('지원하지 않는 거절 근거입니다')
+    with operation_lock(root):
+        record = reconcile(root, rpc)
+        if not record or record['state'] != 'uncertain':
+            raise ValueError('거절로 확인할 uncertain 요청이 없습니다')
+        amount = record.get('amount_sat')
+        if type(amount) is not int or amount <= 0 or record.get('funding_txid') or record.get('channel_point'):
+            raise ValueError('양의 금액이고 funding 식별자가 없는 요청만 확인할 수 있습니다')
+        if rejection_kind == 'minimum' and amount >= MIN_CHANNEL_SAT:
+            raise ValueError('최소금액 미달 요청만 확인할 수 있습니다')
+        info = rpc('getinfo')
+        if info.get('identity_pubkey') != record['identity'] or not info.get('version', '').startswith('0.21.3-beta '):
+            raise ValueError('요청 지갑과 검증한 LND v0.21.3-beta를 확인할 수 없습니다')
+        record.update(state='rejected', rejection=MINIMUM_REJECTION if rejection_kind == 'minimum' else RESERVE_REJECTION,
+                      rejection_source='operator-attested', rejected_at=time.time())
+        write(root, 'open-request.json', record)
+        write(root, f"open-{record['request_id']}.json", record)
+        return record
+
+
 def submit(root, approved, rpc=call):
     with operation_lock(root):
         previous = reconcile(root, rpc)
@@ -172,6 +212,11 @@ def submit(root, approved, rpc=call):
                 if type(index) is not int or not 0 <= index <= 0xffffffff:
                     raise ValueError("funding 출력 위치를 확인할 수 없습니다")
                 record['channel_point'] = f'{txid}:{index}'
+        except (ChannelTooSmall, AnchorReserveRejected) as exc:
+            record.update(state='rejected', rejection=str(exc), rejection_source='rpc', rejected_at=time.time())
+            write(root, 'open-request.json', record)
+            write(root, f"open-{request_id}.json", record)
+            raise
         except BaseException:
             record.update(state="uncertain")
             write(root, "open-request.json", record)

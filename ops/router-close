@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""List channels and explicitly approve one cooperative testnet close."""
+import argparse
+import subprocess
+
+from router_closing import preview, status, submit
+from router_store import operation_lock, state_directory
+
+
+def show_records(records):
+    labels = {'submitting': '응답 미확인 · 중복 요청 금지', 'uncertain': '응답 미확인 · 중복 요청 금지',
+              'closing': '종료 진행 중 · 거래 확인 대기', 'closed': '종료 거래 확인됨'}
+    for record in records:
+        if record['state'] in ('submitting', 'uncertain'):
+            print('  종료 결과를 재조회합니다. 증거가 계속 없으면 운영자 확인이 필요합니다.')
+        print(f"  [{labels[record['state']]}] {record['point']}")
+        if record.get('closing_txid'):
+            print('    종료 거래: ' + record['closing_txid'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--status', action='store_true', help='종료 상태만 조회')
+    args = parser.parse_args()
+    root = state_directory()
+    with operation_lock(root):
+        identity, channels, records = status(root)
+    print('\n== testnet 채널 · 일반 종료 ==')
+    print('  현재 노드: ' + identity)
+    show_records(records)
+    if args.status:
+        return
+    if not channels:
+        print('  현재 열린 채널이 없습니다.')
+        return
+    for index, c in enumerate(channels, 1):
+        print(f"  [{index}] {'활성' if c.get('active') else '비활성 · 재연결 필요'} / {'비공개' if c.get('private') else '공개'}")
+        print('    상대: ' + c['remote_pubkey'])
+        print('    채널: ' + c['channel_point'])
+        print(f"    전체 용량 {int(c['capacity']):,} sat / 내 잔액 {int(c['local_balance']):,} sat")
+    answer = input('  종료할 채널 번호 [Enter/s=취소]: ').strip()
+    if answer.lower() in ('', 's'):
+        print('  취소됨 · 종료 요청 없음')
+        return
+    if not answer.isdigit() or not 1 <= int(answer) <= len(channels):
+        raise ValueError('목록의 채널 번호를 입력하세요')
+    point = channels[int(answer) - 1]['channel_point']
+    if any(r['point'] == point for r in records):
+        raise ValueError('기존 종료 요청이 있습니다. channels 또는 --status로 상태를 조회하세요')
+    rate = int(input('  시작 수수료율 sat/vB [Enter=1]: ').strip() or '1')
+    maximum = int(input(f'  최대 수수료율 sat/vB [Enter={rate}]: ').strip() or str(rate))
+    plan = preview(point, rate, maximum)
+    print('\n== 최종 확인 · 아직 종료 전 ==')
+    print('  현재 노드: ' + plan['identity'])
+    print('  상대: ' + plan['peer'])
+    print('  종료할 채널: ' + point)
+    print(f"  내 채널 잔액 {plan['local_sat']:,} sat (실제 반환액은 종료 수수료·정산 결과에 따라 달라짐)")
+    print(f'  수수료율 {rate} → 최대 {maximum} sat/vB · 총 수수료 sat 상한은 아님')
+    print('  일반 종료를 요청합니다. 상대의 합의가 필요하며 강제 종료하지 않습니다.')
+    print('  이 채널의 결제·중계가 중단됩니다. 거래 확인 후 지갑 잔액을 확인하세요.')
+    if input('  실행하려면 CLOSE 입력 [그 외 입력=취소]: ').strip() != 'CLOSE':
+        print('  취소됨 · 종료 요청 없음')
+        return
+    print('  종료 요청 전송 중 · 응답이 늦어도 중복 요청하지 마세요.', flush=True)
+    show_records([submit(root, plan)])
+    print('  상태 재조회: lnd-ops> channels 또는 ./ops/router-close --status')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (EOFError, KeyboardInterrupt):
+        print('\n  화면을 종료합니다. 전송한 요청은 취소되지 않습니다. channels에서 상태를 확인하세요.')
+    except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f'  보류: {exc}')
+        print('  요청 전송 뒤 오류라면 결과 미확인입니다. channels에서 조회하세요. 자동 재전송하지 않습니다.')
+        raise SystemExit(1)

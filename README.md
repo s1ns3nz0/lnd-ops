@@ -101,10 +101,15 @@ identity, channels, PVC, SCB, and monitoring history. Regtest recovery creates
 a separate recovery PVC only while the original identity is stopped; its finish
 and abort commands resume the preserved original PVC.
 
-At first interactive start, choose an existing testnet/regtest wallet workspace
-or reserve a new separate workspace. The choice is stored owner-only under the
-project state directory. Existing selections record their PVC UIDs and stop if
-those identities change; selecting a new workspace never replaces a wallet.
+At interactive start, choose an existing testnet/regtest workspace or initial
+setup for a profile absent from this host. On a fresh Mac, choose wallet option
+`3`, then Phase `2` to bootstrap testnet infrastructure and reach the explicit
+wallet-creation prompt. Use a new seed for this host. Setup records the created
+PVC UIDs before continuing; existing selections stop if those identities change.
+The choice is stored owner-only under the project state directory. Initial setup
+rejects existing PVCs or workloads and failed resource queries; it does not create
+a second workspace for the same profile. Run only one setup process at a time.
+If deployment stops after creating PVCs, choose the existing workspace to resume.
 
 Start the Phase 9 rehearsal with `ops/demo`. It presents seven color-coded
 cumulative stages, asks which final stage to run, and writes a private,

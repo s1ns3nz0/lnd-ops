@@ -22,5 +22,8 @@ done
 }
 
 "$repo_dir/ops/deploy" testnet --router --router-external-ip "$external_ip"
+export KUBECONFIG=${KUBECONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/kubeconfig}
+echo 'Waiting for the Router configuration rollout before wallet unlock...'
+python3 "$repo_dir/ops/wallet_wait.py" >/dev/null
 echo 'OK: Router P2P Service is enabled at Kubernetes NodePort 30973.'
 echo 'ACTION: forward public TCP 9735 to this host NodePort, then run ops/configure-router-policy --confirm "APPLY ROUTER POLICY".'

@@ -128,6 +128,43 @@ ops/configure-router-policy --confirm "APPLY ROUTER POLICY"
 ```
 
 The channel wizard separates peer selection, numeric inputs and final approval.
+
+Channel amounts must be at least 20,000 sat, matching the pinned
+[LND minimum](https://github.com/lightningnetwork/lnd/blob/v0.21.3-beta/funding/manager.go).
+The wizard reports a shortfall before amount approval when the spendable balance
+cannot cover that minimum and its default 3,000 sat fee budget. That budget is
+not a promise of the actual fee; input selection and the peer may impose further
+constraints. An exact minimum-size RPC rejection is journaled as `rejected`;
+timeouts and ambiguous errors remain `uncertain` and block duplicate opens.
+
+Spendable balance uses LND's `wallet requiredreserve --additional_channels=1`
+to include the new public channel, rather than subtracting only the current
+`walletbalance` reserve. The same query is repeated before submission; a changed
+reserve requires a new approval. Missing reserve data blocks submission. The
+final preview shows the total post-open anchor reserve. See
+[RequiredReserve](https://lightning.engineering/api-docs/api/lnd/wallet-kit/required-reserve/).
+
+Older journals did not retain the RPC error. Only if the original terminal
+reported `channel is too small, the minimum channel size is: 20000 SAT`, run:
+
+```sh
+ops/router-channel --acknowledge-minimum-rejection
+```
+
+This records the operator's attestation without submitting a payment or channel.
+It requires an uncertain sub-minimum request, no funding identifier, the same
+wallet and the pinned LND version. It reconciles existing channel evidence first
+and retains both journal copies. An empty pending list alone never authorizes
+this action. After funding is confirmed, return to Phase 3 and approve a fresh
+channel preview.
+
+For a legacy request that explicitly returned `reserved wallet balance
+invalidated: transaction would leave insufficient funds for fee bumping anchor
+channel closings (see debug log for details)`, use
+`ops/router-channel --acknowledge-reserve-rejection` instead. It records that
+specific operator-attested rejection after reconciliation and the same
+wallet/version/no-funding-identifier checks; it does not require a sub-minimum
+amount. New exact reserve rejection responses are recorded automatically.
 Enter accepts each displayed numeric default: up to 100,000 sat after reserved
 and locked balance plus 3,000 sat fee headroom, a 1 sat/vB testnet starting rate,
 a fee cap of at least 3,000 sat adjusted for selected inputs, and the current
@@ -246,3 +283,22 @@ failure after WSL starts, inspect `lnd-ops-router-refresh.service` in Linux. The
 have separate retry limits; neither proves external P2P reachability.
 Actual Mac VM startup and login recovery also remain unverified. The monitor reconnects approved
 peers only and never performs funding, swaps or payments automatically.
+
+### 현재 채널 조회와 일반 종료
+
+`./lndops` 메인 메뉴에서 `channels`, Router 진행 화면에서 `c`를 입력한다.
+현재 testnet 노드의 공개·비공개 채널, 상대 공개키, 전체 용량과 내 잔액을 보고
+종료할 채널 번호를 선택한다. 시작 수수료율과 최대 수수료율(sat/vB)을 확인한 뒤
+대문자 `CLOSE`를 입력해야 일반 종료 요청을 전송한다. 최대 수수료율은 총 sat
+수수료 한도가 아니다. 실제 반환액은 종료 수수료와 정산 결과에 따라 달라진다.
+상대가 비활성이거나 처리 중인 결제가 있으면 보류하며 강제 종료는 지원하지 않는다.
+
+종료 요청 뒤에는 메인 메뉴로 돌아가 자동 채널 개설 안내를 멈춘다.
+`channels` 또는 `./ops/router-close --status`로 종료 거래 확인 상태를 다시 조회한다.
+종료 응답을 잃으면 실패로 단정하지 않고 미확인 기록을 유지한다. 같은 채널을
+자동 재전송하지 않으며, 기록만 있고 LND에 종료 증거가 없는 경우 운영자 확인이 필요하다.
+`종료 거래 확인됨` 이후 사용 가능한 금액은 지갑 잔액에서 확인한다.
+
+### 실습 진행 상황 확인
+
+메인 메뉴의 `progress`는 개설·설정 안내를 자동 실행하지 않고 현재 testnet 노드를 지속 조회한다. 화면은 동기화, 서로 다른 상대의 공개 채널 2개, 정책·잔액, 실제 중계 이력, 외부 접속 검사를 구분하고 현재 대기 이유와 다음 행동을 표시한다. 개설 확인 대기에는 상대 연결 상태·금액·남은 블록 확인 수를 보여준다. `d`로 전체 노드 공개키, 채널별 송수신 가능액과 funding 거래 ID를 확인한다. 준비 완료만으로 실제 중계 검증이 완료되지는 않으며, 자연 발생하는 중계 트래픽에는 완료 기한이 없다. `q`는 조회 화면만 종료한다.
