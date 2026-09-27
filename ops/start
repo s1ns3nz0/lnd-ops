@@ -432,9 +432,17 @@ def render_router_wait(phase, active_channels, detail, channel_synced_at, starte
 def render_router_lines(raw_lines, previous_lines=None):
     columns = shutil.get_terminal_size((80, 24)).columns
     lines = tuple(fit_terminal_line(line, columns) for line in raw_lines)
+    def styled(line):
+        color = CYAN if '==' in line else GREEN if '[완료]' in line or '[관측]' in line or '[확인] 외부' in line else YELLOW if '[' in line else None
+        return paint(line, color) if color else line
     if sys.stdout.isatty():
+        if previous_lines is not None and len(previous_lines) != len(lines):
+            if len(previous_lines) > 1:
+                sys.stdout.write(f"\033[{len(previous_lines) - 1}A")
+            sys.stdout.write('\r\033[J')
+            previous_lines = None
         if previous_lines is None:
-            sys.stdout.write("\n".join(lines))
+            sys.stdout.write("\n".join(styled(line) for line in lines))
         else:
             last_index = len(lines) - 1
             for index, (previous, current) in enumerate(zip(previous_lines, lines)):
@@ -443,12 +451,12 @@ def render_router_lines(raw_lines, previous_lines=None):
                 upward = last_index - index
                 if upward:
                     sys.stdout.write(f"\033[{upward}A")
-                sys.stdout.write(f"\r\033[2K{current}")
+                sys.stdout.write(f"\r\033[2K{styled(current)}")
                 if upward:
                     sys.stdout.write(f"\033[{upward}B")
                 sys.stdout.write("\r")
         sys.stdout.flush()
-    elif previous_lines is None:
+    elif previous_lines is None or len(previous_lines) != len(lines):
         print("\n".join(lines))
     else:
         changed = [current for previous, current in zip(previous_lines[:-1], lines[:-1]) if previous != current]
@@ -458,31 +466,59 @@ def render_router_lines(raw_lines, previous_lines=None):
 
 
 def render_router_snapshot(snapshot, changed_at, last_success, started_at, previous_lines):
-    checked = time.strftime("%H:%M:%S", time.localtime(last_success)) if last_success else "아직 없음"
-    changed = time.strftime("%H:%M:%S", time.localtime(changed_at)) if changed_at else "아직 없음"
     now = time.time()
-    age = int(now - last_success) if last_success else None
     fresh = last_success is not None and 0 <= now - last_success <= 30 and snapshot.get('code') != 'query_error'
-    external_current = fresh and snapshot.get('external_reachability') == 'operator_attested' and snapshot.get('external_expires_at', 0) > now
-    freshness = f"{age}초 전" if age is not None else "조회 중"
-    if age is not None and not fresh:
-        freshness += " / 오래된 결과"
-    rows = (
-        f"  공개 채널  {snapshot.get('active_public', '?')}/2 / peer {snapshot.get('public_peers', '?')}",
-        f"  채널 상태  대기 {snapshot.get('pending_public', '?')} / 비활성 {snapshot.get('inactive_public', '?')} / 비공개 {snapshot.get('private', '?')}",
-        f"  현재 작업  {snapshot.get('message', '상태 조회 중')}",
-        f"  준비 상태  {'조회 실패' if snapshot.get('code') == 'query_error' else '새 조회 필요' if not fresh else '가능' if snapshot.get('ready') else '조건 확인 중'}",
-        f"  실경유 이력 {'로컬 중계 관측 ' if snapshot.get('forwarding_proof') == 'observed' else '확인 ' if snapshot.get('forwarding_proof') == 'verified' else '트래픽 대기' if snapshot.get('ready') else '미검증'}{time.strftime('%m-%d %H:%M', time.localtime(snapshot['proof_verified_at'])) if snapshot.get('proof_verified_at') else ''}",
-        f"  외부 접속  {'확인 (운영자 외부 실행)' if external_current else '미검증'}",
-        f"  접속 만료  {time.strftime('%m-%d %H:%M:%S', time.localtime(snapshot['external_expires_at'])) if external_current else '검사 필요'}",
-        f"  동기화     체인 {'완료' if snapshot.get('synced_to_chain') else '확인 중'} / 그래프 {'완료' if snapshot.get('synced_to_graph') else '확인 중'}",
-        f"  채널 확인  {snapshot.get('funding_progress', '조회 중')}",
-        f"  만료 조건  {snapshot.get('funding_expiry', '조회 중')}",
-        f"  채널 변경  {changed}",
-        f"  최근 조회  {checked} ({freshness})",
-        f"  경과 시간  {elapsed_time(time.monotonic() - started_at)}",
-    )
-    return render_router_lines(rows, previous_lines)
+    external = fresh and snapshot.get('external_reachability') == 'operator_attested' and snapshot.get('external_expires_at', 0) > now
+    clock = f"  경과 시간  {elapsed_time(time.monotonic() - started_at)}"
+    if snapshot.get('code') == 'loading':
+        return render_router_lines(('  [조회 중] 노드 상태를 가져오고 있습니다.', clock), previous_lines)
+    ready = '조회 실패' if snapshot.get('code') == 'query_error' else '새 조회 필요' if not fresh else '준비 완료' if snapshot.get('ready') else '조건 확인 중'
+    proof = snapshot.get('forwarding_proof')
+    forwarded = proof in ('observed', 'verified')
+    routing = '로컬 중계 관측' if proof == 'observed' else '실경유 이력 확인' if forwarded else '트래픽 대기' if snapshot.get('ready') else '미검증'
+    rows = [
+        '  == 운영 상태 ==',
+        f"  [{'완료' if fresh and snapshot.get('ready') else '확인'}] 라우팅 준비: {ready}",
+        f"  [{'관측' if forwarded else '대기'}] 실제 중계: {routing}",
+        f"  [{'확인' if external else '미검증'}] 외부 접속: {'운영자 외부 검사' if external else '별도 검사 필요'}",
+    ]
+    if forwarded and snapshot.get('proof_verified_at'):
+        rows.append('  중계 시각: ' + time.strftime('%m-%d %H:%M:%S', time.localtime(snapshot['proof_verified_at'])))
+    if external:
+        rows.append('  외부 검사 유효: ' + time.strftime('%H:%M:%S', time.localtime(snapshot['external_expires_at'])) + '까지')
+    rows += ['  == 채널 · 동기화 ==',
+             f"  활성 공개 {snapshot.get('active_public', '?')}/2개 / 상대 노드 {snapshot.get('public_peers', '?')}개",
+             f"  대기 {snapshot.get('pending_public', '?')} / 비활성 {snapshot.get('inactive_public', '?')} / 비공개 {snapshot.get('private', '?')}",
+             f"  체인 {'완료' if snapshot.get('synced_to_chain') else '확인 중'} / 그래프 {'완료' if snapshot.get('synced_to_graph') else '확인 중'}"]
+    if snapshot.get('pending_public') or snapshot.get('code') in ('funding_pending', 'funding_review'):
+        rows += [f"  채널 확인: {snapshot.get('funding_progress', '조회 중')}",
+                 f"  만료 조건: {snapshot.get('funding_expiry', '조회 중')}"]
+    rows += ['  == 현재 안내 ==']
+    if fresh and snapshot.get('code') == 'proof_required':
+        rows += ['  추가 입력 없이 실제 중계를 기다립니다.',
+                 '  최근 24시간 기록 자동 조회 · 대기 기한 없음']
+    elif snapshot.get('code') == 'external_required':
+        rows += ['  중계 이력 확인. 외부 접속 검사는 별도입니다.',
+                 '  e: 외부망 검사 요청 / 결과 가져오기']
+    else:
+        rows.append('  ' + snapshot.get('message', '상태 조회 중'))
+    rows += ['  == 조작: 키 입력 후 Enter ==',
+             '  r 재조회·재시도 / m 지속 감시 설정',
+             '  v 감시 상태 / o 관측·백업 / e 외부 검사',
+             '  q 또는 Ctrl+C: 화면 종료 · 노드는 유지',
+             '  최근 조회: ' + (time.strftime('%H:%M:%S', time.localtime(last_success)) if last_success else '아직 없음') + (' · 새 조회 필요' if not fresh else ''), clock]
+    # Wrap by terminal cells; Korean text must not be truncated or double-wrap.
+    width = max(4, shutil.get_terminal_size((80, 24)).columns - 1)
+    wrapped = []
+    for row in rows:
+        line = ''
+        for char in row:
+            if display_width(line + char) > width:
+                wrapped.append(line)
+                line = '  '
+            line += char
+        wrapped.append(line)
+    return render_router_lines(wrapped, previous_lines)
 
 
 def close_router_wait(previous_lines):
@@ -504,10 +540,6 @@ def refresh_router_clock(phase, active_channels, detail, channel_synced_at, star
 
 def guide_router(number, phase):
     section("PHASE 03 · ROUTER PROGRESS", CYAN)
-    print("  r+Enter: 작업 재시도 / m+Enter: 지속 감시 설정")
-    print("  v+Enter: 지속 감시·조회 시각 확인")
-    print("  o+Enter: 관측·백업 준비 (Router 검증 화면으로 복귀)")
-    print("  q+Enter 또는 Ctrl+C: 중단")
     started_at = time.monotonic()
     previous_lines = None
     snapshot = {"code": "loading", "message": "상태 조회 중"}
@@ -565,18 +597,9 @@ def guide_router(number, phase):
                         actions[code]()
                         worker.request_now()
                         continue
-                    if code in ("liquidity_required", "proof_required", "external_required", "peer_disconnected", "funding_review"):
+                    if code in ("liquidity_required", "peer_disconnected", "funding_review"):
                         previous_lines = close_router_wait(previous_lines)
                         print(f"  필요한 조건: {result['message']}")
-                        if code == 'proof_required':
-                            print('  추가 SSH 노드는 필요 없습니다. 이 노드의 최근 24시간 중계 기록을 자동 조회합니다.')
-                            print('  다른 사용자의 결제가 이 노드를 지나야 기록됩니다. 대기 시간은 정해져 있지 않습니다.')
-                            print('  m: 백그라운드 감시 설정 / q: 화면 종료 (노드는 계속 실행됩니다)')
-                        if code == 'external_required':
-                            if result.get('forwarding_proof') == 'observed':
-                                print('  LND에 기록된 중계입니다. 송·수신자 기록을 별도로 대조한 결과는 아닙니다.')
-                            print('  실제 중계와 외부에서 새로 접속 가능한지는 별개입니다. 완료로 처리하지 않습니다.')
-                            print('  e+Enter: 별도 외부망 검사 요청·결과 가져오기 (결과 유효기간 10분)')
                         if code == "liquidity_required":
                             print(f"  시험 금액 {result.get('test_sat', '?')} sat / 수수료 상한 {result.get('fee_limit_sat', '?')} sat")
                             reasons = {

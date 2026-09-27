@@ -94,9 +94,9 @@ class SupportMenuTests(unittest.TestCase):
         snapshot = {"code": "query_error", "ready": True, "forwarding_proof": "verified", "proof_verified_at": 1000}
         with patch.object(start, "render_router_lines", side_effect=lambda rows, previous: rows):
             rows = start.render_router_snapshot(snapshot, None, None, 0, None)
-        self.assertIn("조회 실패", rows[3])
-        self.assertIn("실경유 이력 확인", rows[4])
-        self.assertIn("외부 접속  미검증", rows[5])
+        self.assertIn("조회 실패", "\n".join(rows))
+        self.assertIn("실경유 이력 확인", "\n".join(rows))
+        self.assertIn("[미검증] 외부 접속", "\n".join(rows))
 
 
 class MonitoringRedeployTests(unittest.TestCase):

@@ -77,7 +77,6 @@ class RouterInteractionTests(unittest.TestCase):
             [status('proof_required', ready=True)], answers=['q'])
         self.assertEqual(outcome, 'partial')
         self.assertEqual(events, [])
-        self.assertIn('추가 SSH 노드는 필요 없습니다', output)
 
     def test_external_check_is_explicit_and_never_automatic(self):
         outcome, events, _, _, _ = self.drive(

@@ -22,6 +22,31 @@ class InteractiveOutput(io.StringIO):
 
 
 class RouterStatusTests(unittest.TestCase):
+    def test_initial_loading_does_not_claim_unknown_resource_counts(self):
+        with unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows):
+            rows = start.render_router_snapshot({'code': 'loading'}, None, None, 0, None)
+        self.assertEqual(len(rows), 2)
+        self.assertIn('조회 중', rows[0])
+        self.assertNotIn('?', '\n'.join(rows))
+
+    def test_loading_to_dashboard_replaces_the_short_block(self):
+        output = InteractiveOutput()
+        with unittest.mock.patch.object(start.sys, 'stdout', output):
+            start.render_router_lines(('state', 'channels', 'timer'), ('loading', 'timer'))
+        self.assertIn('\033[1A\r\033[J', output.getvalue())
+        self.assertIn('state\nchannels\ntimer', output.getvalue())
+
+    def test_narrow_dashboard_wraps_guidance_without_losing_text(self):
+        with unittest.mock.patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((40, 30))), \
+                unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows), \
+                unittest.mock.patch.object(start.time, 'time', return_value=100):
+            rows = start.render_router_snapshot({'code': 'proof_required', 'ready': True}, None, 100, 0, None)
+        self.assertTrue(all(start.display_width(row) <= 39 for row in rows))
+        joined = ''.join(row.strip() for row in rows)
+        self.assertIn('추가 입력 없이 실제 중계를 기다립니다.', joined)
+        self.assertNotIn('만료 조건', joined)
+        self.assertNotIn('접속 만료', joined)
+
     def test_funding_progress_rows_fit_a_narrow_terminal(self):
         snapshot = {'code': 'funding_pending', 'funding_progress': '1~3블록 남음 · 일부 미제공',
                     'funding_expiry': '100블록 남음 (최소)'}
@@ -42,8 +67,8 @@ class RouterStatusTests(unittest.TestCase):
             with unittest.mock.patch.object(start.time, 'time', return_value=now), \
                     unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows):
                 rows = start.render_router_snapshot(snapshot, None, 100, 0, None)
-            self.assertIn('새 조회 필요', rows[3])
-            self.assertIn('미검증', rows[5])
+            self.assertIn('새 조회 필요', '\n'.join(rows))
+            self.assertIn('[미검증] 외부 접속', '\n'.join(rows))
 
     def test_external_expiry_is_reflected_between_status_polls(self):
         snapshot = {'code': 'complete', 'ready': True, 'external_reachability': 'operator_attested',
@@ -51,8 +76,8 @@ class RouterStatusTests(unittest.TestCase):
         with unittest.mock.patch.object(start.time, 'time', return_value=110), \
                 unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows):
             rows = start.render_router_snapshot(snapshot, None, 100, 0, None)
-        self.assertIn('가능', rows[3])
-        self.assertIn('미검증', rows[5])
+        self.assertIn('준비 완료', '\n'.join(rows))
+        self.assertIn('[미검증] 외부 접속', '\n'.join(rows))
 
     def test_expired_completion_does_not_advance_phase(self):
         worker = unittest.mock.Mock()
