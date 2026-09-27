@@ -62,6 +62,7 @@ def readiness(test_sat=10, fee_limit_sat=10, rpc=call, info=None):
 
 
 def snapshot(test_sat=10, fee_limit_sat=10):
+    checked_at = time.time()
     base = {"schema": "lnd-ops/router-status/v1", "ready": False, "complete": False,
             "external_reachability": "unverified", "forwarding_proof": "unverified"}
     try:
@@ -99,7 +100,7 @@ def snapshot(test_sat=10, fee_limit_sat=10):
                     if result["external_reachability"] == "operator_attested":
                         result.update(complete=True, code="complete",
                                       message="현재 라우팅 준비·실경유 이력 확인 / 외부 접속은 운영자 실행 결과로 확인")
-        return result | {"checked_at": time.time()}
+        return result | {"checked_at": checked_at}
     except WalletLocked as exc:
         return base | {"code": "wallet_locked", "message": str(exc), "checked_at": time.time()}
     except (RuntimeError, KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as exc:

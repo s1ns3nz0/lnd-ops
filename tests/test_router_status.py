@@ -312,3 +312,21 @@ class LiveForwardingRowsTests(unittest.TestCase):
         self.assertIn('아직 조회하지 못했습니다', '\n'.join(start.router_forwarding_rows({}, True)))
         self.assertIn('일부 기록', '\n'.join(start.router_forwarding_rows(
             dict(forwarding_history_count=50000, forwarding_window_capped=True), True)))
+
+
+class ConnectionFreshnessTests(unittest.TestCase):
+    def test_disconnect_reconnect_and_stale_are_distinct(self):
+        base = dict(code='proof_required', ready=True, peers=1, channels=[dict(peer='peer', active=True, peer_connected=True)])
+        with unittest.mock.patch.object(start, 'render_router_lines', side_effect=lambda rows, previous: rows), \
+             unittest.mock.patch.object(start.time, 'time', return_value=100):
+            current = '\n'.join(start.render_router_snapshot(base, None, 100, 0, None, compact=True))
+            self.assertIn('연결됨 / 채널 활성', current)
+            base['channels'][0]['peer_connected'] = False
+            current = '\n'.join(start.render_router_snapshot(base, None, 100, 0, None, compact=True))
+            self.assertIn('연결 끊김 / 채널 활성', current)
+            base['code'] = 'query_error'
+            base['message'] = 'RPC timeout'
+            current = '\n'.join(start.render_router_snapshot(base, None, 100, 0, None, compact=True))
+            self.assertIn('연결 미확인 / 채널 상태 미확인', current)
+            self.assertNotIn('연결 끊김', current)
+            self.assertIn('RPC timeout', current)

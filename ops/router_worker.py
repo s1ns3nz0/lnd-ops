@@ -72,4 +72,5 @@ class StatusWorker:
             self.output = None
 
     def request_now(self):
+        self.close()
         self.due = 0

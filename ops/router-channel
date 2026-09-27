@@ -64,7 +64,7 @@ def confirm_open(plan, amount, rate, fee_cap, total_cap):
             heading('취소됨 · 새 개설 요청 없음')
             say('입력한 조건으로 채널을 개설하지 않았습니다.', '1;33')
             say('Router 상태 화면으로 돌아갑니다.')
-            say('다시 진행하려면 r + Enter를 누르세요.')
+            say('다시 진행하려면 a + Enter를 누르세요.')
             return False
         say('승인하려면 대문자 OPEN을 입력하세요.', '1;33')
         say('취소하려면 Enter 또는 s를 입력하세요.')
@@ -154,9 +154,9 @@ def wizard():
         print("  기존 채널 상대를 제외하면 연결된 후보가 없습니다.")
         print("  다른 노드의 공개키와 P2P 접속 주소를 등록해야 두 번째 상대를 선택할 수 있습니다.")
         if peer_wizard(root, excluded_peers=existing):
-            print("  연결 요청을 처리했습니다. r + Enter로 연결 여부와 채널 후보를 다시 확인하세요.")
+            print("  연결 요청을 처리했습니다. a + Enter로 연결 여부와 채널 후보를 다시 확인하세요.")
         else:
-            print("  등록을 취소했습니다. 다른 노드 정보를 준비한 뒤 r + Enter로 다시 진행하세요.")
+            print("  등록을 취소했습니다. 다른 노드 정보를 준비한 뒤 a + Enter로 다시 진행하세요.")
         return 10
     number = positive_integer(f"  peer 선택 [1-{len(peers)}, s=취소]: ")
     if number > len(peers):

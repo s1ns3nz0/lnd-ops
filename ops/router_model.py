@@ -108,13 +108,15 @@ def funding_progress(pending, peers=()):
 def assess(info, channels, pending, peers, policies, *, test_sat=10, fee_limit_sat=10, target_policy=None):
     if test_sat <= 0 or fee_limit_sat < 0:
         raise ValueError("시험 금액은 양수, 수수료 상한은 0 이상이어야 합니다")
+    connected = {p.get('pub_key') for p in peers}
     public = [channel for channel in channels if not channel.get("private")]
-    active = [channel for channel in public if channel.get("active")]
+    active = [channel for channel in public if channel.get("active") and channel.get("remote_pubkey") in connected]
     pending_public = [item for item in pending.get("pending_open_channels", [])
                       if not item.get("channel", {}).get("private", False)]
     rows = [{"id": channel_id(channel), "point": channel.get("channel_point"),
              "peer": channel.get("remote_pubkey"), "active": bool(channel.get("active")),
              "private": bool(channel.get("private")),
+             "peer_connected": channel.get("remote_pubkey") in connected,
              "outbound_msat": directional_capacity(channel),
              "inbound_msat": directional_capacity(channel, True)} for channel in channels]
     result = {"schema": "lnd-ops/router-status/v1", "identity": info.get("identity_pubkey"),
@@ -122,9 +124,10 @@ def assess(info, channels, pending, peers, policies, *, test_sat=10, fee_limit_s
               "synced_to_chain": bool(info.get("synced_to_chain")),
               "synced_to_graph": bool(info.get("synced_to_graph")),
               "active_public": len(active), "public_peers": len({c.get('remote_pubkey') for c in active}),
-              "inactive_public": len(public) - len(active), "private": len(channels) - len(public),
+              "inactive_public": sum(not c.get("active") for c in public), "private": len(channels) - len(public),
               "pending_public": len(pending_public), "pending": pending_public,
-              "channels": rows, "peers": len(peers), "test_sat": test_sat, "fee_limit_sat": fee_limit_sat}
+              "channels": rows, "peers": len(peers),
+              "peer_connections": [{"peer": p.get("pub_key"), "address": p.get("address")} for p in peers], "test_sat": test_sat, "fee_limit_sat": fee_limit_sat}
     result.update(funding_progress(pending_public, peers))
 
     def waiting(code, message):
@@ -144,7 +147,7 @@ def assess(info, channels, pending, peers, policies, *, test_sat=10, fee_limit_s
                 return waiting('funding_review', 'funding 만료 조건 확인 필요 · 상대 노드와 상태 확인')
             return waiting("funding_pending", "공개 채널 funding 확인 대기 중")
         connected = {p.get("pub_key") for p in peers}
-        if any(not c.get("active") and c.get("remote_pubkey") not in connected for c in public):
+        if any(c.get("remote_pubkey") not in connected for c in public):
             return waiting("peer_disconnected", "기존 공개 채널의 peer 재연결이 필요합니다")
         if len({c.get("remote_pubkey") for c in public}) >= 2:
             return waiting("channel_inactive", "기존 공개 채널의 활성화를 확인 중입니다")

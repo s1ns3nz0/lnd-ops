@@ -56,20 +56,19 @@ class RouterInteractionTests(unittest.TestCase):
                               external_reachability='operator_attested', external_expires_at=200))
         outcome, events, worker, render, output = self.drive(results)
         self.assertEqual(outcome, 'complete')
-        self.assertEqual(events, ['unlock', 'exposure', 'router-peers', 'router-channel',
-                                  'policy'])
+        self.assertEqual(events, [])
         self.assertEqual(worker.tick.call_count, len(results))
         self.assertEqual(worker.request_now.call_count, len(events))
         self.assertEqual([call.args[0]['code'] for call in render.call_args_list],
-                         ['syncing', 'funding_pending', 'graph_pending', 'liquidity_required', 'proof_required', 'external_required'])
+                         [result['code'] for result in results[:-1]])
         self.assertEqual(output.count('완료: Router'), 1)
 
     def test_action_success_is_not_completion_or_automatic_resubmission(self):
         outcome, events, worker, _, output = self.drive(
-            [status('channel_required'), status('channel_required')], answers=['q'])
+            [status('channel_required')] * 3, answers=['a', 'q'])
         self.assertEqual(outcome, 'partial')
         self.assertEqual(events, ['router-channel'])
-        self.assertEqual(worker.tick.call_count, 2)
+        self.assertEqual(worker.tick.call_count, 3)
         self.assertNotIn('완료: Router', output)
 
     def test_single_node_wait_never_prompts_for_ssh_or_starts_payment(self):
@@ -86,11 +85,21 @@ class RouterInteractionTests(unittest.TestCase):
 
     def test_declined_policy_waits_and_retries_only_on_explicit_input(self):
         outcome, events, worker, _, output = self.drive(
-            [status('policy_required')] * 4, answers=['r', 'q'], policy_approved=False)
+            [status('policy_required')] * 5, answers=['a', 'a', 'q'], policy_approved=False)
         self.assertEqual(outcome, 'partial')
         self.assertEqual(events, ['policy', 'policy'])
-        self.assertEqual(worker.request_now.call_count, 3)
+        self.assertEqual(worker.request_now.call_count, 4)
         self.assertNotIn('완료: Router', output)
+
+    def test_refresh_never_opens_settings_and_detail_keeps_polling(self):
+        outcome, events, worker, render, _ = self.drive(
+            [status('peer_disconnected'), status('syncing'), status('proof_required', ready=True)],
+            answers=['d', 'r', 'q'])
+        self.assertEqual(outcome, 'partial')
+        self.assertEqual(events, [])
+        self.assertEqual(worker.tick.call_count, 3)
+        self.assertEqual([c.kwargs['compact'] for c in render.call_args_list], [True, False, False])
+        worker.request_now.assert_called_once()
 
     def test_query_error_preserves_snapshot_until_operator_interrupts(self):
         initial = status('funding_pending', channels=[{'point': 'tx:0', 'active': False, 'private': False}])

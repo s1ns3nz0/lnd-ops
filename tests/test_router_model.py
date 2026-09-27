@@ -51,6 +51,23 @@ class RouterModelTests(unittest.TestCase):
             'private': False, 'remote_node_pub': 'peer1'}}]})
         self.assertFalse(result['funding'][0]['peer_connected'])
 
+    def test_disconnected_active_flag_cannot_claim_ready(self):
+        self.peers.pop()
+        result = self.assess()
+        self.assertFalse(result['ready'])
+        self.assertEqual(result['code'], 'peer_disconnected')
+        self.assertEqual(result['active_public'], 1)
+
+    def test_connection_is_independent_of_channel_activation(self):
+        self.channels[0]['active'] = False
+        result = self.assess()
+        self.assertTrue(result['channels'][0]['peer_connected'])
+        self.assertFalse(result['channels'][0]['active'])
+        self.peers = []
+        result = self.assess()
+        self.assertFalse(result['channels'][1]['peer_connected'])
+        self.assertTrue(result['channels'][1]['active'])
+
     def test_one_channel_requires_action_not_indefinite_wait(self):
         self.channels.pop()
         self.assertEqual(self.assess()["code"], "channel_required")

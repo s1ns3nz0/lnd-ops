@@ -48,6 +48,17 @@ class WorkerTests(unittest.TestCase):
         worker.process.wait(timeout=5)
         self.assertEqual(worker.tick()["code"], "query_error")
 
+    def test_explicit_refresh_cancels_old_query_and_starts_fresh(self):
+        worker = StatusWorker([sys.executable, '-c', 'import time; time.sleep(30)'])
+        self.addCleanup(worker.close)
+        worker.tick()
+        old = worker.process
+        worker.request_now()
+        self.assertIsNotNone(old.poll())
+        self.assertIsNone(worker.process)
+        worker.tick()
+        self.assertNotEqual(worker.process.pid, old.pid)
+
     def test_close_reaps_running_status_child(self):
         worker = StatusWorker([sys.executable, "-c", "import time; time.sleep(30)"])
         worker.tick()
