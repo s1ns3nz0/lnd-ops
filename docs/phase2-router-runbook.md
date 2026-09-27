@@ -127,6 +127,17 @@ the agreed policy explicitly:
 ops/configure-router-policy --confirm "APPLY ROUTER POLICY"
 ```
 
+The channel wizard separates peer selection, numeric inputs and final approval.
+Enter accepts each displayed numeric default: up to 100,000 sat after reserved
+and locked balance plus 3,000 sat fee headroom, a 1 sat/vB testnet starting rate,
+a fee cap of at least 3,000 sat adjusted for selected inputs, and the current
+existing/pending capacity plus the proposed channel amount. These are starting
+values, not a confirmation-time guarantee or a promise that the peer accepts
+the amount; preflight still checks funds and fees. The final screen requires
+uppercase `OPEN`. Enter or `s` cancels with an explicit no-new-request message;
+other text prompts again without submitting. Long keys and summaries wrap to
+terminal width, and headings use color only on terminals without `NO_COLOR`.
+
 After a successful funding response, and when revisiting an existing request,
 the channel wizard checks the local encrypted SCB with the read-only status
 helper. It reports a matching current source, missing backup/record, or an

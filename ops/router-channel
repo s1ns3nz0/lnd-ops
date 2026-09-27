@@ -2,23 +2,86 @@
 """Interactively approve a bounded testnet public channel opening."""
 import argparse
 import json
+import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import unicodedata
 
-from router_channels import preview, reconcile, submit
+from router_channels import funding_selection, preview, reconcile, submit
 from router_rpc import call, require_testnet, environment
 from router_store import operation_lock, state_directory
 from router_peers import wizard as peer_wizard
 
 
-def positive_integer(prompt):
+def say(text, color=None):
+    """Wrap Korean text and long public keys within the terminal width."""
+    width = max(8, shutil.get_terminal_size((80, 24)).columns - 3)
+    rows, row, used = [], '', 0
+    for char in text:
+        size = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+        if used + size > width:
+            rows.append(row)
+            row, used = '', 0
+        row += char
+        used += size
+    rows.append(row)
+    for row in rows:
+        if color and sys.stdout.isatty() and 'NO_COLOR' not in os.environ:
+            row = f'\033[{color}m{row}\033[0m'
+        print('  ' + row)
+
+
+def heading(title):
+    rule = '=' * max(10, min(56, shutil.get_terminal_size((80, 24)).columns - 1))
+    print('\n' + rule)
+    say(title, '1;36')
+    print(rule)
+
+
+def confirm_open(plan, amount, rate, fee_cap, total_cap):
+    heading('3/3 최종 확인 · 아직 개설 전')
+    say('상대 노드')
+    say(plan['peer'])
+    say(f'채널에 넣을 금액  {amount:,} sat')
+    say('상대에게 즉시 주는 금액  0 sat')
+    say(f'개설 수수료율  {rate:,} sat/vB')
+    say(f'허용 수수료 상한  {fee_cap:,} sat')
+    say(f'거래 크기 기준 보수적 비용 상한  {plan["fee_upper_bound_sat"]:,} sat')
+    say(f'전체 채널 용량  {plan["committed_sat"]:,} → {plan["committed_sat"] + amount:,} sat')
+    say(f'전체 용량 한도  {total_cap:,} sat')
+    print()
+    say('OPEN + Enter  : 위 조건으로 채널 개설', '1;33')
+    say('Enter 또는 s  : 취소 · 새 개설 요청 안 함')
     while True:
-        answer = input(prompt).strip()
+        answer = input('  승인 입력 > ').strip()
+        if answer == 'OPEN':
+            return True
+        if answer.lower() in ('', 's'):
+            heading('취소됨 · 새 개설 요청 없음')
+            say('입력한 조건으로 채널을 개설하지 않았습니다.', '1;33')
+            say('Router 상태 화면으로 돌아갑니다.')
+            say('다시 진행하려면 r + Enter를 누르세요.')
+            return False
+        say('승인하려면 대문자 OPEN을 입력하세요.', '1;33')
+        say('취소하려면 Enter 또는 s를 입력하세요.')
+
+
+def positive_integer(prompt, default=None):
+    if default is not None:
+        say(prompt.strip(), '1;36')
+        say(f'기본값 {default:,} · Enter=사용 / s=취소')
+    while True:
+        label = '  입력 > ' if default is not None else prompt
+        answer = input(label).strip()
         if answer.lower() == "s":
             raise EOFError
+        if not answer and default is not None:
+            print(f'  선택: {default:,}')
+            return default
         try:
-            value = int(answer)
+            value = int(answer.replace(',', ''))
             if value > 0:
                 return value
         except ValueError:
@@ -73,14 +136,17 @@ def wizard():
     require_testnet(info)
     channels = call("listchannels").get("channels", [])
     wallet = call("walletbalance")
-    print(f"  확정 잔액: {wallet.get('confirmed_balance', 0)} sat")
-    print(f"  anchor 예약금: {wallet.get('reserved_balance_anchor_chan', 0)} sat")
-    print(f"  기존 채널: {len(channels)}개")
+    heading('1/3 공개 채널 · 상대 노드 선택')
+    say(f"확정 잔액  {int(wallet.get('confirmed_balance', 0)):,} sat")
+    say(f"anchor 예약금  {int(wallet.get('reserved_balance_anchor_chan', 0)):,} sat")
+    say(f"기존 채널  {len(channels)}개")
     existing = {c.get("remote_pubkey") for c in channels}
     peers = [p for p in call("listpeers").get("peers", []) if p["pub_key"] not in existing]
-    print("  연결된 후보입니다. 연결 상태만으로 운영자의 신뢰성을 보증하지 않습니다.")
+    say('현재 연결된 후보입니다. 운영자 신뢰도는 별도로 확인하세요.')
     for index, peer in enumerate(peers, 1):
-        print(f"  [{index}] {peer['pub_key']}\n      {peer.get('address', '주소 미확인')}")
+        print()
+        say(f"[{index}] {peer.get('address', '주소 미확인')}", '1;36')
+        say(peer['pub_key'])
     if not peers:
         print("  새 후보 연결이 필요합니다. peer 운영자와 주소를 확인하고 등록합니다.")
         peer_wizard(root)
@@ -89,21 +155,42 @@ def wizard():
     number = positive_integer(f"  peer 선택 [1-{len(peers)}, s=취소]: ")
     if number > len(peers):
         raise ValueError("목록에 없는 peer입니다")
-    amount = positive_integer("  새 공개 채널 금액 (sat, s=취소): ")
-    rate = positive_integer("  funding 수수료율 (sat/vB, s=취소): ")
-    fee_cap = positive_integer("  funding 최대 수수료 (sat, s=취소): ")
-    total_cap = positive_integer("  기존·대기 채널을 포함한 전체 용량 상한 (sat, s=취소): ")
+    heading('2/3 금액과 수수료 입력')
+    say('Enter=표시된 기본값 / 다른 숫자=변경 / s=취소')
+    say('채널 금액은 채널에 묶입니다. 수수료는 개설 거래 비용입니다.')
+    spendable = (int(wallet.get('confirmed_balance', 0))
+                 - int(wallet.get('reserved_balance_anchor_chan', 0))
+                 - int(wallet.get('locked_balance', 0)))
+    default_amount = min(100000, spendable - 3000)
+    if default_amount <= 0:
+        raise ValueError('예약금과 개설 수수료 여유 3,000 sat를 제외하면 사용할 잔액이 없습니다')
+    say(f'예약금·잠긴 금액 제외 잔액  {spendable:,} sat')
+    amount = positive_integer('  채널 금액 (sat)', default_amount)
+    say('1 sat/vB는 급하지 않은 testnet 실습용 시작값입니다.')
+    say('네트워크 혼잡이나 상대 조건에 따라 확인이 늦어질 수 있습니다.')
+    rate = positive_integer('  개설 수수료율 (sat/vB)', 1)
+    utxos = call('listunspent', '--min_confs=1').get('utxos', [])
+    maximum_estimate = rate * (1000 + 200 * len(utxos)) + 1000
+    selection = funding_selection(utxos, amount, rate, maximum_estimate)
+    default_fee = max(3000, selection['fee_upper_bound_sat'])
+    say('수수료 한도는 실제 지출액이 아닙니다.')
+    say('이번 거래에 사용할 코인으로 계산한 거래 크기를 반영합니다.')
+    fee_cap = positive_integer('  최대 개설 수수료 (sat)', default_fee)
+    say('전체 용량 한도에는 기존·대기·새 채널을 모두 포함합니다.')
+    say('내 잔액이 아니라 상대 자금도 포함한 채널 전체 크기입니다.')
+    pending = call('pendingchannels').get('pending_open_channels', [])
+    committed = sum(int(c['capacity']) for c in channels)
+    committed += sum(int(item['channel']['capacity']) for item in pending)
+    total_cap = positive_integer('  전체 용량 한도 (sat)', committed + amount)
     plan = preview(peers[number - 1]["pub_key"], amount, rate, fee_cap, total_cap)
-    print(f"  공개 채널: {plan['peer']}")
-    print(f"  묶이는 자금: {amount} sat / 상대에게 즉시 주는 금액: 0 sat")
-    print(f"  수수료율: {rate} sat/vB / 수수료 상한: {fee_cap} sat")
-    print(f"  입력 크기로 계산한 보수적 수수료 상한: {plan['fee_upper_bound_sat']} sat")
-    print(f"  전체 용량: {plan['committed_sat']} → {plan['committed_sat'] + amount} / {total_cap} sat")
-    if input("  실행 승인 [OPEN 입력=개설, 그 외=취소]: ").strip() != "OPEN":
+    if not confirm_open(plan, amount, rate, fee_cap, total_cap):
         return 10
+    heading('개설 요청 전송 중')
+    say('응답을 기다립니다. 중복 요청하지 마세요.')
     record = submit(root, plan)
-    print(f"  funding 요청 완료: {record['channel_point']}")
-    print("  블록 확인과 공개 전파를 기다립니다.")
+    heading('개설 요청 접수 · 활성화 대기')
+    say(f"funding 요청 완료: {record['channel_point']}")
+    say('블록 확인과 공개 전파를 기다립니다.')
     show_backup_status()
     return 10
 

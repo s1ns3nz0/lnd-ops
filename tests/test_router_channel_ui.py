@@ -2,14 +2,79 @@ import contextlib
 import importlib.machinery
 import io
 import pathlib
+import os
 import subprocess
 import sys
 import unittest
+import unicodedata
 from unittest.mock import Mock, patch
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'ops'))
 cli = importlib.machinery.SourceFileLoader('router_channel_ui', str(REPO / 'ops/router-channel')).load_module()
+
+
+UTXO = {'amount_sat': 179620, 'confirmations': 3, 'address_type': 4,
+        'pk_script': '5120' + 'a' * 64, 'outpoint': {'txid_str': 'b' * 64, 'output_index': 0}}
+
+
+class ChannelInputTests(unittest.TestCase):
+    def test_lower_balance_default_preserves_reserved_and_locked_funds(self):
+        rpc = Mock(side_effect=[
+            {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'},
+            {'channels': []}, {'confirmed_balance': 90000, 'reserved_balance_anchor_chan': 10000, 'locked_balance': 20000},
+            {'peers': [{'pub_key': 'peer'}]}, {'utxos': [UTXO]}, {}])
+        plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 0}
+        with patch.object(cli, 'operation_lock', return_value=contextlib.nullcontext()), \
+             patch.object(cli, 'reconcile', return_value=None), patch.object(cli, 'call', rpc), \
+             patch.object(cli, 'preview', return_value=plan) as preview, patch.object(cli, 'submit') as submit, \
+             patch('builtins.input', side_effect=['1', '', '', '', '', 's']), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.wizard(), 10)
+        preview.assert_called_once_with('peer', 57000, 1, 3000, 57000)
+        submit.assert_not_called()
+
+    def test_enter_defaults_include_reserved_funds_and_pending_capacity_but_never_approve(self):
+        rpc = Mock(side_effect=[
+            {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'},
+            {'channels': [{'capacity': '160000', 'remote_pubkey': 'old'}]},
+            {'confirmed_balance': '190909', 'reserved_balance_anchor_chan': '10000'},
+            {'peers': [{'pub_key': 'peer', 'address': 'host:9735'}]},
+            {'utxos': [UTXO]}, {'pending_open_channels': [{'channel': {'capacity': '30000'}}]}])
+        plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 190000}
+        with patch.object(cli, 'operation_lock', return_value=contextlib.nullcontext()), \
+             patch.object(cli, 'reconcile', return_value=None), patch.object(cli, 'call', rpc), \
+             patch.object(cli, 'preview', return_value=plan) as preview, patch.object(cli, 'submit') as submit, \
+             patch('builtins.input', side_effect=['1', '', '', '', '', '']), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.wizard(), 10)
+        preview.assert_called_once_with('peer', 100000, 1, 3000, 290000)
+        submit.assert_not_called()
+        self.assertIn('취소됨 · 새 개설 요청 없음', output.getvalue())
+        self.assertIn('선택: 100,000', output.getvalue())
+        self.assertIn('선택: 290,000', output.getvalue())
+
+    def test_typo_reprompts_and_only_uppercase_open_approves(self):
+        plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 160000}
+        with patch('builtins.input', side_effect=['open', 'yes', 'OPEN']) as ask, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(cli.confirm_open(plan, 100000, 1, 3000, 260000))
+        self.assertEqual(ask.call_count, 3)
+        self.assertIn('아직 개설 전', output.getvalue())
+
+    def test_confirmation_wraps_full_peer_key_in_narrow_terminal(self):
+        peer = '02' + 'a' * 64
+        plan = {'peer': peer, 'fee_upper_bound_sat': 2200, 'committed_sat': 160000}
+        with patch.object(cli.shutil, 'get_terminal_size', return_value=os.terminal_size((40, 24))), \
+             patch('builtins.input', return_value='s'), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(cli.confirm_open(plan, 100000, 1, 3000, 260000))
+        rows = output.getvalue().splitlines()
+        self.assertTrue(all(sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in row) <= 39 for row in rows))
+        self.assertIn(peer, ''.join(row.strip() for row in rows))
+
+    def test_numeric_override_accepts_grouping_and_rejects_nonpositive_values(self):
+        with patch('builtins.input', side_effect=['0', '-1', '50,000']), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.positive_integer('금액', 100000), 50000)
 
 
 class ChannelBackupStatusTests(unittest.TestCase):
@@ -46,7 +111,8 @@ class ChannelBackupStatusTests(unittest.TestCase):
     def test_successful_submission_survives_backup_lookup_failure(self):
         events = []
         info = {'testnet': True, 'synced_to_chain': True, 'identity_pubkey': 'self'}
-        rpc = Mock(side_effect=[info, {'channels': []}, {'confirmed_balance': 200000}, {'peers': [{'pub_key': 'peer'}]}])
+        rpc = Mock(side_effect=[info, {'channels': []}, {'confirmed_balance': 200000},
+                               {'peers': [{'pub_key': 'peer'}]}, {'utxos': [UTXO]}, {}])
         plan = {'peer': 'peer', 'fee_upper_bound_sat': 2200, 'committed_sat': 0}
 
         def submit(*args):
