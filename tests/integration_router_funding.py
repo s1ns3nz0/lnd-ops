@@ -8,6 +8,7 @@ the testnet guard flag solely for this test. This is not testnet evidence.
 """
 import json
 import pathlib
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,16 @@ def main():
                 pass
             assert len(submitted) == 1
             txid = submitted[0]["funding_txid"]
+            # Replay the already captured real CLI response to the submit parser
+            # in a separate disposable journal. This does not send another RPC.
+            replay_root = root / 'response-parser'
+            def replay_rpc(*args):
+                if args[0] == 'openchannel':
+                    return submitted[0]
+                raise AssertionError('replay must not query or mutate LND')
+            with patch('router_channels.reconcile', return_value=None), patch('router_channels.preview', return_value=plan):
+                parsed = submit(replay_root, plan, replay_rpc)
+            assert parsed['state'] == 'broadcast' and parsed['funding_txid'] == txid
             pending_recovered = reconcile(root, rpc)
             assert pending_recovered['state'] == 'broadcast'
             assert pending_recovered['channel_point'].startswith(txid + ':')
@@ -181,6 +192,19 @@ def main():
             lnd(0, "openchannel", "--node_key=" + receiver_key, "--local_amt=100000", "--sat_per_vbyte=1")
             btc("generatetoaddress", "6", mine_address)
             wait_for("two active channels", lambda: sum(c["active"] for c in lnd(0, "listchannels")["channels"]) == 2)
+            def graph_policies_ready():
+                for channel in lnd(0, 'listchannels')['channels']:
+                    graph = lnd(0, 'getchaninfo', '--chan_point=' + channel['channel_point'])
+                    own = next((graph.get(side + '_policy') for side in ('node1', 'node2')
+                                if graph.get(side + '_pub') == identity), None)
+                    if not own or not own.get('time_lock_delta'):
+                        return False
+                return True
+            wait_for('local channel policy propagation', graph_policies_ready)
+            policy_main = runpy.run_path(str(REPO / 'ops/configure-router-policy'))['main']
+            with patch.dict(policy_main.__globals__, lncli=rpc, state_directory=lambda: root):
+                assert policy_main(['--confirm', 'APPLY ROUTER POLICY']) == 0
+            print('Applied Router fee policy through real pinned lncli, preserving each channel CLTV', flush=True)
             wait_for("payer graph", lambda: len(lnd(1, "describegraph")["edges"]) >= 2)
             funding_invoice = lnd(1, "addinvoice", "--amt=20000")
             transfer = lnd(0, "payinvoice", "--force", "--json", "--fee_limit=10", funding_invoice["payment_request"])

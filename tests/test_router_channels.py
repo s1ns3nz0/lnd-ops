@@ -70,6 +70,24 @@ class ChannelOpenTests(unittest.TestCase):
         self.assertIn("--push_amt=0", invocation)
         self.assertNotIn("--private", invocation)
 
+    def test_txid_only_lncli_response_is_recorded_and_reconciled_without_resubmission(self):
+        original = self.rpc
+        def rpc(command, *args):
+            result = original(command, *args)
+            return {'funding_txid': TXID} if command == 'openchannel' else result
+        plan = self.preview()
+        record = channels.submit(self.root, plan, rpc)
+        self.assertEqual(record['state'], 'broadcast')
+        self.assertEqual(record['funding_txid'], TXID)
+        self.assertNotIn('channel_point', record)
+        self.rpc.pending = [{'channel': {'channel_point': TXID + ':1', 'memo': record['memo'],
+                                        'remote_node_pub': PEER, 'capacity': 100000}}]
+        recovered = channels.reconcile(self.root, rpc)
+        self.assertEqual(recovered['channel_point'], TXID + ':1')
+        with self.assertRaisesRegex(ValueError, '중복'):
+            channels.submit(self.root, plan, rpc)
+        self.assertEqual(sum(name == 'openchannel' for name, _ in self.rpc.calls), 1)
+
     def test_lost_response_blocks_second_open_even_when_pending_is_empty(self):
         plan = self.preview()
         self.rpc.fail_open = True

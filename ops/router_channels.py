@@ -102,6 +102,8 @@ def reconcile(root, rpc=call):
 
     def matches(channel, peer_field):
         identified = channel.get('channel_point') == point if point else channel.get('memo') == record['memo']
+        if not point and record.get('funding_txid'):
+            identified = identified and str(channel.get('channel_point', '')).startswith(record['funding_txid'] + ':')
         return identified and channel.get(peer_field) == record['peer'] and int(channel.get('capacity', 0)) == record['amount_sat']
 
     candidates = [("active" if c.get('active') else "confirmed", c)
@@ -160,10 +162,16 @@ def submit(root, approved, rpc=call):
                          f"--sat_per_vbyte={record['sat_per_vbyte']}", "--min_confs=1", "--push_amt=0",
                          f"--memo={record['memo']}", *[f"--utxo={point}" for point in record["utxos"]])
             txid = result["funding_txid"]
-            index = int(result["output_index"])
-            if not re.fullmatch(r"[0-9a-f]{64}", txid) or index < 0:
+            if not isinstance(txid, str) or not re.fullmatch(r"[0-9a-f]{64}", txid):
                 raise ValueError("funding 응답 형식을 확인할 수 없습니다")
-            record.update(state="broadcast", channel_point=f"{txid}:{index}")
+            # lncli openchannel's pending response contains only funding_txid.
+            # Never invent output zero; memo/peer/amount reconciliation obtains it.
+            record.update(state="broadcast", funding_txid=txid)
+            if 'output_index' in result:
+                index = result['output_index']
+                if type(index) is not int or not 0 <= index <= 0xffffffff:
+                    raise ValueError("funding 출력 위치를 확인할 수 없습니다")
+                record['channel_point'] = f'{txid}:{index}'
         except BaseException:
             record.update(state="uncertain")
             write(root, "open-request.json", record)

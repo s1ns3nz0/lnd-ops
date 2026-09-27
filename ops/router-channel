@@ -189,7 +189,9 @@ def wizard():
     say('응답을 기다립니다. 중복 요청하지 마세요.')
     record = submit(root, plan)
     heading('개설 요청 접수 · 활성화 대기')
-    say(f"funding 요청 완료: {record['channel_point']}")
+    say(f"funding 요청 완료: {record.get('channel_point') or record.get('funding_txid')}")
+    if not record.get('channel_point'):
+        say('거래 ID를 저장했습니다. 채널 출력 위치는 대기 목록에서 확인합니다.')
     say('블록 확인과 공개 전파를 기다립니다.')
     show_backup_status()
     return 10

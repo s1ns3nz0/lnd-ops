@@ -19,6 +19,7 @@ class PolicyTests(unittest.TestCase):
         self.updates = []
         self.fail_update = False
         self.testnet = True
+        self.missing_policy = False
 
     def rpc(self, command, *args):
         if command == "getinfo":
@@ -30,6 +31,13 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(read(self.root, "policy.json")["state"], "applying")
             self.updates.append(args)
             return {"failed_updates": [{"reason": "offline"}]} if self.fail_update else {}
+        if command == 'getchaninfo':
+            if self.missing_policy:
+                return {'node1_pub': 'router', 'node1_policy': None}
+            if args == ('--chan_point=tx:0',):
+                return {'node1_pub': 'router', 'node1_policy': {'time_lock_delta': 40}}
+            return {'node1_pub': 'peer', 'node1_policy': {'time_lock_delta': 18},
+                    'node2_pub': 'router', 'node2_policy': {'time_lock_delta': 80}}
         self.fail(command)
 
     def execute(self):
@@ -40,8 +48,16 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.execute(), 0)
         self.assertEqual(len(self.updates), 2)
         self.assertIn("--fee_rate=0.00075", self.updates[0])
+        self.assertIn('--time_lock_delta=40', self.updates[0])
+        self.assertIn('--time_lock_delta=80', self.updates[1])
         self.assertEqual(target(self.root, "router")["rate_ppm"], 750)
         self.assertEqual(read(self.root, "policy.json")["state"], "applied")
+
+    def test_missing_own_cltv_prevents_all_policy_mutations(self):
+        self.missing_policy = True
+        self.assertEqual(self.execute(), 1)
+        self.assertEqual(self.updates, [])
+        self.assertIsNone(read(self.root, 'policy.json'))
 
     def test_partial_rpc_failure_keeps_target_without_claiming_applied(self):
         self.fail_update = True

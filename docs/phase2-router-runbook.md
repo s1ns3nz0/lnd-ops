@@ -138,6 +138,15 @@ uppercase `OPEN`. Enter or `s` cancels with an explicit no-new-request message;
 other text prompts again without submitting. Long keys and summaries wrap to
 terminal width, and headings use color only on terminals without `NO_COLOR`.
 
+The pinned `lncli openchannel` pending response contains only `funding_txid`;
+the journal accepts it without guessing an output index. If no channel point is
+saved, reconciliation matches memo, peer, capacity and the complete saved
+transaction ID followed by `:`. With a saved point it matches point, peer and capacity.
+See [the pinned CLI response](https://github.com/lightningnetwork/lnd/blob/v0.21.3-beta/cmd/commands/cmd_open_channel.go).
+Policy updates read each channel's own graph policy first and explicitly pass
+its existing `time_lock_delta`, preserving that channel's CLTV setting. Missing
+own policy stops the update before any channel is changed. See [the required CLI arguments](https://github.com/lightningnetwork/lnd/blob/v0.21.3-beta/cmd/commands/commands.go).
+
 After a successful funding response, and when revisiting an existing request,
 the channel wizard checks the local encrypted SCB with the read-only status
 helper. It reports a matching current source, missing backup/record, or an

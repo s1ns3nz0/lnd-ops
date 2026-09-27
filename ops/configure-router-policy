@@ -58,8 +58,18 @@ def apply(policy):
         return 10
     if any(policy_maximum(channel) < policy["min_htlc_msat"] for channel in channels):
         raise ValueError("최소 HTLC가 채널의 허용 상한보다 큽니다")
+    deltas = {}
+    for channel in channels:
+        graph = lncli('getchaninfo', f"--chan_point={channel['channel_point']}")
+        own = next((graph.get(side + '_policy') for side in ('node1', 'node2')
+                    if graph.get(side + '_pub') == info['identity_pubkey']), None)
+        value = own.get('time_lock_delta') if own else None
+        if isinstance(value, bool) or not str(value).isdigit() or not 1 <= int(value) <= 65535:
+            raise ValueError('현재 채널의 CLTV 정책을 확인할 수 없습니다. 그래프 동기화 후 다시 시도하세요')
+        deltas[channel['channel_point']] = int(value)
     record = {"schema": "lnd-ops/router-policy/v1", "identity": info["identity_pubkey"],
-              "target": policy, "approved_at": time.time(), "state": "applying"}
+              "target": policy, "preserved_time_lock_deltas": deltas,
+              "approved_at": time.time(), "state": "applying"}
     write(state_directory(), "policy.json", record)
     for channel in channels:
         maximum_msat = policy_maximum(channel)
@@ -67,6 +77,7 @@ def apply(policy):
             "updatechanpolicy", f"--chan_point={channel['channel_point']}",
             f"--base_fee_msat={policy['base_msat']}", f"--fee_rate={Decimal(policy['rate_ppm']) / 1000000}",
             f"--min_htlc_msat={policy['min_htlc_msat']}", f"--max_htlc_msat={maximum_msat}",
+            f"--time_lock_delta={deltas[channel['channel_point']]}",
         )
         result = lncli(*command)
         if result.get("failed_updates"):
