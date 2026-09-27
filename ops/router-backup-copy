@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Inspect an existing external encrypted backup; no copy, decrypt or restore."""
+import argparse
+import json
+import subprocess
+import sys
+from router_backup import CONFIRM, register, status
+from router_store import state_directory
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--status', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args(argv)
+    if args.json and not args.status:
+        parser.error('--json requires --status')
+    root = state_directory()
+    if not args.status:
+        if not sys.stdin.isatty():
+            raise ValueError('외부 사본 등록은 대화형 확인이 필요합니다')
+        print('  먼저 최신 암호화 SCB를 다른 장치 또는 외부 저장소에 보관하세요.')
+        print('  이 작업은 지정한 사본을 읽어 대조합니다. 전송·복호화·복구는 하지 않습니다.')
+        path = input('  마운트한 외부 사본 파일 경로 [빈 입력=취소]: ').strip()
+        if not path:
+            return 10
+        print('  같은 PC 안의 다른 폴더는 외부 사본이 아닙니다. 저장 위치는 자동 판별할 수 없습니다.')
+        if input('  다른 장치·외부 저장소에 있는 사본임을 확인 [YES=검사, 그 외=취소]: ').strip() != 'YES':
+            return 10
+        register(root, path, CONFIRM)
+    result = status(root)
+    print(json.dumps(result, ensure_ascii=False) if args.json else '  외부 백업: ' + result['message'])
+    if not args.json:
+        print('  seed·암호의 별도 보관과 격리된 복구 실습은 별도 조건입니다.')
+    return 0 if result['state'] == 'current' else 10
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (EOFError, KeyboardInterrupt):
+        print('\n  외부 사본 확인을 중단했습니다.')
+        sys.exit(10)
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f'외부 사본 검증 보류: {exc}', file=sys.stderr)
+        sys.exit(10)

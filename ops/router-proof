@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Interactively verify one payment between operator-controlled external peers."""
+import argparse
+import subprocess
+import sys
+
+from router_proof_run import Endpoint, preview, start, reconcile
+from router_store import read, write, state_directory
+
+
+def endpoints(root):
+    config = read(root, "proof-endpoints.json")
+    if not config:
+        raise ValueError("외부 검증 노드 설정이 없습니다")
+    return Endpoint(**config["payer"]), Endpoint(**config["receiver"])
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--resume", action="store_true", help="기록된 결제 결과만 재조회; 재송금하지 않음")
+    args = parser.parse_args(argv)
+    root = state_directory()
+    record = read(root, "proof-request.json")
+    pending = record and record["state"] in ("paying", "uncertain", "verifying")
+    if args.resume or pending:
+        payer, receiver = endpoints(root)
+        print("  기존 결제의 경유 결과를 확인합니다. 새 결제를 보내지 않습니다.")
+        record = reconcile(root, payer, receiver)
+    else:
+        if not sys.stdin.isatty():
+            raise ValueError("검증 결제를 시작하려면 대화형 승인이 필요합니다")
+        print("  송신 → 이 Router → 수신 경로로 작은 testnet 결제를 검증합니다.")
+        print("  이번 검증은 본인이 제어하는 두 외부 peer와 활성 공개 채널이 있어야 합니다.")
+        print("  임의 공개 peer에는 결제를 시킬 수 없습니다. 준비가 안 됐다면 s로 돌아가세요.")
+        config = {}
+        for key, label in (("payer", "송신"), ("receiver", "수신")):
+            alias = input(f"  {label} 노드 SSH 별칭 [s=보류]: ").strip()
+            if alias == "s":
+                return 10
+            directory = input(f"  {label} 노드 LND 데이터 절대 경로: ").strip()
+            Endpoint(alias, directory)
+            config[key] = {"alias": alias, "lnddir": directory}
+        payer, receiver = Endpoint(**config["payer"]), Endpoint(**config["receiver"])
+        amount = int(input("  검증 금액 sat [Enter=10]: ").strip() or "10")
+        fee = int(input("  최대 수수료 sat [Enter=10]: ").strip() or "10")
+        approved = preview(payer, receiver, amount, fee)
+        print(f"  송신 지갑: {approved['payer']}\n  수신 지갑: {approved['receiver']}")
+        print(f"  결제 {amount} sat / 수수료 최대 {fee} sat / 합계 최대 {amount + fee} sat")
+        print("  이 금액은 외부 송신 지갑에서 사용됩니다. Router 지갑이 수취하는 결제가 아닙니다.")
+        if input("  승인 [PAY 입력=결제·검증, 그 외=취소]: ").strip() != "PAY":
+            return 10
+        write(root, "proof-endpoints.json", config)
+        record = start(root, approved, payer, receiver)
+    if record and record["state"] == "complete":
+        print("  완료: 별도 지갑 간 결제가 현재 공개 채널을 경유한 것을 확인했습니다.")
+        print("  외부 P2P 접속 검증과 현재 준비 상태는 별도로 확인합니다.")
+        return 0
+    if record and record["state"] == "failed":
+        print("  검증 결제가 실패했습니다. 경로·유동성을 확인한 뒤 새 승인을 받아야 합니다.")
+    else:
+        print("  경유 결과 확인 중입니다. 다음 재시도는 기존 결제 결과만 조회합니다.")
+    return 10
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (EOFError, KeyboardInterrupt):
+        print("\n  검증을 중단했습니다. 제출된 결제가 있다면 결과 확인 전 재송금하지 않습니다.")
+        sys.exit(10)
+    except subprocess.SubprocessError:
+        print("  외부 노드 응답을 확인하지 못했습니다. 제출된 결제는 결과만 재조회합니다.", file=sys.stderr)
+        sys.exit(10)
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"  경유 검증 보류: {exc}", file=sys.stderr)
+        sys.exit(10)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only check for persistent testnet peer, channel, and payment readiness."""
+"""Read-only Phase 2 check for a synchronized persistent testnet node."""
 
 import json
 import os
@@ -23,24 +23,17 @@ def lncli(*arguments):
 def main():
     try:
         info = lncli("getinfo")
+        if not info.get("testnet"):
+            raise RuntimeError("the selected node must use testnet")
         if not info.get("synced_to_chain") or not info.get("synced_to_graph"):
             raise RuntimeError("wait for testnet chain and graph synchronization")
         peers = lncli("listpeers").get("peers", [])
         if not peers:
             raise RuntimeError("connect a reviewed external testnet peer")
-        channels = lncli("listchannels").get("channels", [])
-        if not any(item.get("active") and not item.get("private") for item in channels):
-            raise RuntimeError("open and confirm an active public testnet channel")
-        payments = lncli("listpayments", "--include_incomplete").get("payments", [])
-        invoices = lncli("listinvoices").get("invoices", [])
-        sent = any(item.get("status") == "SUCCEEDED" for item in payments)
-        received = any(item.get("state") == "SETTLED" for item in invoices)
-        if not sent or not received:
-            raise RuntimeError("make one successful outgoing and incoming testnet payment")
     except (RuntimeError, ValueError, TypeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
         print(f"ACTION: {error}", file=sys.stderr)
         return 10
-    print("OK persistent testnet node: synced peer, public channel, and established send/receive payment history")
+    print("OK persistent testnet node: wallet accessible, chain/graph synced, peer connected")
     return 0
 
 

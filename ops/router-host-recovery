@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Capture pre/post host reboot evidence without rebooting or unlocking."""
+import argparse
+import subprocess
+import sys
+from router_recovery import prepare, verify, cancel
+from router_store import state_directory
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('prepare', 'verify', 'cancel'))
+    args = parser.parse_args(argv)
+    root = state_directory()
+    if args.action == 'prepare':
+        result = prepare(root)
+        print(f"{result['host']['kind']} 재부팅 전 기준을 저장했습니다. 자동 재부팅하지 않습니다.")
+        print('호스트를 직접 재부팅하고 기존 지갑을 unlock한 뒤 이 메뉴의 검증을 실행하세요.')
+    elif args.action == 'verify':
+        result = verify(root)
+        print(f"{result['kind']} 호스트 재부팅 후 같은 지갑·PVC·PV·채널의 준비 상태를 확인했습니다.")
+        print(f"기준 관측부터 검증까지 {result['elapsed_seconds']:.0f}초 (재부팅 전 대기와 수동 unlock 포함)")
+        print('외부 P2P 재접속과 주소 변경 복구는 별도 검증입니다.')
+    else:
+        cancel(root)
+        print('대기 중인 기준 기록을 취소했습니다. 성공 이력은 유지합니다.')
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f'호스트 복구 검증 보류: {exc}', file=sys.stderr)
+        sys.exit(10)

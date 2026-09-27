@@ -100,11 +100,11 @@ if not infrastructure_only:
     ):
         print(f"ACTION: create/unlock all {profile} LND wallets and enable LND, wallet-state, lndmon, and payment scrapes", file=sys.stderr)
         sys.exit(10)
-    if (
+    if profile == "regtest" and (
         count(f'sum(lnd_ops_outgoing_payments_1h{{namespace="{namespace}",status="SUCCEEDED"}})') < 1
         or count(f'sum(lnd_ops_received_invoices_1h{{namespace="{namespace}",state="SETTLED"}})') < 1
         or count(f'sum(lnd_ops_outgoing_latency_samples_1h{{namespace="{namespace}"}})') < 1
     ):
         print(f"ACTION: make a fresh outgoing and incoming {profile} payment after monitoring starts", file=sys.stderr)
         sys.exit(10)
-    print(f"OK {profile} LND scrapes, chain signal, and recent send/receive payment samples")
+    print(f"OK {profile} LND scrapes, wallet state, chain signal, and payment metric series (zero traffic is healthy)")

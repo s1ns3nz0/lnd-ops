@@ -23,7 +23,7 @@ payer_sat_per_vbyte=${LND_OPS_PAYER_SAT_PER_VBYTE:-1}
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/lnd-ops/testnet-payer
 
 usage() {
-  echo 'Usage: ops/testnet-payer enable|status|open-channel|pay INVOICE_FILE' >&2
+  echo 'Usage: ops/testnet-payer enable|status|open-channel|pay INVOICE_FILE|route-proof [--resume]' >&2
   exit 2
 }
 
@@ -43,6 +43,9 @@ wallet_ready() {
 }
 
 case "$command" in
+  route-proof)
+    exec "$repo_dir/ops/router-proof" "$@"
+    ;;
   enable)
     [[ $# -eq 0 ]] || usage
     helm -n "$namespace" status "$release" >/dev/null 2>&1 || {
@@ -114,6 +117,7 @@ print(sum(1 for x in d.get("pending_open_channels",[]) if x.get("channel",{}).ge
     exit 10
     ;;
   pay)
+    echo 'INFO: this is a direct payment to lnd-0, not Router forwarding evidence'
     [[ $# -eq 1 ]] || usage
     invoice_file=$1
     [[ -f "$invoice_file" && ! -L "$invoice_file" ]] || { echo 'Invoice file must be a regular file' >&2; exit 1; }

@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Read-only Router demo: construction, readiness, forwarding and recovery."""
+import argparse
+import json
+import pathlib
+import runpy
+import sys
+
+from router_report import infrastructure, report, render
+from router_store import state_directory
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--require-complete', action='store_true')
+    args = parser.parse_args(argv)
+    snapshot = runpy.run_path(str(pathlib.Path(__file__).with_name('verify-router')))['snapshot']
+    value = report(snapshot(), infrastructure(), state_directory().parent / 'evidence', recovery_root=state_directory())
+    print(json.dumps(value, ensure_ascii=False) if args.json else render(value))
+    return 10 if args.require_complete and not value['complete'] else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

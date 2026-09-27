@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Collect address change recovery evidence without altering networking."""
+import argparse
+import subprocess
+import sys
+from router_address_recovery import prepare, verify, cancel
+from router_store import state_directory
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('prepare', 'verify', 'cancel'))
+    args = parser.parse_args(argv)
+    root = state_directory()
+    if args.action == 'prepare':
+        prepare(root)
+        print('주소 변경 전 지갑·스토리지·채널·접속 기준을 저장했습니다.')
+        print('자동 주소 변경은 하지 않습니다. 변경 뒤 새 외부 검사를 가져오고 검증하세요.')
+    elif args.action == 'verify':
+        result = verify(root)
+        print('주소 변경 후 같은 지갑·스토리지·채널과 외부 접속을 확인했습니다.')
+        print(f"기준부터 최종 확인까지 {result['elapsed_seconds']:.0f}초 (수동 작업·검사 대기 포함)")
+    else:
+        cancel(root)
+        print('주소 변경 기준을 취소했습니다. 성공 이력은 유지합니다.')
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f'주소 변경 복구 검증 보류: {exc}', file=sys.stderr)
+        sys.exit(10)

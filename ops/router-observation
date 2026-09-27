@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Issue/import a short-lived external observation; never initiate a connection."""
+import argparse
+import json
+import pathlib
+import subprocess
+import sys
+
+from router_observation import CONFIRM, issue, import_result, current, public_endpoint
+from router_rpc import call
+from router_store import read, state_directory
+
+
+def load_result(filename):
+    with pathlib.Path(filename).expanduser().open("rb") as stream:
+        payload = stream.read(65537)
+    if len(payload) > 65536:
+        raise ValueError("검사 결과 파일이 너무 큽니다")
+    return json.loads(payload)
+
+
+def interactive(root, info):
+    if not sys.stdin.isatty():
+        raise ValueError("대화형 터미널에서 외부 검사를 진행하세요")
+    print("  외부 접속 검사: 다른 인터넷 연결의 컴퓨터에서 검사기를 실행해야 합니다.")
+    print("  SSH 서버는 필요 없습니다. 이 컴퓨터에서 검사하면 외부 접속 증거가 되지 않습니다.")
+    print("  1. 검사 요청 파일 만들기\n  2. 외부 검사 결과 가져오기\n  0. 상태 화면으로 복귀")
+    choice = input("  선택 [0-2]: ").strip()
+    if choice == "1":
+        prefix = info["identity_pubkey"] + "@"
+        endpoints = []
+        for uri in info.get("uris", []):
+            if not uri.startswith(prefix):
+                continue
+            try:
+                endpoint = public_endpoint(uri[len(prefix):])
+                if endpoint not in endpoints:
+                    endpoints.append(endpoint)
+            except ValueError:
+                continue
+        if not endpoints:
+            raise ValueError("LND에 숫자 공인 IP 주소를 먼저 설정해야 합니다")
+        for number, endpoint in enumerate(endpoints, 1):
+            print(f"  {number}. {endpoint}")
+        answer = input(f"  검사할 주소 선택 [1-{len(endpoints)}, 0=취소]: ").strip()
+        if answer == "0":
+            return 10
+        if not answer.isdigit() or not 1 <= int(answer) <= len(endpoints):
+            raise ValueError("목록의 주소 번호를 선택하세요")
+        request = issue(root, info, endpoints[int(answer) - 1])
+        print(f"  요청 파일: {root / 'p2p-request.json'}")
+        print(f"  만료 시각 (Unix): {request['expires_at']}")
+        print("  이 파일을 별도 인터넷 연결의 검사기로 전달하세요. 사용법: observer/README.md")
+        print("  검사 결과를 가져온 뒤 r을 입력하면 이 메뉴를 다시 엽니다.")
+        return 10
+    if choice == "2":
+        filename = input("  검사 결과 파일 경로 [빈 입력=취소]: ").strip()
+        if not filename:
+            return 10
+        print("  본인이 별도 외부망에서 실행했으며, 노드 LAN으로 VPN·터널을 연결하지 않은 결과여야 합니다.")
+        if input("  위 실행 조건 확인 [YES=가져오기, 그 외=취소]: ").strip() != "YES":
+            return 10
+        # Refresh identity/address after operator input; the menu snapshot may
+        # predate a wallet workspace or address change.
+        import_result(root, load_result(filename), call("getinfo"), CONFIRM)
+        print("  결과를 저장했습니다. 현재 Router 상태를 다시 확인합니다.")
+        return 0
+    return 10
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    request = commands.add_parser("request")
+    request.add_argument("--endpoint", required=True)
+    receipt = commands.add_parser("import")
+    receipt.add_argument("--file", required=True)
+    receipt.add_argument("--confirm", required=True)
+    commands.add_parser("status")
+    commands.add_parser("interactive")
+    args = parser.parse_args(argv)
+    root, info = state_directory(), call("getinfo")
+    if args.command == "interactive":
+        return interactive(root, info)
+    if args.command == "request":
+        result = issue(root, info, args.endpoint)
+    elif args.command == "import":
+        result = import_result(root, load_result(args.file), info, args.confirm)
+    else:
+        record = read(root, "p2p-observation.json")
+        valid = current(record, info)
+        result = {"state": "recent_operator_attested" if valid else "unverified",
+                  "independently_attested": False, "phase_complete": False}
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (EOFError, KeyboardInterrupt):
+        print("\n외부 검사를 중단했습니다. 현재 상태 화면으로 돌아갑니다.")
+        sys.exit(10)
+    except (ValueError, RuntimeError, OSError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        print(f"외부 검사 보류: {exc}", file=sys.stderr)
+        sys.exit(10)

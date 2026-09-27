@@ -7,6 +7,13 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
+from decimal import Decimal
+
+from router_model import policy_maximum
+from router_policy import validate
+from router_rpc import require_testnet
+from router_store import state_directory, operation_lock, write
 
 
 STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
@@ -24,32 +31,51 @@ def lncli(*args):
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--confirm", metavar="TEXT", required=True)
+    parser.add_argument("--base-msat", type=int, default=1000)
+    parser.add_argument("--rate-ppm", type=int, default=500)
+    parser.add_argument("--min-htlc-msat", type=int, default=1)
     arguments = parser.parse_args(argv)
     if arguments.confirm != "APPLY ROUTER POLICY":
         print('Refusing policy change: use --confirm "APPLY ROUTER POLICY"', file=sys.stderr)
         return 2
     try:
-        channels = [
-            channel for channel in lncli("listchannels").get("channels", [])
-            if channel.get("active") and not channel.get("private") and int(channel.get("local_balance", 0)) > 1
-        ]
-        if len(channels) < 2:
-            print("ACTION: wait for two active public channels with local routing liquidity", file=sys.stderr)
-            return 10
-        for channel in channels:
-            maximum_msat = (int(channel["local_balance"]) - 1) * 1000
-            command = (
-                "updatechanpolicy", f"--chan_point={channel['channel_point']}",
-                "--base_fee_msat=1000", "--fee_rate=0.0005", "--min_htlc_msat=1",
-                f"--max_htlc_msat={maximum_msat}",
-            )
-            lncli(*command)
-            print(f"UPDATED {channel['channel_point']}: base=1 sat, fee=500 ppm, min=1 msat, max={maximum_msat} msat")
-        print(f"OK Router policy: applied to {len(channels)} active public channel(s)")
-        return 0
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+        policy = validate({"base_msat": arguments.base_msat, "rate_ppm": arguments.rate_ppm,
+                           "min_htlc_msat": arguments.min_htlc_msat})
+        with operation_lock(state_directory()):
+            return apply(policy)
+    except (RuntimeError, KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
+
+
+def apply(policy):
+    info = lncli("getinfo")
+    require_testnet(info)
+    channels = [channel for channel in lncli("listchannels").get("channels", [])
+                if channel.get("active") and not channel.get("private")]
+    if len(channels) < 2:
+        print("ACTION: wait for two active public channels", file=sys.stderr)
+        return 10
+    if any(policy_maximum(channel) < policy["min_htlc_msat"] for channel in channels):
+        raise ValueError("최소 HTLC가 채널의 허용 상한보다 큽니다")
+    record = {"schema": "lnd-ops/router-policy/v1", "identity": info["identity_pubkey"],
+              "target": policy, "approved_at": time.time(), "state": "applying"}
+    write(state_directory(), "policy.json", record)
+    for channel in channels:
+        maximum_msat = policy_maximum(channel)
+        command = (
+            "updatechanpolicy", f"--chan_point={channel['channel_point']}",
+            f"--base_fee_msat={policy['base_msat']}", f"--fee_rate={Decimal(policy['rate_ppm']) / 1000000}",
+            f"--min_htlc_msat={policy['min_htlc_msat']}", f"--max_htlc_msat={maximum_msat}",
+        )
+        result = lncli(*command)
+        if result.get("failed_updates"):
+            raise RuntimeError("채널 정책 일부를 적용하지 못했습니다. 저장된 목표 정책을 기준으로 다시 확인합니다")
+        print(f"UPDATED {channel['channel_point']}: base={policy['base_msat']} msat, fee={policy['rate_ppm']} ppm, min={policy['min_htlc_msat']} msat, max={maximum_msat} msat")
+    record.update(state="applied", applied_at=time.time())
+    write(state_directory(), "policy.json", record)
+    print(f"OK Router policy: applied to {len(channels)} active public channel(s)")
+    return 0
 
 
 if __name__ == "__main__":

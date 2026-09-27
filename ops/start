@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import platform
+import select
 import shutil
 import socket
 import subprocess
@@ -14,6 +15,8 @@ import sys
 import time
 import unicodedata
 from urllib.request import urlopen
+
+from router_worker import StatusWorker
 
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -62,7 +65,7 @@ PHASES = (
         "workspace": "testnet",
         "namespaces": ("lnd-testnet",),
         "build": (("ops/deploy", "testnet"), ("ops/verify", "testnet")),
-        "manual": ("기존 testnet 지갑을 잠금 해제하고 seed와 채널 백업을 오프라인에 보관합니다.", "신뢰하는 외부 peer에 연결하고 공개 채널을 확인합니다.", "작은 송금과 수금을 각각 한 번 확인합니다."),
+        "manual": ("기존 testnet 지갑을 잠금 해제하고 seed와 채널 백업을 오프라인에 보관합니다.", "체인·그래프 동기화와 외부 peer 연결을 확인합니다."),
     },
     {
         "id": "router",
@@ -72,10 +75,11 @@ PHASES = (
         "workspace": "testnet",
         "namespaces": ("lnd-testnet",),
         "build": (),
-        "manual": ("이 노드의 공개 주소로 Lightning P2P 포트만 연결합니다.", "로컬 유동성이 있는 공개 채널을 두 개 이상 활성화합니다.", "합의한 routing 수수료 정책을 적용합니다.", "별도 외부 지갑이 이 노드를 경유하는 작은 testnet 결제를 수행합니다."),
+        "manual": ("이 노드의 공개 주소로 Lightning P2P 포트만 연결합니다.", "서로 다른 peer의 공개 채널에 수신·송신 유동성을 준비합니다.", "합의한 routing 수수료 정책을 적용합니다.", "별도 송신·수신 지갑 사이의 결제가 이 노드를 경유하는지 확인합니다."),
     },
     {
         "id": "loop",
+        "optional": True,
         "title": "Loop 유동성 관리",
         "environment": "testnet Loop daemon, 전용 credential Secret, 제한된 network path, health metric을 추가합니다.",
         "probe": ("ops/verify-loop",),
@@ -138,7 +142,7 @@ PHASES = (
     {
         "id": "hosts",
         "title": "Mac·WSL 재현성",
-        "environment": "Mac arm64와 Windows WSL2 amd64에서 clean start와 host acceptance 증거를 확인합니다.",
+        "environment": "Mac·WSL 구축 기록, 실제 호스트 재부팅·주소 변경 복구와 현재 Router 상태를 검증합니다.",
         "probe": ("ops/verify-phase-evidence", "phase8"),
         "namespaces": (),
         "build": (),
@@ -422,6 +426,10 @@ def render_router_wait(phase, active_channels, detail, channel_synced_at, starte
         f"  최근 채널 동기화 {synced}",
         f"  경과 시간       {elapsed_time(time.monotonic() - started_at)}",
     )
+    return render_router_lines(raw_lines, previous_lines)
+
+
+def render_router_lines(raw_lines, previous_lines=None):
     columns = shutil.get_terminal_size((80, 24)).columns
     lines = tuple(fit_terminal_line(line, columns) for line in raw_lines)
     if sys.stdout.isatty():
@@ -443,10 +451,38 @@ def render_router_wait(phase, active_channels, detail, channel_synced_at, starte
     elif previous_lines is None:
         print("\n".join(lines))
     else:
-        changed = [current for previous, current in zip(previous_lines[:3], lines[:3]) if previous != current]
+        changed = [current for previous, current in zip(previous_lines[:-1], lines[:-1]) if previous != current]
         if changed:
             print("\n".join(changed))
     return lines
+
+
+def render_router_snapshot(snapshot, changed_at, last_success, started_at, previous_lines):
+    checked = time.strftime("%H:%M:%S", time.localtime(last_success)) if last_success else "아직 없음"
+    changed = time.strftime("%H:%M:%S", time.localtime(changed_at)) if changed_at else "아직 없음"
+    now = time.time()
+    age = int(now - last_success) if last_success else None
+    fresh = last_success is not None and 0 <= now - last_success <= 30 and snapshot.get('code') != 'query_error'
+    external_current = fresh and snapshot.get('external_reachability') == 'operator_attested' and snapshot.get('external_expires_at', 0) > now
+    freshness = f"{age}초 전" if age is not None else "조회 중"
+    if age is not None and not fresh:
+        freshness += " / 오래된 결과"
+    rows = (
+        f"  공개 채널  {snapshot.get('active_public', '?')}/2 / peer {snapshot.get('public_peers', '?')}",
+        f"  채널 상태  대기 {snapshot.get('pending_public', '?')} / 비활성 {snapshot.get('inactive_public', '?')} / 비공개 {snapshot.get('private', '?')}",
+        f"  현재 작업  {snapshot.get('message', '상태 조회 중')}",
+        f"  준비 상태  {'조회 실패' if snapshot.get('code') == 'query_error' else '새 조회 필요' if not fresh else '가능' if snapshot.get('ready') else '조건 확인 중'}",
+        f"  실경유 이력 {'확인 ' + time.strftime('%m-%d %H:%M', time.localtime(snapshot['proof_verified_at'])) if snapshot.get('forwarding_proof') == 'verified' and snapshot.get('proof_verified_at') else '미검증'}",
+        f"  외부 접속  {'확인 (운영자 외부 실행)' if external_current else '미검증'}",
+        f"  접속 만료  {time.strftime('%m-%d %H:%M:%S', time.localtime(snapshot['external_expires_at'])) if external_current else '검사 필요'}",
+        f"  동기화     체인 {'완료' if snapshot.get('synced_to_chain') else '확인 중'} / 그래프 {'완료' if snapshot.get('synced_to_graph') else '확인 중'}",
+        f"  채널 확인  {snapshot.get('funding_progress', '조회 중')}",
+        f"  만료 조건  {snapshot.get('funding_expiry', '조회 중')}",
+        f"  채널 변경  {changed}",
+        f"  최근 조회  {checked} ({freshness})",
+        f"  경과 시간  {elapsed_time(time.monotonic() - started_at)}",
+    )
+    return render_router_lines(rows, previous_lines)
 
 
 def close_router_wait(previous_lines):
@@ -468,60 +504,118 @@ def refresh_router_clock(phase, active_channels, detail, channel_synced_at, star
 
 def guide_router(number, phase):
     section("PHASE 03 · ROUTER PROGRESS", CYAN)
+    print("  r+Enter: 작업 재시도 / m+Enter: 지속 감시 설정")
+    print("  v+Enter: 지속 감시·조회 시각 확인")
+    print("  o+Enter: 관측·백업 준비 (Router 검증 화면으로 복귀)")
+    print("  q+Enter 또는 Ctrl+C: 중단")
     started_at = time.monotonic()
     previous_lines = None
-    previous_channels = None
-    channel_synced_at = None
-    while True:
-        state, detail = inspect(number - 1)
-        active_channels = router_active_public_channels()
-        if active_channels != previous_channels:
-            previous_channels = active_channels
-            channel_synced_at = time.time()
-        if state == "complete":
-            previous_lines = close_router_wait(previous_lines)
-            print("  완료: 공개 Router 조건과 실제 forwarding이 검증되었습니다.")
-            return state
-        if state == "failed":
-            previous_lines = close_router_wait(previous_lines)
-            print(f"  확인 오류: {operator_message(phase, detail)}")
-            return state
-        if "create or unlock" in detail:
-            previous_lines = close_router_wait(previous_lines)
-            print("  다음 작업: 기존 testnet 지갑을 unlock합니다.")
-            if not run_testnet_unlock():
-                print("  unlock이 완료되지 않았습니다. 암호를 다시 입력해 재시도합니다.")
-            continue
-        if "run ops/enable-router" in detail:
-            previous_lines = close_router_wait(previous_lines)
-            print("  다음 작업: 공개 P2P 연결을 자동 구성합니다.")
-            if not run_router_wizard():
-                print("  공개 P2P 연결을 아직 구성하지 않았습니다. 필요한 주소를 입력하면 다시 시도합니다.")
-            continue
-        if "reviewed policy" in detail:
-            previous_lines = close_router_wait(previous_lines)
-            try:
-                answer = input("  routing 수수료 정책 적용 [Enter=적용]: ").strip().lower()
-            except EOFError:
-                return "partial"
-            if answer:
-                print("  정책을 적용하지 않았습니다. 10초 뒤 현재 조건을 다시 확인합니다.")
-                time.sleep(ROUTER_POLL_SECONDS)
+    snapshot = {"code": "loading", "message": "상태 조회 중"}
+    last_success = changed_at = None
+    fingerprint = None
+    prompted = None
+    worker = StatusWorker([str(REPO / "ops/verify-router"), "--json"], env=runtime_environment(),
+                          interval=ROUTER_POLL_SECONDS)
+    try:
+        while True:
+            result = worker.tick()
+            if result is not None:
+                if result.get("checked_at"):
+                    last_success = result["checked_at"]
+                    current = tuple(sorted((c.get("point", ""), c.get("active"), c.get("private"))
+                                           for c in result.get("channels", [])))
+                    if current != fingerprint:
+                        if fingerprint is not None:
+                            changed_at = last_success
+                        fingerprint = current
+                    snapshot = result
+                else:
+                    # Preserve last channel snapshot while displaying the error.
+                    snapshot = snapshot | result
+                code = result["code"]
+                if result.get("complete"):
+                    if time.time() >= result.get("external_expires_at", 0) or not 0 <= time.time() - result.get("checked_at", 0) <= 30:
+                        worker.request_now()
+                        continue
+                    close_router_wait(previous_lines)
+                    print("  완료: Router 준비·실경유 이력·외부 접속 결과를 확인했습니다.")
+                    print("  외부망 위치는 운영자가 확인했습니다.")
+                    print("  접속 결과 만료: " + time.strftime("%m-%d %H:%M:%S", time.localtime(result["external_expires_at"])))
+                    return "complete"
+                if code == "wrong_network":
+                    close_router_wait(previous_lines)
+                    print("  오류: testnet 노드만 지원합니다.")
+                    return "failed"
+                action_key = (code, fingerprint, tuple(sorted(result.get('route_blockers', []))))
+                if action_key != prompted:
+                    actions = {
+                        "wallet_locked": run_testnet_unlock,
+                        "exposure_required": run_router_wizard,
+                        "channel_required": lambda: subprocess.run(
+                            [str(REPO / "ops/router-channel")], cwd=REPO, env=runtime_environment()),
+                        "peer_disconnected": lambda: subprocess.run(
+                            [str(REPO / "ops/router-peers")], cwd=REPO, env=runtime_environment()),
+                        "proof_required": lambda: subprocess.run(
+                            [str(REPO / "ops/router-proof")], cwd=REPO, env=runtime_environment()),
+                        "external_required": lambda: subprocess.run(
+                            [str(REPO / "ops/router-observation"), "interactive"], cwd=REPO, env=runtime_environment()),
+                        "policy_required": lambda: run_confirmed(
+                            "공개 채널 수수료 정책 적용", ("ops/configure-router-policy", "--confirm", "APPLY ROUTER POLICY")),
+                    }
+                    if code in actions and not (code == "proof_required" and result.get("forwarding_proof") == "verified"):
+                        previous_lines = close_router_wait(previous_lines)
+                        print(f"  다음 작업: {result['message']}")
+                        prompted = action_key
+                        actions[code]()
+                        worker.request_now()
+                        continue
+                    if code in ("liquidity_required", "proof_required", "peer_disconnected", "funding_review"):
+                        previous_lines = close_router_wait(previous_lines)
+                        print(f"  필요한 조건: {result['message']}")
+                        if code == "liquidity_required":
+                            print(f"  시험 금액 {result.get('test_sat', '?')} sat / 수수료 상한 {result.get('fee_limit_sat', '?')} sat")
+                            reasons = {
+                                'fee_limit': '설정된 routing 수수료가 시험 수수료 상한을 초과합니다.',
+                                'outbound_liquidity': '출구 채널의 전송 가능 잔액이 부족합니다.',
+                                'inbound_liquidity': '입구 채널의 수신 가능 잔액이 부족합니다.',
+                                'outbound_policy': '출구 채널 정책이 시험 금액을 허용하지 않습니다.',
+                                'inbound_policy': '상대 채널 정책이 입금 방향의 시험 금액을 허용하지 않습니다.',
+                            }
+                            for reason in result.get('route_blockers', []):
+                                print('  - ' + reasons.get(reason, '채널 경로 조건 확인이 필요합니다.'))
+                            print('  잔액 부족과 정책 제한은 해결 방법이 다릅니다. 자동 송금·swap은 실행하지 않습니다.')
+                        if code == 'funding_review':
+                            print('  단순 대기로 해결되지 않을 수 있습니다. 상대 운영자와 funding 상태를 확인하세요.')
+                            print('  실패나 환불 완료로 처리하지 않습니다. 수수료 증액·채널 종료는 자동 실행하지 않습니다.')
+                        prompted = action_key
+            previous_lines = render_router_snapshot(snapshot, changed_at, last_success, started_at, previous_lines)
+            if sys.stdin.isatty():
+                readable, _, _ = select.select([sys.stdin], [], [], 1)
+                if readable:
+                    answer = sys.stdin.readline().strip().lower()
+                    previous_lines = close_router_wait(previous_lines)
+                    if answer == "q":
+                        return "partial"
+                    if answer == "r":
+                        prompted = None
+                        worker.request_now()
+                    if answer == "o":
+                        worker.close()
+                        router_support_menu()
+                        previous_lines = None
+                        worker.request_now()
+                    if answer == "m":
+                        configure_router_service()
+                    if answer == "v":
+                        subprocess.run([str(REPO / "ops/router-monitor"), "--status"], cwd=REPO, env=runtime_environment())
             else:
-                result = subprocess.run([str(REPO / "ops/configure-router-policy"), "--confirm", "APPLY ROUTER POLICY"], cwd=REPO, env=runtime_environment(), text=True, capture_output=True)
-                print("  완료: routing 수수료 정책을 적용했습니다." if result.returncode == 0 else "  보류: 채널 정책을 아직 적용할 수 없습니다.")
-            continue
-        previous_lines = render_router_wait(
-            phase, active_channels, detail, channel_synced_at, started_at, previous_lines
-        )
-        try:
-            previous_lines = refresh_router_clock(
-                phase, active_channels, detail, channel_synced_at, started_at, previous_lines
-            )
-        except KeyboardInterrupt:
-            previous_lines = close_router_wait(previous_lines)
-            print("  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")
-            return "partial"
+                time.sleep(1)
+    except (KeyboardInterrupt, EOFError):
+        close_router_wait(previous_lines)
+        print("  Router 검증을 중단했습니다. 다시 Phase 3을 선택하면 이어서 확인합니다.")
+        return "partial"
+    finally:
+        worker.close()
 
 
 def run_confirmed(label, command, confirmation="Enter=실행"):
@@ -542,6 +636,109 @@ def run_confirmed(label, command, confirmation="Enter=실행"):
         return True
     print(f"  보류: {label}이 완료되지 않았습니다. 상태를 다시 확인합니다.")
     return False
+
+
+def configure_router_service():
+    print("  터미널을 닫아도 상태를 감시하고 승인된 peer를 재연결합니다.")
+    print("  지갑이 잠기면 직접 unlock해야 합니다. 서비스에 암호를 저장하지 않습니다.")
+    command = ("ops/router-service", "--install", "--confirm", "INSTALL ROUTER MONITOR")
+    if platform.system() == "Darwin":
+        vm = os.environ.get("LND_OPS_VM_NAME", "lnd-ops-k3s")
+        print(f"  Mac 로그인 후 기존 VM {vm}도 시작할 수 있습니다. 새 VM은 만들지 않습니다.")
+        try:
+            answer = input("  VM 자동 시작 [y=포함, Enter=감시만]: ").strip().lower()
+        except EOFError:
+            return False
+        if answer not in ("", "y"):
+            print("  설정을 취소했습니다.")
+            return False
+        if answer == "y":
+            command += ("--start-vm", "--vm", vm)
+    else:
+        print("  Linux/WSL 시작 후 감시합니다. Windows에서 WSL을 시작하는 설정은 별도입니다.")
+    installed = run_confirmed("호스트 감시 서비스 설치", command, confirmation="TYPE INSTALL ROUTER MONITOR")
+    if installed and platform.system() == "Linux" and "microsoft" in platform.release().lower():
+        print("  Windows 로그인 시 이 WSL 배포판을 시작하고 실행을 유지할 수 있습니다.")
+        print("  Windows 관리자 권한과 기존 포트 전달 갱신 서비스가 필요합니다. 로그인 전에는 시작하지 않습니다.")
+        try:
+            answer = input("  Windows 로그인 시작 [y=설정, Enter=건너뜀]: ").strip().lower()
+        except EOFError:
+            return installed
+        if answer == "y":
+            return run_confirmed("Windows WSL 로그인 시작 등록",
+                                 ("ops/windows-router-startup", "--mode", "install", "--confirm", "INSTALL WSL STARTUP"),
+                                 confirmation="TYPE INSTALL WSL STARTUP")
+    return installed
+
+
+def router_recovery_menu():
+    section("ROUTER · 호스트 복구 검증", CYAN)
+    print("  재부팅 전후의 기존 지갑·스토리지·채널을 대조합니다.")
+    print("  자동 재부팅과 unlock은 하지 않습니다. 먼저 기준을 저장하세요.")
+    while True:
+        print("  1 재부팅 전 기준 저장 / 2 재부팅·unlock 후 검증")
+        print("  3 대기 기준 취소 / 0 돌아가기")
+        print("  4 주소 변경 전 기준 / 5 주소 변경 후 검증 / 6 주소 변경 기준 취소")
+        print("  7 외부 접속 요청·결과 가져오기")
+        try:
+            answer = input("  선택 [0-7]: ").strip()
+            if answer == "0":
+                return
+            action = {"1": ("재부팅 전 기준 저장", "prepare"), "2": ("호스트 복구 상태 검증", "verify"),
+                      "3": ("대기 기준 취소 (성공 이력 유지)", "cancel")}.get(answer)
+            if action:
+                run_confirmed(action[0], ("ops/router-host-recovery", action[1]))
+            address_action = {"4": ("주소 변경 전 기준 저장", "prepare"),
+                              "5": ("주소 변경 후 복구 검증", "verify"),
+                              "6": ("주소 변경 기준 취소", "cancel")}.get(answer)
+            if address_action:
+                run_confirmed(address_action[0], ("ops/router-address-recovery", address_action[1]))
+            if answer == "7":
+                subprocess.run([str(REPO / "ops/router-observation"), "interactive"], cwd=REPO, env=runtime_environment())
+        except (EOFError, KeyboardInterrupt):
+            return
+
+
+def router_support_menu():
+    """Prepare operational support without bypassing Router completion gates."""
+    section("ROUTER · 운영 지원", CYAN)
+    print("  이 메뉴는 Router 완료 처리나 다음 Phase 진입을 수행하지 않습니다.")
+    print("  1 관측 인프라 구성 / 2 LND 지표 수집 연결")
+    print("  3 현재 관측 상태 확인 / 4 testnet 암호화 SCB 백업")
+    print("  5 암호화 백업 상태 확인·상태 지표 갱신 / 6 호스트 재부팅·주소 변경 검증")
+    print("  7 외부 암호화 사본 등록·검증 / 8 등록한 외부 사본 현재 상태")
+    print("  0 Router 화면으로 돌아가기")
+    while True:
+        try:
+            answer = input("  선택 [0-8]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if answer == "0":
+            return
+        if answer == "6":
+            router_recovery_menu()
+            continue
+        actions = {
+            "1": ("관측 인프라 구성", ("ops/deploy-monitoring",)),
+            "2": ("LND 지표 수집 연결 (Pod 재시작·지갑 unlock이 필요할 수 있음)", ("ops/deploy", "testnet", "--monitoring")),
+            "3": ("관측 상태 확인", ("ops/verify-monitoring", "--profile", "testnet")),
+            "4": ("testnet 암호화 SCB 백업", ("ops/backup-scb-encrypted", "testnet", "lnd-0")),
+            "5": ("암호화 백업 상태 확인·상태 지표 갱신", ("ops/backup-status-encrypted", "testnet", "lnd-0")),
+            "7": ("외부 암호화 사본 등록·검증", ("ops/router-backup-copy",)),
+            "8": ("외부 사본 현재 상태 확인", ("ops/router-backup-copy", "--status")),
+        }
+        if answer not in actions:
+            print("  0~8 중에서 선택하세요.")
+            continue
+        if answer == "4":
+            print("  seed 보관과 외부 사본은 별도로 필요합니다. 운영 지갑 복구 실습은 실행하지 않습니다.")
+        label, command = actions[answer]
+        try:
+            run_confirmed(label, command)
+        except (EOFError, KeyboardInterrupt):
+            print("\n  지원 작업을 중단하고 Router 상태 화면으로 돌아갑니다.")
+            return
 
 
 def wait_for_phase(number, phase, detail, attempts):
@@ -600,7 +797,7 @@ def guide_testnet(number, phase):
     while True:
         state, detail = inspect(number - 1)
         if state == "complete":
-            print("  완료: testnet 동기화, peer, 공개 채널, 최근 송금·수금이 검증되었습니다.")
+            print("  완료: 기존 testnet 지갑의 동기화와 peer 연결이 검증되었습니다.")
             return state
         if "unlock" in detail:
             run_testnet_unlock()
@@ -660,9 +857,20 @@ def guide_evidence_phase(number, phase):
         if state == "complete":
             print(f"  완료: {title} 완료 증거가 검증되었습니다.")
             return state
+        if phase_id == 'hosts' and 'Router 운영 증거가 미완료' in detail:
+            subprocess.run([str(REPO / 'ops/router-report')], cwd=REPO, env=runtime_environment())
+            print('  기존 구축 기록은 있습니다. 실제 호스트 복구 기록과 현재 Router 조건이 더 필요합니다.')
+            router_recovery_menu()
+            # Returning from the recovery menu is an explicit return to the
+            # phase selector, never a completion or an automatic reboot.
+            state, _ = inspect(number - 1)
+            return 'complete' if state == 'complete' else 'partial'
         if not attempted:
             if phase_id == "backup":
                 if not run_confirmed("testnet 암호화 SCB 백업", ("ops/backup-scb-encrypted", "testnet", "lnd-0")):
+                    continue
+                print('  새 암호화 파일을 외부 저장소에 보관한 뒤 사본을 확인합니다.')
+                if not run_confirmed("외부 testnet SCB 사본 검증", ("ops/router-backup-copy",)):
                     continue
                 if not run_confirmed("regtest 복구용 암호화 SCB 백업", ("ops/backup-scb-encrypted", "regtest", "lnd-0")):
                     continue
@@ -716,6 +924,7 @@ def guide_evidence_phase(number, phase):
                     continue
                 run_confirmed("Mac·WSL 통합 acceptance 확인", ("ops/phase8-acceptance", windows_evidence))
             elif phase_id == "demo":
+                subprocess.run([str(REPO / "ops/router-report")], cwd=REPO, env=runtime_environment())
                 run_confirmed("누적 포트폴리오 데모 실행", ("ops/demo",))
             attempted = True
             continue
@@ -946,8 +1155,9 @@ def print_status():
     next_phase = None
     for number, phase in enumerate(PHASES, 1):
         state, detail = inspect(number - 1)
-        print(f"  {number:02}  {status_label(state)}  {phase['title']}")
-        if next_phase is None and state != "complete" and applies_to_selected_workspace(phase):
+        optional = " (선택)" if phase.get("optional") else ""
+        print(f"  {number:02}  {status_label(state)}  {phase['title']}{optional}")
+        if next_phase is None and state != "complete" and not phase.get("optional") and applies_to_selected_workspace(phase):
             next_phase = (number, phase, detail)
     if next_phase:
         number, phase, detail = next_phase
@@ -956,7 +1166,7 @@ def print_status():
         print(f"  상태: {operator_message(phase, detail)}")
         print("  이 번호를 선택하면 필요한 다음 작업을 실행하고 상태를 다시 확인합니다.")
     else:
-        print("NEXT: 모든 Phase가 완료되었습니다.")
+        print("NEXT: 필수 Phase가 완료되었습니다. 선택 기능은 해당 번호에서 별도로 구성할 수 있습니다.")
 
 
 def build_through(target, dry_run=False, interactive=False):
@@ -978,6 +1188,9 @@ def build_through(target, dry_run=False, interactive=False):
 
     for index, phase in enumerate(PHASES[:target]):
         number = index + 1
+        if phase.get("optional") and number != target:
+            print(f"[{number}] 선택 기능: {phase['title']} — 필요하면 {number}번에서 별도로 구성하세요.")
+            continue
         phase_pending = False
         state, detail = inspect(index) if not dry_run else ("missing", "dry-run")
         if state == "complete":

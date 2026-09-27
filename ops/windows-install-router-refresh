@@ -19,6 +19,8 @@ cat >"$unit" <<EOF
 Description=Refresh LND Ops Windows-to-WSL Lightning P2P forwarding
 After=network-online.target k3s.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=oneshot

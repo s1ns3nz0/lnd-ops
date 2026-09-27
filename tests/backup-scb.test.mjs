@@ -91,7 +91,8 @@ test('encrypted SCB status verifies ciphertext and current source hashes without
     const record = join(directory, '.last-success');
     await writeFile(target, ciphertext, { mode: 0o600 });
     await writeFile(record, `${Math.floor(Date.now() / 1000)} ${hash(plaintext)} ${hash(ciphertext)} gpg-symmetric-v1\n`, { mode: 0o600 });
-    await writeFile(join(bin, 'kubectl'), `#!/bin/sh\nprintf '${hash(plaintext)}  /data/channel.backup\\n'\n`, { mode: 0o755 });
+    const log = join(root, 'kubectl.log');
+    await writeFile(join(bin, 'kubectl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$TEST_KUBE_LOG"\nprintf '${hash(plaintext)}  /data/channel.backup\\n'\n`, { mode: 0o755 });
     await writeFile(join(bin, 'stat'), `#!/usr/bin/env python3
 import os, sys
 if sys.argv[1:3] == ['-c', '%a'] or sys.argv[1:3] == ['-f', '%Lp']:
@@ -99,13 +100,18 @@ if sys.argv[1:3] == ['-c', '%a'] or sys.argv[1:3] == ['-f', '%Lp']:
 else:
     raise SystemExit(2)
 `, { mode: 0o755 });
-    const run = () => spawnSync(join(repo, 'ops/backup-status-encrypted'), ['regtest', 'lnd-0'], {
+    const run = (extra = []) => spawnSync(join(repo, 'ops/backup-status-encrypted'), ['regtest', 'lnd-0', ...extra], {
       cwd: repo,
-      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` },
+      env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, TEST_KUBE_LOG: log },
       encoding: 'utf8',
     });
     const verified = run();
     assert.equal(verified.status, 0, verified.stderr);
+    assert.match(await readFile(log, 'utf8'), /patch configmap/);
+    await writeFile(log, '');
+    const readonly = run(['--read-only']);
+    assert.equal(readonly.status, 0, readonly.stderr);
+    assert.doesNotMatch(await readFile(log, 'utf8'), /get configmap|patch configmap/);
     await writeFile(target, 'tampered', { mode: 0o600 });
     assert.match(run().stderr, /Encrypted SCB and transfer record differ/);
   } finally {

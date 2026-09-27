@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Start an approved existing Mac VM, then hand over to the Router monitor."""
+import os
+import pathlib
+import platform
+import signal
+import sys
+import time
+import subprocess
+
+from router_store import read, state_directory
+from router_vm import ensure_started
+
+
+def main():
+    if platform.system() != "Darwin":
+        raise ValueError("Mac VM 시작 helper는 Mac에서만 실행합니다")
+    def stop(*_):
+        # Raising through subprocess.run terminates/reaps the startup client.
+        # An already started VM is deliberately not stopped by this service.
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    root = state_directory()
+    while not ensure_started(root):
+        record = read(root, "vm-start.json")
+        if record.get("state") == "needs_review":
+            print("VM 자동 시작을 세 번 시도했습니다. 지속 감시 설정에서 상태를 확인하고 다시 승인하세요.", flush=True)
+            # Stay idle so launchd restarting the process cannot retry startup.
+            while True:
+                time.sleep(60)
+        time.sleep(5)
+    os.execv(sys.executable, [sys.executable, str(pathlib.Path(__file__).resolve().parent / "router-monitor")])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
+        print(f"VM 시작 보류: {exc}", file=sys.stderr)
+        sys.exit(1)

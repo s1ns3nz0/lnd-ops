@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Preview, install with approval, or inspect the current WSL login task."""
+import argparse
+import os
+import pathlib
+import platform
+import re
+import shutil
+import subprocess
+import sys
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mode', choices=('preview', 'install', 'status'), default='preview')
+    parser.add_argument('--confirm')
+    args = parser.parse_args(argv)
+    if platform.system() != 'Linux' or 'microsoft' not in platform.release().lower():
+        raise ValueError('기존 WSL 배포판에서 실행하세요')
+    if args.mode == 'install' and args.confirm != 'INSTALL WSL STARTUP':
+        raise ValueError('INSTALL WSL STARTUP 승인이 필요합니다')
+    distro = os.environ.get('WSL_DISTRO_NAME', '')
+    if not distro:
+        root = subprocess.check_output(['wslpath', '-w', '/'], text=True, timeout=10).strip()
+        parts = [part for part in root.split('\\') if part]
+        distro = parts[1] if len(parts) >= 2 and parts[0] in ('wsl.localhost', 'wsl$') else ''
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', distro):
+        raise ValueError('현재 WSL 배포판 이름을 확인할 수 없습니다')
+    user = subprocess.check_output(['id', '-un'], text=True, timeout=10).strip()
+    if args.mode == 'install':
+        for service in ('k3s.service', 'lnd-ops-router-monitor.service', 'lnd-ops-router-refresh.service'):
+            subprocess.run(['systemctl', 'is-enabled', '--quiet', service], check=True, timeout=10)
+    powershell = shutil.which('powershell.exe') or '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+    script = pathlib.Path(__file__).resolve().with_suffix('.ps1')
+    windows_script = subprocess.check_output(['wslpath', '-w', str(script)], text=True, timeout=10).strip()
+    command = [powershell, '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+               '-File', windows_script, '-Mode', args.mode.title(), '-DistroName', distro, '-LinuxUser', user]
+    if args.mode == 'install':
+        command += ['-Confirm', args.confirm]
+    subprocess.run(command, check=True, timeout=60)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        print(f'WSL 자동 시작 구성 실패: {exc}', file=sys.stderr)
+        print('설치 도중 실패했다면 --mode status로 등록 상태를 확인하세요. 자동 복원하지 않습니다.', file=sys.stderr)
+        sys.exit(1)

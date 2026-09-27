@@ -4,6 +4,9 @@
 import json
 import os
 import pathlib
+import runpy
+import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -14,6 +17,30 @@ CONTRACTS = {
     "phase8": ("phase8-acceptance-*.json", "lnd-ops/phase8-acceptance/v1"),
     "phase9": ("phase9-demo-*.json", "lnd-ops/phase9-demo/v1"),
 }
+
+
+def validate(payload, phase, now=None):
+    now = now or datetime.now(timezone.utc)
+    if payload.get("schema") != CONTRACTS[phase][1] or payload.get("result") != "pass":
+        raise ValueError("latest evidence is not a passing record")
+    checked = datetime.fromisoformat(payload["checked_at"].replace("Z", "+00:00"))
+    maximum_age = timedelta(days=7 if phase == "phase9" else 1)
+    if checked.tzinfo is None or not timedelta(0) <= now - checked <= maximum_age:
+        raise ValueError("latest evidence has an invalid time or is no longer current")
+    if phase == "phase9":
+        stages = runpy.run_path(str(pathlib.Path(__file__).with_name("demo")))["STAGES"]
+        expected = [(number, stage["id"]) for number, stage in enumerate(stages, 1)]
+        actual = [(stage.get("number"), stage.get("id")) for stage in payload.get("completed", [])]
+        if payload.get("requested_through") != len(stages) or actual != expected:
+            raise ValueError("partial demo evidence does not complete Phase 11")
+    else:
+        hosts = payload.get('hosts', {})
+        if set(hosts) != {'mac-arm64', 'windows-wsl2-amd64'} or any(
+                not isinstance(item, dict) or not isinstance(item.get('evidence'), str) or not item['evidence']
+                or not re.fullmatch(r'[0-9a-f]{64}', str(item.get('sha256', ''))) for item in hosts.values()):
+            raise ValueError('Mac and Windows host evidence references are required')
+        if payload.get('cross_platform_runtime') != 'pass' or payload.get('standard_command_surface') != 'pass' or payload.get('secrets_recorded') is not False:
+            raise ValueError('host runtime and command-surface acceptance are incomplete')
 
 
 def main(arguments):
@@ -30,15 +57,20 @@ def main(arguments):
         if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o777 != 0o600:
             raise ValueError("evidence ownership or permissions are unsafe")
         payload = json.loads(path.read_text())
-        if payload.get("schema") != schema or payload.get("result") != "pass":
-            raise ValueError("latest evidence is not a passing record")
-        checked = datetime.fromisoformat(payload["checked_at"].replace("Z", "+00:00"))
-        maximum_age = timedelta(days=7 if arguments[0] == "phase9" else 1)
-        if datetime.now(timezone.utc) - checked > maximum_age:
-            raise ValueError("latest evidence is no longer current")
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+        validate(payload, arguments[0])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
+    if arguments[0] in ("phase8", "phase9"):
+        try:
+            checked = subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name("router-report")), "--require-complete"],
+                                     capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.SubprocessError):
+            print("FAIL: Router 운영 증거 조회에 실패했습니다", file=sys.stderr)
+            return 1
+        if checked.returncode:
+            print("ACTION: Router 운영 증거가 미완료입니다. Pod·Mac·Windows 재부팅 및 주소 변경 복구와 현재 접속 결과를 확인하세요", file=sys.stderr)
+            return 10
     print(f"OK {arguments[0]} evidence: {path.name}")
     return 0
 

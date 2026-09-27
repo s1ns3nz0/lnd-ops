@@ -18,6 +18,7 @@ jobs:
             'ops/windows-host-state.ps1',
             'ops/windows-encryption-status.ps1',
             'ops/windows-backup-acl.ps1',
+            'ops/windows-router-startup.ps1',
             'ops/windows-enable-wsl.ps1'
           )
           foreach ($script in $scripts) {
@@ -58,6 +59,15 @@ jobs:
         run: |
           npm test
           python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Test WSL startup registration contract in Linux PowerShell
+        run: |
+          docker run --rm --platform linux/amd64 --network none -v "$PWD:/repo:ro" -w /repo \
+            mcr.microsoft.com/powershell@sha256:62300a213a9293916333df2b014cd3a8f22fb0b0b65f2bb446aaf436bcf8c868 \
+            pwsh -NoLogo -NoProfile -File tests/windows-router-startup.ps1
+      - name: Test authenticated Router observer in isolated Linux container
+        run: |
+          docker build -f observer/Dockerfile.test -t localhost/lnd-ops-router-observer-test observer
+          docker run --rm --network none localhost/lnd-ops-router-observer-test
       - name: Render both profiles in pinned Linux Helm image
         run: |
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml

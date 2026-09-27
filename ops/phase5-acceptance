@@ -52,6 +52,11 @@ def run_gate(name, arguments=()):
     result = command([str(REPO / "ops" / name), *arguments], check=False)
     lines = (result.stderr or result.stdout).strip().splitlines()
     summary = lines[-1] if lines else f"{name} returned no summary"
+    if name == 'router-backup-copy' and result.stdout.strip():
+        try:
+            summary = json.loads(result.stdout)['message']
+        except (ValueError, KeyError, TypeError):
+            raise Failure('external backup checker returned invalid status')
     if result.returncode == 10:
         raise ManualGate(summary.removeprefix("ACTION: "))
     if result.returncode:
@@ -105,6 +110,7 @@ def main(arguments):
             raise Failure("preserved original regtest PVC differs from recovery evidence")
         run_gate("verify", ["regtest"])
         backup = run_gate("backup-status-encrypted", ["testnet", "lnd-0"])
+        external_backup = run_gate("router-backup-copy", ["--status", "--json"])
         phase4 = run_gate("phase4-acceptance")
 
         encryption = command([str(REPO / "ops" / "check-host-encryption"), "--check-only"], check=False, timeout=180)
@@ -125,6 +131,7 @@ def main(arguments):
             "host_encryption": host_encryption,
             "checks": {
                 "encrypted_testnet_scb_current": "pass",
+                "external_encrypted_testnet_scb_current": "pass",
                 "backup_freshness_alert_delivery_and_recovery": "pass",
                 "isolated_seed_and_scb_recovery": "pass",
                 "duplicate_identity_prevention": "pass",
@@ -135,7 +142,7 @@ def main(arguments):
                 "recovery": recovery_path.name,
                 "backup_alert": alert_path.name,
             },
-            "summaries": {"backup": backup, "phase4": phase4},
+            "summaries": {"backup": backup, "external_backup": external_backup, "phase4": phase4},
         }
         path = write_result(payload, now)
         print("OK Phase 5 acceptance: encrypted backup, stale alert recovery, isolated seed+SCB recovery, duplicate prevention, and Phase 4 continuity")

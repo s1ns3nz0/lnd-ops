@@ -53,3 +53,12 @@ successful `Harness check` and `Verify operator slice` workflows in
 `s1ns3nz0/lnd-ops` for that exact revision. If an expired token is present in
 the environment for this public repository, run the command with
 `env -u GITHUB_TOKEN -u GH_TOKEN`.
+
+The UI's Phase 10 completion check also requires current Router readiness and
+external reachability, Pod recovery, and both reboot and address-change evidence
+for each of Mac and Windows. These real trials are mandatory; source tests cannot
+substitute for them. The combined legacy host record alone cannot complete Router host
+validation. Use the [host recovery menu](router-host-recovery.md) to collect these
+separate records. If host setup evidence passes but Router evidence is incomplete,
+the UI opens that menu without repeating clean-start deployment. Returning from
+the menu leaves the Phase incomplete unless its verifier now passes.

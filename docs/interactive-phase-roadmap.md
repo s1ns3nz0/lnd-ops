@@ -9,17 +9,20 @@ or the operator explicitly interrupts it.
 ## Implemented runner contract
 
 The runner now assigns every Phase a stable internal ID, a read-only completion
-probe, and an interactive route. Phase 1 and 2 use explicit wallet, channel,
-and payment readiness probes. Phase 3 keeps its Router screen active and
-redraws one compact status line rather than appending polling logs. Phase 4 and
-5 verify Loop and live testnet metrics. Phase 6 through 11 use their existing
+probe, and an interactive route. Phase 1 checks regtest wallets, channels,
+and payments. Phase 2 checks the testnet wallet, synchronization and peers.
+Phase 3 keeps its Router screen active and patches compact rows rather than
+appending polling logs. The timer updates independently of its RPC worker.
+Phase 4 is optional; cumulative builds for later phases skip it. Selecting 4
+explicitly still runs its setup and quote verification. Phase 5 verifies live
+testnet metrics without requiring recent personal payments. Phase 6 through 11 use their existing
 acceptance evidence as the completion contract, and invoke their existing
 interactive scripts only after their own confirmation prompt.
 
 ## Phase 1 · regtest foundation
 
-**Current gap:** the runner only describes wallet creation, seed custody,
-channels, and payments.
+**Implemented:** existing wallets are detected, unlock/create helpers and the
+channel/payment exercise run interactively. Real host evidence remains separate.
 
 **Change:** detect whether the selected regtest workspace already has both
 wallets. For an existing workspace, unlock both wallets interactively. For a
@@ -29,30 +32,46 @@ exercise. Recheck the regtest verifier after every action.
 
 ## Phase 2 · persistent testnet node
 
-**Current gap:** wallet unlock is interactive, but peer, channel, and payment
-readiness is not presented as a sequence.
+**Implemented:** wallet unlock, synchronization and peer readiness. Private
+send/receive activity and Router channel setup are not Phase 2 requirements.
 
 **Change:** retain the existing unlock flow, then display the next missing
-testnet condition only: chain/graph sync, peer connection, public channel, or
-fresh outgoing/incoming payment. Poll automatic conditions and recheck after
+testnet condition only: wallet unlock, chain/graph sync or peer connection.
+Poll automatic conditions and recheck after
 each operator-confirmed condition.
 
 ## Phase 3 · testnet Router Node
 
-**Current gap:** completed in this change.
+**Current gap:** external reachability evidence and real host recovery remain
+unverified. This phase is not complete merely because its UI is implemented.
 
 **Change:** keep the Router progress screen active through chain/graph sync,
-public URI, two public channels, policy application, and external forwarding.
-Automatic conditions are polled with compact progress lines. Policy
-application is the only prompt after the node is exposed. The Phase succeeds
-only when the forwarding verifier passes.
+public URI, distinct public peers, directional liquidity, policy application,
+and external forwarding. Channel opens and controlled external payments show
+amounts and require explicit approval; uncertain submissions are not resent.
+Readiness, dated historical forwarding evidence and external reachability are
+displayed separately. Missing external SSH access does not erase earlier evidence.
+
+`o` opens observability and backup support while Phase 3 remains pending.
+It can deploy monitoring, enable collectors, verify metrics, export an encrypted
+testnet SCB, or compare the current SCB/ciphertext hashes with the saved backup record.
+The backup-status helper also updates the existing status ConfigMap; it does not
+decrypt again or prove recovery readiness. Seed custody and an external backup
+copy remain separate requirements. Failed actions remain in the support menu;
+cancelled actions return to Router progress with a fresh query. No support action
+marks Router complete or advances cumulative phases.
+
+Monitoring redeploy preserves the existing LND node count and the existing
+monitoring/Loop/Router flags and Router address. Every configured node must have
+its read-only macaroon and unlocked RPC before the upgrade. Other Helm customization
+preservation is not established by this change. Pod replacement may require unlock.
 
 ## Phase 4 · Loop liquidity management
 
 **Current gap:** Loop is only described even though a read-only quote verifier
 already exists.
 
-**Change:** prompt for the local path of the dedicated Loop macaroon, validate
+**Change:** when explicitly selected, prompt for the local path of the dedicated Loop macaroon, validate
 that it is readable without echoing it, deploy Loop, wait for its workload,
 then run the health and read-only quote verifier. Never offer a swap in this
 runner.
@@ -64,8 +83,8 @@ finish before it sees live LND metrics and payment history.
 
 **Change:** deploy the shared monitoring stack when absent, unlock the selected
 wallet when required, wait for collector targets to become healthy, and verify
-the selected profile rather than infrastructure alone. When fresh payment data
-is missing, keep the Phase screen open and recheck after the next payment.
+the selected profile rather than infrastructure alone. Zero recent payment count
+is valid for a routing-only testnet node; absent metrics or failed scrapes are not.
 
 ## Phase 6 · security baseline
 
@@ -78,8 +97,11 @@ after it passes. Report the failing policy or runtime signal in plain language.
 
 ## Phase 7 · backup and recovery
 
-**Current gap:** the runner does not expose the existing recovery evidence
-gates.
+**Implemented:** the runner exposes encrypted backup, external encrypted-copy
+verification and isolated regtest recovery actions. Acceptance requires the
+external copy to match the current SCB; missing or stale copies cannot complete
+the Phase. Real external-copy verification and isolated recovery evidence are
+required for completion; source tests do not supply them.
 
 **Change:** show backup freshness and encrypted SCB status first. Require an
 explicit per-step confirmation before any recovery rehearsal that can change a
@@ -107,8 +129,12 @@ after Phase 9 acceptance evidence exists.
 
 ## Phase 10 · Mac and WSL reproducibility
 
-**Current gap:** host evidence is created outside the runner with no status
-handoff.
+**Implemented:** combined host evidence must reference both platforms and pass
+the runtime/command checks. Completion additionally requires current Router
+readiness and external reachability, Pod recovery, and reboot plus address-change
+evidence for each of Mac and Windows. Missing evidence opens the recovery menu
+rather than rerunning setup. These actual trials are required for completion;
+source tests do not supply them. Counterpart record transfer is an operator task.
 
 **Change:** identify the current host, run its clean-start and acceptance
 checks, retain the generated evidence location, then ask for the counterpart

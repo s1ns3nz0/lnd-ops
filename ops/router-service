@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Preview or explicitly install the Router monitor host service."""
+import argparse
+import os
+import pathlib
+import platform
+import plistlib
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+from router_rpc import environment
+from router_service import configuration, render_linux, render_macos, LABEL, UNIT, MARKER
+from router_store import owned_directory, state_directory
+from router_vm import approve, inventory, fingerprint
+
+
+def run(*command):
+    subprocess.run(command, check=True, timeout=60)
+
+
+def report_partial_install(selected):
+    print("서비스 설치 중 일부 변경이 적용됐을 수 있습니다. 현재 등록 상태를 확인합니다.", file=sys.stderr)
+    checks = [("부팅 등록", ["systemctl", "is-enabled", UNIT]),
+              ("현재 실행", ["systemctl", "is-active", UNIT])] if selected == "linux" else [
+                  ("로그인 세션 등록", ["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"])]
+    for label, command in checks:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            if selected == "linux":
+                value = result.stdout.strip()
+                value = value if value in ("enabled", "disabled", "active", "inactive", "failed", "activating", "not-found") else "확인 불가"
+            else:
+                value = "등록됨 (실제 노드 상태는 별도 확인)" if result.returncode == 0 else "미등록 또는 조회 실패"
+            print(f"  {label}: {value}", file=sys.stderr)
+        except (OSError, subprocess.SubprocessError):
+            print(f"  {label}: 조회 실패", file=sys.stderr)
+    print("기존 상태로 자동 복원하지 않았습니다. 표시된 오류를 해결한 뒤 지속 감시 설정에서 다시 설치하세요.", file=sys.stderr)
+
+
+def existing_target(target, macos):
+    if target.is_symlink():
+        raise ValueError("서비스 파일 symlink는 덮어쓰지 않습니다")
+    if not target.exists():
+        return
+    metadata = target.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError("서비스 대상이 일반 파일이 아닙니다")
+    text = target.read_text()
+    managed = plistlib.loads(text.encode()).get("Comment") == MARKER if macos else text.startswith(f"# {MARKER}\n")
+    if not managed:
+        raise ValueError("기존 파일이 lnd-ops 관리 파일이 아니므로 교체하지 않습니다")
+
+
+def install(config, selected, content):
+    if os.getuid() == 0:
+        raise ValueError("일반 사용자로 실행하세요. Linux 서비스 파일 설치에만 sudo를 사용합니다")
+    if selected == "macos":
+        directory = pathlib.Path(config["environment"]["HOME"]) / "Library/LaunchAgents"
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / (LABEL + ".plist")
+        existing_target(target, True)
+        domain = f"gui/{os.getuid()}"
+        exists = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], capture_output=True, timeout=15)
+        if exists.returncode == 0:
+            run("launchctl", "bootout", f"{domain}/{LABEL}")
+        descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".lndops-monitor-")
+        try:
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(content)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        run("launchctl", "bootstrap", domain, str(target))
+        subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], check=True, capture_output=True, timeout=15)
+    else:
+        target = pathlib.Path("/etc/systemd/system") / UNIT
+        existing_target(target, False)
+        with tempfile.NamedTemporaryFile(mode="w", prefix="lndops-monitor-", suffix=".service") as stream:
+            stream.write(content)
+            stream.flush()
+            run("sudo", "install", "-o", "root", "-g", "root", "-m", "0644", stream.name, str(target))
+        run("sudo", "systemctl", "daemon-reload")
+        run("sudo", "systemctl", "enable", UNIT)
+        run("sudo", "systemctl", "restart", UNIT)
+        run("systemctl", "is-active", UNIT)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--platform", choices=("linux", "macos"))
+    parser.add_argument("--install", action="store_true")
+    parser.add_argument("--confirm")
+    parser.add_argument("--start-vm", action="store_true", help="Mac 로그인 후 승인한 기존 VM을 시작")
+    parser.add_argument("--vm", default=os.environ.get("LND_OPS_VM_NAME", "lnd-ops-k3s"))
+    args = parser.parse_args(argv)
+    actual = {"Darwin": "macos", "Linux": "linux"}.get(platform.system())
+    selected = args.platform or actual
+    if selected is None:
+        raise ValueError("Mac 또는 Linux/WSL에서 실행하세요")
+    if args.install and (selected != actual or args.confirm != "INSTALL ROUTER MONITOR"):
+        raise ValueError("현재 OS에서 INSTALL ROUTER MONITOR 승인이 필요합니다")
+    if args.start_vm and selected != "macos":
+        raise ValueError("VM 자동 시작 옵션은 Mac 전용입니다")
+    home = pathlib.Path.home()
+    env = environment()
+    state = os.environ.get("XDG_STATE_HOME", str(home / ".local/state"))
+    config = configuration(pathlib.Path(__file__).resolve().parents[1], sys.executable, home, state,
+                           env["KUBECONFIG"], os.environ["PATH"], pwd.getpwuid(os.getuid()).pw_name)
+    if args.start_vm:
+        lima = shutil.which("limactl")
+        if not lima:
+            versions = (pathlib.Path(config["repo"]) / "ops/versions.env").read_text()
+            match = re.search(r"^LIMA_VERSION=([0-9.]+)$", versions, re.MULTILINE)
+            if match:
+                bundled = pathlib.Path(os.environ.get("XDG_DATA_HOME", home / ".local/share")) / "lnd-ops/tools" / ("lima-" + match[1]) / "bin/limactl"
+                if bundled.is_file() and os.access(bundled, os.X_OK):
+                    lima = str(bundled.resolve())
+            if not lima:
+                raise ValueError("설치된 Lima 실행 경로를 찾을 수 없습니다. 먼저 프로젝트 VM을 구성하세요")
+        config["start_vm"] = True
+        config["environment"]["PATH"] = str(pathlib.Path(lima).parent) + os.pathsep + config["environment"]["PATH"]
+        config["environment"]["LIMA_HOME"] = str(pathlib.Path(os.environ.get("LIMA_HOME", home / ".lima")).resolve())
+        fingerprint(inventory(lima, args.vm, os.environ | config["environment"]))
+    content = render_macos(config) if selected == "macos" else render_linux(config)
+    if not args.install:
+        print(content, end="")
+        return 0
+    if not shutil.which("kubectl") or not pathlib.Path(env["KUBECONFIG"]).is_file():
+        raise ValueError("먼저 kubectl과 기존 testnet kubeconfig를 준비하세요")
+    owned_directory(state_directory())
+    try:
+        if args.start_vm:
+            approve(state_directory(), lima, args.vm, os.environ | config["environment"])
+        install(config, selected, content)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        report_partial_install(selected)
+        raise
+    print("감시 서비스가 등록되었습니다. 라우팅 완료 여부는 별도로 검증합니다.")
+    print(("Mac 로그인 후 승인한 기존 VM을 시작하고 감시합니다." if args.start_vm else "Mac 로그인 시 감시합니다. VM 자동 시작은 선택하지 않았습니다.") if selected == "macos"
+          else "Linux/WSL 시작 시 실행됩니다. Windows의 WSL 자동 시작은 별도 구성해야 합니다.")
+    print("기존 지갑이 잠기면 unlock이 필요합니다. 비밀번호는 이 서비스에 저장하지 않습니다.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        print(f"감시 서비스 구성 실패: {exc}", file=sys.stderr)
+        sys.exit(1)

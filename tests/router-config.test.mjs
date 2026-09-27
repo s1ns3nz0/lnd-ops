@@ -36,12 +36,13 @@ test('Router commands separate exposure, policy mutation, and read-only verifica
   assert.match(enable, /--external-ip PUBLIC_HOST/);
   assert.match(enable, /NodePort 30973/);
   assert.match(policy, /APPLY ROUTER POLICY/);
-  assert.match(policy, /--fee_rate=0\.0005/);
+  assert.match(policy, /--rate-ppm.*default=500/);
   assert.match(policy, /--max_htlc_msat=/);
   assert.match(verify, /fwdinghistory/);
-  assert.match(verify, /active public channel/);
+  assert.match(verify, /assess\(/);
   assert.match(verify, /NodePort 30973/);
   assert.match(verify, /node2_pub/);
-  assert.match(verify, /local_balance.*- 1\) \* 1000/);
+  assert.match(verify, /complete/);
+  assert.match(policy, /policy_maximum\(channel\)/);
   assert.match(deploy, /--router --router-external-ip HOST/);
 });

@@ -38,7 +38,7 @@ STAGES = (
         "id": "lightning",
         "title": "라이브 Lightning 노드와 채널",
         "detail": "testnet 동기화, 외부 peer, public channel, 결제 집계를 확인합니다.",
-        "commands": (("ops/testnet-status",),),
+        "commands": (("ops/router-report",), ("ops/testnet-status",)),
         "mode": "read-only",
     },
     {

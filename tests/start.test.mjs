@@ -67,19 +67,19 @@ test('Router progress updates a compact status block without appending poll outp
   const routerGuide = contents.slice(contents.indexOf('def guide_router'), contents.indexOf('\ndef run_confirmed'));
   assert.match(routerGuide, /PHASE 03 · ROUTER PROGRESS/);
   assert.match(routerGuide, /while True:/);
-  assert.match(routerGuide, /refresh_router_clock\(/);
-  assert.match(routerGuide, /router_active_public_channels\(\)/);
-  assert.match(routerGuide, /render_router_wait\(/);
+  assert.match(routerGuide, /StatusWorker\(/);
+  assert.match(routerGuide, /worker\.tick\(\)/);
+  assert.match(routerGuide, /render_router_snapshot\(/);
   assert.doesNotMatch(routerGuide, /확인 \{attempts/);
   assert.doesNotMatch(routerGuide, /초 뒤 Router 상태를 다시 확인/);
   assert.doesNotMatch(routerGuide, /상태 변경:/);
-  assert.match(routerGuide, /공개 Router 조건과 실제 forwarding이 검증되었습니다/);
+  assert.match(routerGuide, /Router 준비·실경유 이력·외부 접속 결과를 확인했습니다/);
   assert.match(contents, /공개 채널       \{channel_state\}/);
   assert.match(contents, /대기 조건       \{router_wait_message/);
   assert.match(contents, /최근 채널 동기화 \{synced\}/);
   assert.match(contents, /경과 시간       \{elapsed_time/);
   assert.match(contents, /if previous == current:/);
-  assert.match(contents, /zip\(previous_lines\[:3\], lines\[:3\]\)/);
+  assert.match(contents, /zip\(previous_lines\[:-1\], lines\[:-1\]\)/);
   assert.match(contents, /fit_terminal_line\(line, columns\)/);
   assert.match(routerGuide, /close_router_wait\(previous_lines\)/);
 });
@@ -99,18 +99,19 @@ test('every learning phase has a live completion probe and an interactive route'
   assert.match(contents, /wait_for_phase\(/);
 });
 
-test('persistent testnet readiness accepts established payment history', async () => {
+test('persistent testnet readiness does not require personal payments or router channels', async () => {
   const contents = await readFile(resolve(repo, 'ops/verify-testnet-readiness'), 'utf8');
-  assert.match(contents, /item\.get\("status"\) == "SUCCEEDED" for item in payments/);
-  assert.match(contents, /item\.get\("state"\) == "SETTLED" for item in invoices/);
-  assert.doesNotMatch(contents, /within the last hour/);
+  assert.doesNotMatch(contents, /listpayments|listinvoices|listchannels/);
+  assert.match(contents, /synced_to_chain/);
+  assert.match(contents, /listpeers/);
 });
 
-test('monitoring still requires fresh one-hour payment samples', async () => {
+test('monitoring requires fresh payment samples only for regtest exercises', async () => {
   const contents = await readFile(resolve(repo, 'ops/verify-monitoring'), 'utf8');
   assert.match(contents, /lnd_ops_outgoing_payments_1h/);
   assert.match(contents, /lnd_ops_received_invoices_1h/);
   assert.match(contents, /make a fresh outgoing and incoming/);
+  assert.match(contents, /if profile == "regtest" and/);
 });
 
 test('guided setup reserves partial status for an explicit operator gate', async () => {

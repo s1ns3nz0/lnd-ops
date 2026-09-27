@@ -170,3 +170,40 @@ deletion removes every namespaced resource and its PVCs; a reclaim policy may
 also remove their backing volumes. Monitoring, security, agent namespaces, the
 K3s cluster, the Lima VM, Docker images, host backups, and evidence are never
 deleted by this command.
+## Router operation evidence in UI Phase 11
+
+`ops/router-report` is a read-only status view available without running the
+cumulative demo. UI Phase 11 and the demo's Lightning stage also display it.
+Resource presence, Pod/PVC readiness, current routing readiness, dated forwarding
+proof, external P2P verification and recovery evidence appear separately.
+
+A Pod restart record is historical evidence for its wallet and channel/peer set.
+It does not prove a Mac or Windows reboot, address-change recovery, or current
+availability. Host reboot records come from the [host recovery flow](router-host-recovery.md).
+Address-change recovery still lacks a collector and remains unverified. The report writes no
+completion record; `--json` exposes the same fields for inspection.
+
+Pod records come from the existing `ops/testnet-reconnect-check` prepare/verify
+flow and live under `${XDG_STATE_HOME:-~/.local/state}/lnd-ops/evidence`. That
+exercise involves an operator-controlled Pod restart and subsequent unlock;
+the report itself never starts it. Accepted files are current-user owned, have
+no group/other permissions, and are neither symlinks nor hardlinks.
+
+`history_valid` describes the recorded restart, while `matches_current` compares
+its wallet and active public channel/peer set with today's observation. The
+`verified_history` status means both checks passed; it is not a current uptime
+guarantee. The newest valid record takes precedence even if an older one matches
+the current configuration. Invalid or unreadable records are skipped and counted
+in JSON; missing evidence remains unverified. Current lookup failure is unknown.
+
+Ordinary reporting exits 0 when rendered, even if evidence is incomplete.
+`ops/router-report --require-complete` still renders the report, then exits 10
+while requirements remain unmet. An unexpected reporting failure exits nonzero.
+Use the Router screen's `o → 6` menu to capture and verify a host reboot baseline.
+Address-change collection remains an implementation task; rerunning the demo
+does not substitute for it. Monitoring and backup support remain independently available.
+
+Completion now rejects partial or reordered demo records and future timestamps.
+It also requires the separate Router operation evidence check, which remains
+pending while address-change collection and external verification are unfinished. A successful individual
+demo stage does not complete UI Phase 11.

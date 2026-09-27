@@ -1,98 +1,120 @@
 #!/usr/bin/env python3
-"""Read-only completion gate for the persistent testnet routing node."""
-
+"""Read-only Router readiness and completion status, in text or JSON."""
+import argparse
 import json
-import os
-import pathlib
 import subprocess
 import sys
+import time
+
+from router_model import assess, channel_id
+from router_rpc import call, environment, WalletLocked, GraphEdgeMissing
+from router_proof import current_evidence
+from router_store import read, state_directory
+from router_policy import target
+from router_observation import current as current_observation
 
 
-STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
-os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
-BASE = ["kubectl", "-n", "lnd-testnet", "exec", "lnd-0-0", "-c", "lnd", "--", "lncli", "--lnddir=/data/.lnd", "--network=testnet"]
+def validate_p2p_service(service):
+    """Check the chart's P2P-only NodePort 30973 contract, not reachability."""
+    spec = service['spec']
+    if spec.get('type') != 'NodePort':
+        raise ValueError('Router P2P 서비스 유형이 NodePort가 아닙니다')
+    if spec.get('selector') != {'app.kubernetes.io/name': 'lnd-0'}:
+        raise ValueError('Router P2P 서비스 대상이 testnet 첫 LND 노드와 다릅니다')
+    ports = spec['ports']
+    if len(ports) != 1:
+        raise ValueError('Router P2P 서비스에는 TCP 9735 포트 하나만 허용됩니다')
+    port = ports[0]
+    if (port.get('port') != 9735 or port.get('nodePort') != 30973
+            or port.get('targetPort', port.get('port')) != 9735
+            or port.get('protocol', 'TCP') != 'TCP'):
+        raise ValueError('Router P2P 서비스는 TCP 9735 → LND 9735 / NodePort 30973이어야 합니다')
 
 
-class Gate(Exception):
-    pass
+def readiness(test_sat=10, fee_limit_sat=10, rpc=call, info=None):
+    info = rpc("getinfo") if info is None else info
+    desired_policy = target(state_directory(), info.get("identity_pubkey"))
+    channels = rpc("listchannels").get("channels", [])
+    pending = rpc("pendingchannels")
+    peers = rpc("listpeers").get("peers", [])
+    early = assess(info, channels, pending, peers, {}, test_sat=test_sat, fee_limit_sat=fee_limit_sat, target_policy=desired_policy)
+    if early["code"] not in ("policy_required", "graph_pending"):
+        return early
+    policies = {}
+    for channel in channels:
+        if channel.get("private") or not channel.get("active"):
+            continue
+        try:
+            graph = rpc("getchaninfo", f"--chan_id={channel_id(channel)}")
+        except GraphEdgeMissing:
+            # Retain live channel counts. Missing graph data is not permission
+            # to reapply policy, open another channel, or advance the phase.
+            continue
+        if graph.get("node1_pub") == info["identity_pubkey"]:
+            own, remote = "node1_policy", "node2_policy"
+        elif graph.get("node2_pub") == info["identity_pubkey"]:
+            own, remote = "node2_policy", "node1_policy"
+        else:
+            raise ValueError("channel graph does not contain the current identity")
+        policies[channel_id(channel)] = {"own": graph.get(own), "remote": graph.get(remote)}
+    return assess(info, channels, pending, peers, policies, test_sat=test_sat, fee_limit_sat=fee_limit_sat, target_policy=desired_policy)
 
 
-def lncli(*args):
-    result = subprocess.run(BASE + list(args), text=True, capture_output=True, timeout=120)
-    if result.returncode:
-        raise Gate("create or unlock the persistent testnet wallet")
+def snapshot(test_sat=10, fee_limit_sat=10):
+    base = {"schema": "lnd-ops/router-status/v1", "ready": False, "complete": False,
+            "external_reachability": "unverified", "forwarding_proof": "unverified"}
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"malformed lncli JSON for {args[0]}") from exc
-
-
-def policy_matches(info, channel):
-    scid = channel.get("scid") or channel.get("channel_id")
-    if not scid:
-        return False
-    graph = lncli("getchaninfo", f"--chan_id={scid}")
-    own_key = info["identity_pubkey"]
-    if graph.get("node1_pub") == own_key:
-        policy = graph.get("node1_policy")
-    elif graph.get("node2_pub") == own_key:
-        policy = graph.get("node2_policy")
-    else:
-        return False
-    if not policy:
-        return False
-    try:
-        return (
-            int(policy.get("fee_base_msat", -1)) == 1000
-            and int(policy.get("fee_rate_milli_msat", -1)) == 500
-            and int(policy.get("min_htlc", policy.get("min_htlc_msat", -1))) == 1
-            and int(policy.get("max_htlc_msat", 0)) == (int(channel.get("local_balance", 0)) - 1) * 1000
+        service = subprocess.run(
+            ["kubectl", "-n", "lnd-testnet", "get", "service", "lnd-router-p2p", "--ignore-not-found", "-o", "json"],
+            env=environment(), text=True, capture_output=True, timeout=15,
         )
-    except (TypeError, ValueError):
-        return False
+        if service.returncode:
+            raise RuntimeError((service.stderr or service.stdout).strip() or "Kubernetes 조회 실패")
+        if not service.stdout.strip():
+            result = base | {"code": "exposure_required", "message": "공개 P2P 연결 구성이 필요합니다"}
+        else:
+            validate_p2p_service(json.loads(service.stdout))
+            info = call("getinfo")
+            result = base | readiness(test_sat, fee_limit_sat, info=info)
+            proof = read(state_directory(), "forwarding-proof.json")
+            if current_evidence(proof, result.get("identity"), result.get("channels", [])):
+                result.update(forwarding_proof="verified", proof_verified_at=proof["verified_at"])
+            observation = read(state_directory(), "p2p-observation.json")
+            if current_observation(observation, info):
+                result.update(external_reachability="operator_attested",
+                              external_verified_at=observation["observation"]["verified_at"],
+                              external_expires_at=observation["observation"]["request"]["expires_at"],
+                              external_provenance="operator-controlled-unsigned")
+            if result["ready"]:
+                # Historical fwdinghistory events and an advertised URI alone
+                # are not evidence of a current end-to-end verification.
+                result.update(code="proof_required", message="라우팅 준비 완료 / 외부 접속·실경유 검증 필요")
+                if result["forwarding_proof"] == "verified":
+                    result.update(code="external_required", message="실경유 검증 완료 / 외부 P2P 접속 검증 필요")
+                    if result["external_reachability"] == "operator_attested":
+                        result.update(complete=True, code="complete",
+                                      message="현재 라우팅 준비·실경유 이력 확인 / 외부 접속은 운영자 실행 결과로 확인")
+        return result | {"checked_at": time.time()}
+    except WalletLocked as exc:
+        return base | {"code": "wallet_locked", "message": str(exc), "checked_at": time.time()}
+    except (RuntimeError, KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        return base | {"code": "query_error", "message": str(exc), "attempted_at": time.time()}
 
 
 def main(argv):
-    if argv:
-        print("Usage: ops/verify-router", file=sys.stderr)
-        return 2
-    try:
-        service = subprocess.run(
-            ["kubectl", "-n", "lnd-testnet", "get", "service", "lnd-router-p2p", "-o", "json"],
-            text=True, capture_output=True, timeout=30,
-        )
-        if service.returncode:
-            raise Gate("run ops/enable-router --external-ip PUBLIC_HOST")
-        node_port = json.loads(service.stdout)["spec"]["ports"][0].get("nodePort")
-        if node_port != 30973:
-            raise RuntimeError(f"router P2P Service must use NodePort 30973, found {node_port}")
-        info = lncli("getinfo")
-        if not info.get("synced_to_chain") or not info.get("synced_to_graph"):
-            chain = "ready" if info.get("synced_to_chain") else "syncing"
-            graph = "ready" if info.get("synced_to_graph") else "syncing"
-            raise Gate(f"testnet synchronization in progress (chain={chain}, graph={graph})")
-        if not info.get("uris"):
-            raise Gate("forward public TCP 9735 to NodePort 30973 and confirm LND advertises its external URI")
-        channels = [
-            channel for channel in lncli("listchannels").get("channels", [])
-            if channel.get("active") and not channel.get("private") and int(channel.get("local_balance", 0)) > 1
-        ]
-        if len(channels) < 2:
-            raise Gate(f"open and confirm a second active public channel with routing liquidity (currently {len(channels)})")
-        configured = sum(policy_matches(info, channel) for channel in channels)
-        if configured != len(channels):
-            raise Gate('apply the reviewed policy with ops/configure-router-policy --confirm "APPLY ROUTER POLICY"')
-        forwards = lncli("fwdinghistory", "--start_time=0").get("forwarding_events", [])
-        if not forwards:
-            raise Gate("have a separate external payer make a small testnet payment through this node")
-        print(f"OK Router: public_uri={info['uris'][0]}, active_public_channels={len(channels)}, policy_channels={configured}, forwarding_events={len(forwards)}")
-        return 0
-    except Gate as exc:
-        print(f"ACTION: {exc}", file=sys.stderr)
-        return 10
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
-        print(f"FAIL: {exc}", file=sys.stderr)
-        return 1
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--test-sat", type=int, default=10)
+    parser.add_argument("--fee-limit-sat", type=int, default=10)
+    args = parser.parse_args(argv)
+    result = snapshot(args.test_sat, args.fee_limit_sat)
+    code = 0 if result["complete"] else 1 if result["code"] in ("query_error", "wrong_network") else 10
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"{'OK' if code == 0 else 'FAIL' if code == 1 else 'ACTION'}: {result['message']}",
+              file=sys.stdout if code == 0 else sys.stderr)
+    return code
 
 
 if __name__ == "__main__":

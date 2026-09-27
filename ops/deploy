@@ -50,19 +50,21 @@ monitoring=false
 loop=false
 router=false
 router_external_ip_saved=''
+nodes=1
+[[ "$profile" == regtest ]] && nodes=2
 if helm -n "$namespace" status lnd-ops >/dev/null 2>&1; then
   monitoring=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("monitoring", {}).get("enabled", False)).lower())')
   loop=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("loop", {}).get("enabled", False)).lower())')
   router=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("router", {}).get("enabled", False)).lower())')
   router_external_ip_saved=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("router", {}).get("externalIP", ""))')
+  nodes=$(helm -n "$namespace" get values lnd-ops -o json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lnd", {}).get("nodes", int(sys.argv[1])))' "$nodes")
 fi
+[[ "$nodes" =~ ^[1-9][0-9]*$ ]] || { echo 'Existing LND node count is invalid; refusing deployment' >&2; exit 1; }
 if [[ "$monitoring_requested" == true ]]; then
   if ! kubectl get namespace "$namespace" >/dev/null 2>&1; then
     echo "ACTION: deploy the wallet-free $profile profile before enabling monitoring" >&2
     exit 10
   fi
-  nodes=1
-  [[ "$profile" == regtest ]] && nodes=2
   for ((i=0; i<nodes; i++)); do
     pod=lnd-$i-0
     if ! kubectl -n "$namespace" exec "$pod" -- test -s "/data/.lnd/data/chain/bitcoin/$profile/readonly.macaroon" >/dev/null 2>&1; then
@@ -103,6 +105,7 @@ echo "Applying $profile chart to $namespace"
 helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"
   --namespace "$namespace"
   --values "$repo_dir/charts/lnd-ops/values-$profile.yaml"
+  --set "lnd.nodes=$nodes"
   --set "monitoring.enabled=$monitoring"
   --set "loop.enabled=$loop"
   --set "router.enabled=$router")
