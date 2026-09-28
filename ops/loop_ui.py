@@ -30,6 +30,48 @@ def fee_notice():
     print('  실행 후 화면 종료는 swap 취소가 아닙니다. Loop와 LND를 유지하세요.')
 
 
+def show_failed_out(ops, record):
+    """Read-only diagnosis of the latest failed Out; never quote or retry."""
+    print('  == 최근 Loop Out 실패 진단 ==')
+    confirmed_failed = False
+    try:
+        payments = ops.api.lnd('listpayments', '--include_incomplete').get('payments', [])
+        matches = [p for p in payments if p.get('payment_hash') == record.get('swap_id')]
+        if len(matches) != 1:
+            print('  LND 결제 기록 미확인: 실패 원인을 단정할 수 없습니다.')
+        else:
+            payment = matches[0]
+            status = payment.get('status', 'UNKNOWN')
+            reason = payment.get('failure_reason', 'UNKNOWN')
+            confirmed_failed = status == 'FAILED'
+            print(f'  본 결제: {status} / {reason}')
+            if status != 'FAILED':
+                print('  결제 종료 미확인: 새 요청 없이 현재 결제·HTLC를 확인하세요.')
+            elif reason == 'FAILURE_REASON_NO_ROUTE':
+                print('  요청 조건에서 결제 경로를 확보하지 못했습니다. 기다려도 이 요청은 재개되지 않습니다.')
+                print('  이후 경로 상황은 바뀔 수 있지만, 새 요청에는 별도 승인이 필요합니다.')
+                print('  외부 채널의 잔액은 알 수 없습니다. 금액·선택 채널·경로를 재검토하세요.')
+            elif reason == 'FAILURE_REASON_TIMEOUT':
+                print('  결제 시도 시간이 만료됐습니다. 기존 HTLC 종료를 확인한 뒤 경로와 제한 시간을 검토하세요.')
+            else:
+                print('  LND 결제 실패 사유를 확인하세요. 같은 조건으로 자동 재시도하지 않습니다.')
+    except (LoopError, ValueError, KeyError, TypeError):
+        print('  LND 실패 상세 조회 실패: swap의 최종 상태와 별도로 확인이 필요합니다.')
+    try:
+        terms = ops.api.loop('/v1/loop/out/terms')
+        minimum = number(terms['min_swap_amount'], minimum=1)
+        maximum = number(terms['max_swap_amount'], minimum=minimum)
+        print(f'  현재 서버 허용 금액: {minimum:,}~{maximum:,} sat')
+        if not confirmed_failed:
+            print('  본 결제 종료가 확인되기 전에는 재시도를 검토하지 마세요.')
+        elif minimum < record['amount']:
+            print('  더 작은 금액을 검토할 수 있습니다. 새 견적·수수료 확인과 수동 승인이 필요하며 성공은 보장되지 않습니다.')
+        else:
+            print('  현재 서버 최소 금액 때문에 이전보다 작은 금액으로 재시도할 수 없습니다.')
+    except (LoopError, ValueError, KeyError, TypeError):
+        print('  서버 금액 범위 조회 실패: 더 작은 금액의 가능 여부는 미확인입니다.')
+
+
 def show(ops):
     _, journal, swaps = ops.reconcile()
     print('\n  == Phase 4 · Loop ==')
@@ -51,6 +93,11 @@ def show(ops):
     for swap in swaps[-5:]:
         if swap.get('label') not in tracked:
             print(f"  기타 swap {swap.get('id', '')}: {swap.get('type', 'LOOP_OUT')} / {state_of(swap)} / 비용 {cost(swap)} sat")
+    if journal['records']:
+        latest = journal['records'][-1]
+        if (latest['direction'] == 'out' and latest['status'] == 'FAILED'
+                and all(state_of(s) in ('SUCCESS', 'FAILED') for s in swaps)):
+            show_failed_out(ops, latest)
     return count
 
 
