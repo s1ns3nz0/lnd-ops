@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from loop_api import API, LoopError
 
 TERMINAL = {'SUCCESS', 'FAILED'}
+DEFAULT_PAYMENT_TIMEOUT = 300
 
 
 def number(value, name='금액', minimum=0):
@@ -82,6 +83,7 @@ class Operations:
         for swap in swaps:
             by_label.setdefault(swap.get('label', ''), []).append(swap)
         for record in state['records']:
+            record['budget_settled'] = False
             matches = by_label.get(record['label'], [])
             if len(matches) > 1:
                 raise LoopError('동일 요청의 swap이 여러 건입니다. 추가 실행을 중단합니다.')
@@ -97,6 +99,20 @@ class Operations:
                     record['cost_observed_at'] = self.clock()
                 if state_of(swap) in TERMINAL and not was_terminal:
                     state['automatic']['enabled'] = False
+                # Only release a failed Out reservation with fresh, complete
+                # evidence. Missing payments/costs or pending HTLCs fail closed.
+                if (record['direction'] == 'out' and state_of(swap) == 'FAILED'
+                        and swap.get('failure_reason') == 'FAILURE_REASON_OFFCHAIN'
+                        and all(k in swap for k in ('cost_server', 'cost_onchain', 'cost_offchain'))):
+                    payments = self.api.lnd('listpayments', '--include_incomplete').get('payments', [])
+                    channels = self.api.lnd('listchannels').get('channels')
+                    record['budget_settled'] = bool(
+                        channels is not None
+                        and any(str(c.get('scid') or c.get('chan_id')) == record['scid'] for c in channels)
+                        and all(c.get('pending_htlcs') == [] for c in channels)
+                        and all(p.get('status') in {'FAILED', 'SUCCEEDED'} for p in payments)
+                        and any(p.get('payment_hash') == record['swap_id']
+                                and p.get('status') == 'FAILED' for p in payments))
             # An unobserved intent remains unresolved, even across restarts.
         if state != previous:
             document = self.write(document, state)
@@ -111,13 +127,17 @@ class Operations:
         return (max(0, number(channel['local_balance']) - local_reserve - number(channel.get('commit_fee', 0))),
                 max(0, number(channel['remote_balance']) - remote_reserve))
 
-    def plan(self, direction, scid, amount, fee_limit, routing_limit=10):
+    def plan(self, direction, scid, amount, fee_limit, routing_limit=10,
+             payment_timeout=DEFAULT_PAYMENT_TIMEOUT):
         if direction not in ('out', 'in'):
             raise LoopError('Loop 방향은 out 또는 in이어야 합니다.')
         self.api.binding()
         amount = number(amount, minimum=1)
         fee_limit = number(fee_limit, '수수료 한도', 1)
         routing_limit = number(routing_limit, '라우팅 수수료 한도')
+        payment_timeout = number(payment_timeout, '결제 시도 제한 시간', 1)
+        if payment_timeout > 1800:
+            raise LoopError('결제 시도 제한 시간은 1~1800초여야 합니다.')
         channels = self.channels()
         selected = [c for c in channels if channel_id(c) == str(scid)]
         if len(selected) != 1 or selected[0].get('pending_htlcs'):
@@ -162,7 +182,7 @@ class Operations:
             payload.update(outgoing_chan_set=[str(scid)], max_swap_routing_fee=str(routing_limit),
                            max_prepay_routing_fee=str(routing_limit), max_prepay_amt=str(prepay),
                            sweep_conf_target=6, htlc_confirmations=3,
-                           swap_publication_deadline=str(deadline), payment_timeout=60)
+                           swap_publication_deadline=str(deadline), payment_timeout=payment_timeout)
         else:
             payload.update(last_hop=base64.b64encode(bytes.fromhex(channel['remote_pubkey'])).decode(),
                            external_htlc=False, htlc_conf_target=6, private=bool(channel.get('private')))
@@ -227,9 +247,9 @@ class Operations:
                 raise LoopError('자동 실행 승인 범위를 벗어났습니다.')
         budget = number(daily_budget, '하루 수수료 예산', 1)
         cutoff = self.clock() - 86400
-        # Rolling 24 hours avoids midnight resets. Reserve at least the approved
-        # cost, including ambiguous/failed requests. Untracked swaps count too.
-        used = sum(max(r['reservation'], r.get('actual_fee', 0)) for r in state['records'] if max(r['created'], r.get('cost_observed_at', 0)) >= cutoff)
+        # Release only freshly verified off-chain failures; retain the original
+        # reservation in the journal and keep ambiguous requests reserved.
+        used = sum(r['actual_fee'] if r.get('budget_settled') else max(r['reservation'], r.get('actual_fee', 0)) for r in state['records'] if max(r['created'], r.get('cost_observed_at', 0)) >= cutoff)
         labels = {r['label'] for r in state['records']}
         for swap in swaps:
             if swap.get('label') not in labels and number(swap.get('last_update_time', 0)) / 1e9 >= cutoff:

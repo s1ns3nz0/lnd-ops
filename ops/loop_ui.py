@@ -3,7 +3,7 @@ import select
 import sys
 
 from loop_api import LoopError
-from loop_ops import Operations, channel_id, cost, number, state_of
+from loop_ops import DEFAULT_PAYMENT_TIMEOUT, Operations, channel_id, cost, number, state_of
 
 
 def read_number(prompt, default=None, minimum=1):
@@ -41,6 +41,8 @@ def show(ops):
         print(f"    요청 {record['label']} / swap {record.get('swap_id', '응답 확인 대기')}")
         if record.get('failure_reason'):
             print(f"    결과 사유: {record['failure_reason']}")
+        if record['status'] == 'FAILED':
+            print('    예산: 실제 비용으로 정산 완료' if record.get('budget_settled') else '    예산: 비용 예약 유지 (종료·결제·HTLC 확인 필요)')
         if record['status'] in ('SUBMITTING', 'UNKNOWN'):
             print('    결과 미확인: 재전송 금지. 같은 요청 label로 daemon 기록을 확인하세요.')
         if record.get('actual_fee', 0) > record['reservation']:
@@ -59,13 +61,15 @@ def manual(ops, direction):
     amount = read_number('  swap 금액 (sat)')
     limit = read_number('  이번 수수료 시작 한도 (sat)')
     routing = read_number('  결제별 라우팅 수수료 상한 (sat)', 10, 0) if direction == 'out' else 0
+    timeout = read_number('  결제 시도 제한 시간 (초, 1~1800)', DEFAULT_PAYMENT_TIMEOUT) if direction == 'out' else DEFAULT_PAYMENT_TIMEOUT
     budget = read_number('  최근 24시간 수수료 예산 (sat)', limit)
-    plan = ops.plan(direction, channel_id(channel), amount, limit, routing)
+    plan = ops.plan(direction, channel_id(channel), amount, limit, routing, timeout)
     print(f"  노드 {plan['binding']['identity']} / Loop {direction.upper()} / {amount:,} sat")
     print(f"  서버 수수료 {plan['payload']['max_swap_fee']} / 채굴 예상 {plan['miner_estimate']} / 채굴 시작 상한 {plan['payload']['max_miner_fee']} sat")
     if direction == 'out':
         print(f"  선결제 {plan['payload']['max_prepay_amt']} sat (서버 비용 일부), 라우팅 한도 각각 {routing} sat")
         print('  반환 주소: 같은 LND의 온체인 지갑')
+        print(f'  결제 시도 제한 {timeout}초 / 기존 HTLC 해소까지 전체 대기는 더 길어질 수 있습니다.')
     else:
         print('  자금 출처: 같은 LND의 온체인 지갑 / 수신 경로: 선택한 peer')
     print(f"  이번 비용 예약 {plan['reservation']:,} / 최근 24시간 예산 {budget:,} sat")
@@ -114,6 +118,7 @@ def automatic(ops):
             'daily_budget': read_number('  최근 24시간 수수료 예산 (sat)')}
     print(f"  채널 {rule['scid']} / 목표 {rule['low']}~{rule['high']}% / 최대 {rule['max_amount']:,} sat")
     print(f"  1회 수수료 {rule['fee_limit']:,} / 최근 24시간 예산 {rule['daily_budget']:,} sat")
+    print(f'  Loop Out 결제 시도 제한 {DEFAULT_PAYMENT_TIMEOUT}초 (기존 HTLC 해소 시간 별도)')
     fee_notice()
     if input('  자동 실행을 승인하려면 AUTO 1 입력: ').strip() != 'AUTO 1':
         print('  자동 실행을 켜지 않았습니다.')

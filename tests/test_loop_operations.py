@@ -26,6 +26,7 @@ class FakeAPI:
                         'remote_balance': '20000', 'local_chan_reserve_sat': '1000',
                         'remote_chan_reserve_sat': '1000', 'pending_htlcs': []}
         self.miner = '100'
+        self.payments = []
 
     def binding(self): return copy.deepcopy(self.binding_value)
     def load(self): return copy.deepcopy(self.document)
@@ -38,7 +39,8 @@ class FakeAPI:
         self.document['metadata']['resourceVersion'] = str(self.revision)
         return self.load()
 
-    def lnd(self, command):
+    def lnd(self, command, *args):
+        if command == 'listpayments': return {'payments': copy.deepcopy(self.payments)}
         if command == 'listchannels': return {'channels': [copy.deepcopy(self.channel)]}
         if command == 'walletbalance':
             return {'confirmed_balance': '200000', 'reserved_balance_anchor_chan': '20000', 'locked_balance': '0'}
@@ -80,6 +82,62 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(payload['max_swap_fee'], '100')
         self.assertNotIn('dest', payload)  # own wallet
         self.assertEqual(self.api.posts, [])
+
+    def test_payment_timeout_default_custom_and_invalid(self):
+        self.assertEqual(self.plan()['payload']['payment_timeout'], 300)
+        self.assertEqual(self.ops.plan('out', '12345', 10000, 500, payment_timeout=600)['payload']['payment_timeout'], 600)
+        for value in (0, -1, 1801, True, '1.5'):
+            with self.assertRaises(LoopError):
+                self.ops.plan('out', '12345', 10000, 500, payment_timeout=value)
+
+    def failed_out(self):
+        self.ops.submit(self.plan(), 500)
+        self.api.swap_list[0].update(state='FAILED', failure_reason='FAILURE_REASON_OFFCHAIN',
+                                     cost_server='0', cost_onchain='0', cost_offchain='0')
+        self.api.payments = [{'payment_hash': 'swap1', 'status': 'FAILED'}]
+
+    def test_verified_failure_releases_reservation_but_preserves_record(self):
+        self.failed_out()
+        self.ops.submit(self.plan(), 500)
+        record = json.loads(self.api.document['data']['state.json'])['records'][0]
+        self.assertTrue(record['budget_settled'])
+        self.assertEqual(record['reservation'], 320)
+        self.assertEqual(len(self.api.posts), 2)
+
+    def test_uncertain_failure_keeps_budget_reserved(self):
+        for missing in ('cost', 'payment', 'htlc', 'inflight', 'reason', 'status'):
+            with self.subTest(missing=missing):
+                self.setUp(); self.failed_out()
+                if missing == 'cost': del self.api.swap_list[0]['cost_onchain']
+                if missing == 'payment': self.api.payments = []
+                if missing == 'htlc': del self.api.channel['pending_htlcs']
+                if missing == 'inflight': self.api.payments.append({'status': 'IN_FLIGHT'})
+                if missing == 'status': self.api.payments.append({})
+                if missing == 'reason': self.api.swap_list[0]['failure_reason'] = 'FAILURE_REASON_TIMEOUT'
+                with self.assertRaisesRegex(LoopError, '예산 부족'):
+                    self.ops.submit(self.plan(), 500)
+                self.assertEqual(len(self.api.posts), 1)
+
+    def test_settled_failure_actual_cost_still_counts(self):
+        self.failed_out()
+        self.api.swap_list[0]['cost_offchain'] = '200'
+        with self.assertRaisesRegex(LoopError, '예산 부족'):
+            self.ops.submit(self.plan(), 500)
+
+    def test_previous_settlement_not_trusted_without_fresh_evidence(self):
+        self.failed_out(); self.ops.reconcile()
+        self.api.payments = []
+        with self.assertRaisesRegex(LoopError, '예산 부족'):
+            self.ops.submit(self.plan(), 500)
+
+    def test_missing_channel_does_not_release_reservation(self):
+        self.failed_out()
+        original = self.api.lnd
+        def lnd(command, *args):
+            return {'channels': []} if command == 'listchannels' else original(command, *args)
+        self.api.lnd = lnd
+        _, state, _ = self.ops.reconcile()
+        self.assertFalse(state['records'][0]['budget_settled'])
 
     def test_in_payload_funds_own_wallet_and_selects_peer(self):
         plan = self.plan('in')
