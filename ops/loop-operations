@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""Open Phase 4 without re-running earlier phases."""
+import importlib.machinery
+from pathlib import Path
+
+start = importlib.machinery.SourceFileLoader('loop_phase_start', str(Path(__file__).with_name('start'))).load_module()
+raise SystemExit(0 if start.guide_loop(4, start.PHASES[3]) == 'complete' else 10)

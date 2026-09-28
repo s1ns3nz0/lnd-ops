@@ -18,7 +18,7 @@ def status(code, **values):
 
 
 class RouterInteractionTests(unittest.TestCase):
-    def drive(self, results, answers=(), policy_approved=True):
+    def drive(self, results, answers=(), policy_approved=True, allow_external_skip=False, confirmation="no"):
         worker = Mock()
         worker.tick.side_effect = results
         stdin = Mock()
@@ -34,7 +34,8 @@ class RouterInteractionTests(unittest.TestCase):
             events.append('policy')
             return policy_approved
 
-        with patch.object(start, 'StatusWorker', return_value=worker), \
+        with patch('builtins.input', return_value=confirmation) as confirm, \
+             patch.object(start, 'StatusWorker', return_value=worker), \
              patch.object(start.sys, 'stdin', stdin), patch.object(start.time, 'time', return_value=100), \
              patch.object(start.time, 'sleep'), patch.object(start.select, 'select', return_value=([stdin], [], [])), \
              patch.object(start, 'run_testnet_unlock', side_effect=lambda: events.append('unlock')), \
@@ -43,9 +44,43 @@ class RouterInteractionTests(unittest.TestCase):
              patch.object(start, 'run_confirmed', side_effect=policy), \
              patch.object(start, 'render_router_snapshot', return_value=None) as render, \
              contextlib.redirect_stdout(io.StringIO()) as output:
-            outcome = start.guide_router(3, start.PHASES[2])
+            outcome = start.guide_router(3, start.PHASES[2], allow_external_skip=allow_external_skip)
         worker.close.assert_called_once()
         return outcome, events, worker, render, output.getvalue()
+
+    def test_external_only_can_be_deferred_without_marking_complete(self):
+        current = status('external_required', ready=True, forwarding_proof='observed')
+        outcome, events, _, _, output = self.drive(
+            [current], answers=['q'], allow_external_skip=True, confirmation='yes')
+        self.assertEqual(outcome, 'deferred')
+        self.assertFalse(current['complete'])
+        self.assertEqual(events, [])
+        self.assertIn('미완료', output)
+
+    def test_external_skip_requires_explicit_yes(self):
+        for answer in ('', 'no', 'y'):
+            with self.subTest(answer=answer):
+                outcome, events, _, _, _ = self.drive(
+                    [status('external_required', ready=True, forwarding_proof='observed')],
+                    answers=['q'], allow_external_skip=True, confirmation=answer)
+                self.assertEqual(outcome, 'partial')
+                self.assertEqual(events, [])
+
+    def test_other_blockers_and_stale_results_cannot_be_deferred(self):
+        for current in (status('proof_required', ready=True),
+                        status('external_required', ready=False, forwarding_proof='observed'),
+                        status('external_required', ready=True, forwarding_proof='observed', checked_at=69),
+                        status('external_required', ready=True, forwarding_proof='observed', checked_at=101)):
+            with self.subTest(current=current):
+                outcome, _, _, _, _ = self.drive(
+                    [current], answers=['q'], allow_external_skip=True, confirmation='yes')
+                self.assertEqual(outcome, 'partial')
+
+    def test_noninteractive_external_skip_is_not_automatic(self):
+        outcome, _, _, _, _ = self.drive(
+            [status('external_required', ready=True, forwarding_proof='observed'), KeyboardInterrupt()],
+            allow_external_skip=True, confirmation='yes')
+        self.assertEqual(outcome, 'partial')
 
     def test_full_sequence_waits_for_each_verified_result(self):
         results = [status(code) for code in (

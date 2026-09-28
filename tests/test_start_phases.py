@@ -45,6 +45,21 @@ class PhaseTests(unittest.TestCase):
         guide.assert_not_called()
         self.assertIn('PAUSE: Phase 08', output.getvalue())
 
+    def test_router_deferral_advances_to_loop_but_remains_pending(self):
+        def state(index):
+            return ('complete', 'passed') if index < 2 else ('partial', 'pending')
+        with patch.object(start, 'selection_gate', return_value=None), \
+                patch.object(start, 'inspect', side_effect=state), \
+                patch.object(start, 'applies_to_selected_workspace', return_value=True), \
+                patch.object(start, 'guide_router', return_value='deferred') as router, \
+                patch.object(start, 'guide_loop', return_value='partial') as loop, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(start.build_through(4, interactive=True), 10)
+        router.assert_called_once_with(3, start.PHASES[2], allow_external_skip=True)
+        loop.assert_called_once()
+        self.assertIn('[3] PENDING', output.getvalue())
+        self.assertIn('PAUSE: Phase 04', output.getvalue())
+
     def test_shifted_phases_keep_historical_verifiers(self):
         expected = [('faults', ('ops/phase6-acceptance',)),
                     ('kagent', ('ops/phase7-acceptance',)),

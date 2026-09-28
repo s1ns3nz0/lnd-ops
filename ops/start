@@ -86,7 +86,7 @@ PHASES = (
         "workspace": "testnet",
         "namespaces": ("lnd-testnet",),
         "build": (),
-        "manual": ("Loop 전용의 최소 권한 credential을 준비합니다.", "Loop 서비스를 연결하고 읽기 전용 quote가 동작하는지 확인합니다.", "실제 swap은 이 안내 흐름에서 실행하지 않습니다."),
+        "manual": ("Loop 전용의 최소 권한 credential을 준비합니다.", "Loop 서비스를 연결하고 읽기 전용 quote가 동작하는지 확인합니다.", "수동 또는 승인한 자동 swap 1건의 실제 성공을 확인합니다."),
     },
     {
         "id": "monitoring",
@@ -700,7 +700,7 @@ def refresh_router_clock(phase, active_channels, detail, channel_synced_at, star
     return previous_lines
 
 
-def guide_router(number, phase, *, actions_enabled=True):
+def guide_router(number, phase, *, actions_enabled=True, allow_external_skip=False):
     section("PHASE 03 · ROUTER PROGRESS", CYAN)
     started_at = time.monotonic()
     previous_lines = None
@@ -738,6 +738,19 @@ def guide_router(number, phase, *, actions_enabled=True):
                     print("  외부망 위치는 운영자가 확인했습니다.")
                     print("  접속 결과 만료: " + time.strftime("%m-%d %H:%M:%S", time.localtime(result["external_expires_at"])))
                     return "complete"
+                if (allow_external_skip and actions_enabled and sys.stdin.isatty()
+                        and code == "external_required" and result.get("ready") is True
+                        and result.get("forwarding_proof") in ("observed", "verified")
+                        and 0 <= time.time() - result.get("checked_at", 0) <= 30):
+                    previous_lines = close_router_wait(previous_lines)
+                    print("  Phase 3: 라우팅 준비·실제 중계 확인 완료 / 외부 P2P 접속 미검증")
+                    print("  다음 단계로 진행해도 Phase 3은 미완료이며, 외부 접속 검증은 남습니다.")
+                    answer = input("  외부 접속 검증이 미완료인 상태로 다음 Phase를 진행하겠습니까? [yes/No]: ").strip().lower()
+                    if answer == "yes":
+                        print("  보류: 외부 접속 미검증을 유지하고 이번 실행에서 다음 Phase로 진행합니다.")
+                        return "deferred"
+                    print("  중단: 외부 접속 검증을 보류하고 메인 메뉴로 돌아갑니다.")
+                    return "partial"
                 if code == "wrong_network":
                     close_router_wait(previous_lines)
                     print("  오류: testnet 노드만 지원합니다.")
@@ -1025,25 +1038,56 @@ def guide_testnet(number, phase):
 
 def guide_loop(number, phase):
     section("PHASE 04 · LOOP PROGRESS", CYAN)
-    attempts = 0
+    configure = False
     while True:
         state, detail = inspect(number - 1)
-        if state == "complete":
-            print("  완료: Loop health와 read-only quote가 검증되었습니다.")
-            return state
-        if "enable Loop" in detail:
+        if not configure and "enable Loop" not in detail:
+            from loop_ui import interactive as loop_interactive
+            outcome = loop_interactive(runtime_environment())
+            if outcome != "credentials":
+                return outcome
+            configure = True
+        if configure or "enable Loop" in detail:
+            from loop_credentials import CredentialError, create_loop_macaroon
+            print("  Loop 전용 인증 파일 준비")
+            print("  [1] 새로 생성 — 현재 testnet 노드의 Loop In·Out 실행용")
+            print("  [2] 기존 파일 경로 입력")
+            print("  [u] 기존 지갑 잠금 해제  [q] 돌아가기")
             try:
-                macaroon = input("  Loop 전용 macaroon 파일 경로: ").strip()
-            except EOFError:
+                choice = input("  선택 [1/2/u/q]: ").strip().lower()
+                if choice == "q":
+                    return "partial"
+                if choice == "u":
+                    run_testnet_unlock()
+                    continue
+                if choice == "1":
+                    print("  실제 swap에 필요한 결제·서명 권한을 포함합니다. 채널 관리 권한은 제외합니다.")
+                    answer = input("  현재 노드에서 인증 파일을 생성하겠습니까? [yes/No]: ").strip().lower()
+                    if answer != "yes":
+                        continue
+                    try:
+                        macaroon = str(create_loop_macaroon(STATE, runtime_environment()))
+                    except CredentialError as exc:
+                        print(f"  보류: {exc}")
+                        continue
+                    print(f"  인증 파일 저장 완료: {macaroon}")
+                elif choice == "2":
+                    macaroon = input("  Loop 전용 macaroon 파일 경로 [q=돌아가기]: ").strip()
+                    if macaroon.lower() == "q":
+                        return "partial"
+                    if not macaroon:
+                        continue
+                    macaroon = str(pathlib.Path(macaroon).expanduser())
+                    if not pathlib.Path(macaroon).is_file():
+                        print("  파일이 없습니다. 새로 생성하거나 경로를 다시 입력하세요.")
+                        continue
+                else:
+                    print("  1, 2, u 또는 q를 입력하세요.")
+                    continue
+                configure = not run_confirmed("Loop 서비스 구성·swap 준비", ("ops/enable-loop", "--macaroon", macaroon))
+            except (EOFError, KeyboardInterrupt):
                 return "partial"
-            if macaroon:
-                run_confirmed("Loop read-only 서비스 구성", ("ops/enable-loop", "--macaroon", macaroon))
-            else:
-                print("  경로를 입력하지 않았습니다. 현재 상태를 다시 확인합니다.")
             continue
-        attempts += 1
-        if not wait_for_phase(number, phase, detail, attempts):
-            return "partial"
 
 
 def guide_monitoring(number, phase):
@@ -1202,14 +1246,14 @@ def guide_gitops(number, phase):
         return "partial"
 
 
-def guide_operator(number, phase, detail, interactive):
+def guide_operator(number, phase, detail, interactive, *, allow_external_skip=False):
     if phase["id"] == "gitops":
         if interactive:
             return guide_gitops(number, phase)
         print("  다음 작업: 8번 또는 gitops 메뉴에서 Flux 설치·Git 연결을 진행하세요.")
         return "partial"
     if interactive and phase["id"] == "router":
-        return guide_router(number, phase)
+        return guide_router(number, phase, allow_external_skip=allow_external_skip)
     if interactive and phase["id"] == "regtest":
         return guide_regtest(number, phase)
     if interactive and phase["id"] == "testnet":
@@ -1433,6 +1477,7 @@ def print_commands():
     print("  status     모든 Phase의 현재 상태만 확인")
     print("  channels   현재 testnet 채널 조회·일반 종료·종료 상태 확인")
     print("  gitops     Phase 8 Flux 설치·전환 메뉴")
+    print("  loop       Loop 수동·자동 swap 및 진행 상태")
     print("  progress   라우팅 실습 진행 상황만 지속 조회")
     print("  delete     삭제할 project resource를 직접 선택")
     print("  help 또는 ?  이 명령 목록 다시 보기")
@@ -1523,8 +1568,8 @@ def build_through(target, dry_run=False, interactive=False):
             phase_pending = True
             print(f"[{number}] PENDING {phase['title']} — {operator_message(phase, detail)}")
             if dry_run or applies_to_selected_workspace(phase):
-                after = guide_operator(number, phase, detail, interactive)
-                if after != "complete":
+                after = guide_operator(number, phase, detail, interactive, allow_external_skip=target > number)
+                if after not in ("complete", "deferred"):
                     return pause(number, phase)
             else:
                 print("  현재 선택한 wallet workspace와 무관한 수동 실습은 건너뜁니다.")
@@ -1537,8 +1582,8 @@ def build_through(target, dry_run=False, interactive=False):
             pending = True
             print(f"[{number}] PENDING {phase['title']} — manual phase")
             if dry_run or applies_to_selected_workspace(phase):
-                after = guide_operator(number, phase, "이 단계는 사용자 확인이 필요합니다.", interactive)
-                if after != "complete":
+                after = guide_operator(number, phase, "이 단계는 사용자 확인이 필요합니다.", interactive, allow_external_skip=target > number)
+                if after not in ("complete", "deferred"):
                     return pause(number, phase)
             else:
                 print("  현재 선택한 wallet workspace와 무관한 수동 실습은 건너뜁니다.")
@@ -1604,6 +1649,8 @@ def repl():
             print_commands()
         elif answer == "wallet":
             prompt_wallet_selection()
+        elif answer == "loop":
+            guide_loop(4, PHASES[3])
         elif answer == "progress":
             guide_router(3, PHASES[2], actions_enabled=False)
         elif answer == "gitops":
@@ -1630,7 +1677,7 @@ def repl():
         elif answer.isdigit() and 1 <= int(answer) <= len(PHASES):
             build_through(int(answer), interactive=True)
         elif answer:
-            print(f"0부터 {len(PHASES)}, status, gitops, help, quit 중 하나를 입력하세요.", file=sys.stderr)
+            print(f"0부터 {len(PHASES)}, status, loop, gitops, help, quit 중 하나를 입력하세요.", file=sys.stderr)
 
 
 def parse_args(arguments):

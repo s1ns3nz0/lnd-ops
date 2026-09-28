@@ -62,7 +62,7 @@ helm lint charts/vendor/falco-9.2.0.tgz -f charts/security/falco-values.yaml
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
 helm template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null
 helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml >/dev/null
-helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml --set monitoring.enabled=true --set loop.enabled=true >/dev/null
+helm template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml --set monitoring.enabled=true --set loop.enabled=true --set-string "loop.image=$(ops/build-loop --tag-only)" >/dev/null
 helm template lnd-ops-monitoring charts/vendor/kube-prometheus-stack-91.4.1.tgz \
   -n lndops-monitoring -f charts/monitoring-values.yaml >/dev/null
 helm template kyverno charts/vendor/kyverno-3.9.1.tgz -n lndops-kyverno -f charts/security/kyverno-values.yaml | \

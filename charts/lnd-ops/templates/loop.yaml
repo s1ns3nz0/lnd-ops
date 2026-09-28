@@ -15,6 +15,11 @@ metadata:
   name: loopd
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: loopd
@@ -30,7 +35,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: loopd
-          image: {{ .Values.loop.image | quote }}
+          image: {{ required "loop.image is required: run ops/build-loop --load-k3s and supply its output" .Values.loop.image | quote }}
           imagePullPolicy: IfNotPresent
           command: [loopd]
           args:
@@ -44,6 +49,13 @@ spec:
             - --maxl402fee={{ .Values.loop.maxL402Fee }}
             - --rpclisten=127.0.0.1:11010
             - --restlisten=127.0.0.1:8081
+          readinessProbe:
+            exec:
+              command: [loop, --loopdir=/loop, --network=testnet, getinfo]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.loop.resources | nindent 12 }}
           securityContext:

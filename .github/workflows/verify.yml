@@ -73,6 +73,13 @@ jobs:
         run: |
           npm test
           python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Build and verify native Loop release binaries in Linux
+        run: ./ops/build-loop --arch amd64
+      - name: Test Loop REST authentication and submission transport in Linux
+        run: |
+          docker run --rm --network none -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
+            python@sha256:f179f455e0d6b7575ddbfcdcd2fe02e845f5074d7af25dbd16d3e2534af82bd6 \
+            python3 tests/integration_loop_transport.py
       - name: Test WSL startup registration contract in Linux PowerShell
         run: |
           docker run --rm --platform linux/amd64 --network none -v "$PWD:/repo:ro" -w /repo \

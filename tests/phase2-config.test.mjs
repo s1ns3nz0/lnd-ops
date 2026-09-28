@@ -10,17 +10,18 @@ const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
 function render(...extra) {
   return spawnSync('helm', [
     'template', 'lnd-ops', 'charts/lnd-ops', '-n', 'lnd-testnet',
-    '-f', 'charts/lnd-ops/values-testnet.yaml', ...extra,
+    '-f', 'charts/lnd-ops/values-testnet.yaml', '--set-string', 'loop.image=localhost/lnd-ops-loop:test-fixture', ...extra,
   ], { cwd: repo, encoding: 'utf8' });
 }
 
-test('Phase 2 Loop is opt-in and uses a pinned multi-architecture image', async () => {
+test('Phase 2 Loop is opt-in and uses checksum-pinned native release binaries', async () => {
   const values = await readFile(resolve(repo, 'charts/lnd-ops/values.yaml'), 'utf8');
   const lock = JSON.parse(await readFile(resolve(repo, 'ops/images.lock.json'), 'utf8'));
   assert.match(values, /loop:[\s\S]*enabled: false/);
-  assert.match(values, /docker\.io\/lightninglabs\/loop@sha256:[0-9a-f]{64}/);
-  assert.match(lock.loop.tag, /^docker\.io\/lightninglabs\/loop:/);
-  assert.match(lock.loop.digest, /^sha256:[0-9a-f]{64}$/);
+  assert.match(values, /image: "" # ops\/deploy supplies the verified native release image/);
+  const releases = JSON.parse(await readFile(resolve(repo, 'loop-image/releases.json'), 'utf8'));
+  assert.match(releases.archives.arm64, /^[0-9a-f]{64}$/);
+  assert.match(releases.archives.amd64, /^[0-9a-f]{64}$/);
   assert.equal(render().status, 0);
   assert.doesNotMatch(render().stdout, /name: loopd/);
 });
@@ -52,4 +53,12 @@ test('Loop deployment commands require an explicit enable and disable path', asy
   assert.match(deploy, /Loop is supported only by the persistent testnet profile/);
   assert.match(enable, /chmod 600/);
   assert.match(enable, /rollout restart deployment\/loopd/);
+});
+
+test('testnet Loop uses its testnet server and namespaced TLS certificate', async () => {
+  const result = render('--set', 'loop.enabled=true');
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--server.host=test\.swap\.lightning\.today:11010/);
+  const health = await readFile(resolve(repo, 'charts/lnd-ops/files/loop_health.py'), 'utf8');
+  assert.match(health, /\{LOOP_DIR\}\/\{NETWORK\}\/tls\.cert/);
 });

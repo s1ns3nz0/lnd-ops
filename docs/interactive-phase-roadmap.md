@@ -69,13 +69,11 @@ preservation is not established by this change. Pod replacement may require unlo
 
 ## Phase 4 · Loop liquidity management
 
-**Current gap:** Loop is only described even though a read-only quote verifier
-already exists.
-
-**Change:** when explicitly selected, prompt for the local path of the dedicated Loop macaroon, validate
-that it is readable without echoing it, deploy Loop, wait for its workload,
-then run the health and read-only quote verifier. Never offer a swap in this
-runner.
+The [Loop runbook](phase2-loop-runbook.md) defines the implemented flow: create or
+select a dedicated credential, install Loop, then approve manual Loop In/Out or
+a bounded automatic exercise. An actual successful swap is required for Phase 4
+completion. Setup or quote success alone remains PENDING. The `loop` menu reopens
+operations without repeating earlier phases.
 
 ## Phase 5 · observability
 

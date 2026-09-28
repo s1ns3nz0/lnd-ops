@@ -110,6 +110,10 @@ helm_command=(helm upgrade --install lnd-ops "$repo_dir/charts/lnd-ops"
   --set "monitoring.enabled=$monitoring"
   --set "loop.enabled=$loop"
   --set "router.enabled=$router")
+if [[ "$loop" == true ]]; then
+  loop_image=$("$repo_dir/ops/build-loop" --load-k3s)
+  helm_command+=(--set-string "loop.image=$loop_image")
+fi
 if [[ "$router" == true ]]; then
   [[ -n "$router_external_ip_saved" ]] || { echo 'Existing Router mode has no external host; rerun with --router --router-external-ip HOST' >&2; exit 1; }
   helm_command+=(--set-string "router.externalIP=$router_external_ip_saved")

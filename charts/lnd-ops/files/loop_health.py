@@ -12,7 +12,7 @@ NETWORK = os.environ.get("LOOP_NETWORK", "testnet")
 
 def loop_request(path):
     macaroon_path = f"{LOOP_DIR}/{NETWORK}/loop.macaroon"
-    context = ssl.create_default_context(cafile=f"{LOOP_DIR}/tls.cert")
+    context = ssl.create_default_context(cafile=f"{LOOP_DIR}/{NETWORK}/tls.cert")
     with open(macaroon_path, "rb") as source:
         macaroon = source.read().hex()
     request = Request(f"{LOOP_URL}{path}", headers={"Grpc-Metadata-macaroon": macaroon})

@@ -6,6 +6,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from loop_image import image_tag
 
 repo = pathlib.Path(__file__).resolve().parent.parent
 lock = json.loads((repo / "ops/images.lock.json").read_text())
@@ -17,7 +18,7 @@ def rendered_references():
     commands = [
         ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-regtest.yaml", "--set", "monitoring.enabled=true"],
         ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-testnet.yaml", "--set", "monitoring.enabled=true"],
-        ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-testnet.yaml", "--set", "monitoring.enabled=true", "--set", "loop.enabled=true"],
+        ["helm", "template", "lnd-ops", "charts/lnd-ops", "-f", "charts/lnd-ops/values-testnet.yaml", "--set", "monitoring.enabled=true", "--set", "loop.enabled=true", "--set-string", "loop.image=" + image_tag("amd64")],
         ["helm", "template", "lnd-ops-monitoring", "charts/vendor/kube-prometheus-stack-91.4.1.tgz", "-n", "lndops-monitoring", "-f", "charts/monitoring-values.yaml"],
     ]
     references = set()
@@ -38,9 +39,16 @@ expected_base_arg = f'ARG BASE_IMAGE={collector_base["tag"]}@{collector_base["di
 if dockerfile.splitlines()[:2] != [expected_base_arg, 'FROM ${BASE_IMAGE}']:
     print("FAIL payment collector Dockerfile base does not match image lock", file=sys.stderr)
     failures += 1
+loop_dockerfile = (repo / "loop-image/Dockerfile").read_text()
+if loop_dockerfile.splitlines()[0] != f'FROM {collector_base["tag"]}@{collector_base["digest"]}':
+    print("FAIL Loop image base does not match the lock", file=sys.stderr)
+    failures += 1
 rendered = rendered_references()
 rendered_pairs = set()
 for reference in sorted(rendered):
+    if reference == image_tag("amd64"):
+        print("OK project Loop image uses a source-hashed tag; ops/build-loop verifies checksums and ELF architecture")
+        continue
     if "@" not in reference:
         print(f"FAIL unpinned rendered image: {reference}", file=sys.stderr)
         failures += 1

@@ -1,0 +1,8 @@
+{
+  "version": "v0.35.0-beta",
+  "manifest": "https://github.com/lightninglabs/loop/releases/download/v0.35.0-beta/manifest-v0.35.0-beta.txt",
+  "archives": {
+    "amd64": "6791fea1aae1d3e18aa1e41766223c735b800b86c43dee2d13e593853630f8cb",
+    "arm64": "1026f4b50ce650f0469cf3c3a8cd1a0c5adc4c3165c5b542d3914fc9b6626bbd"
+  }
+}

@@ -21,7 +21,7 @@ spec:
         foreach:
           - list: request.object.spec.containers
             pattern:
-              image: "docker.io/*@sha256:*"
+              image: "docker.io/*@sha256:* | localhost/lnd-ops-loop@sha256:*"
     - name: require-resources
       match:
         any:

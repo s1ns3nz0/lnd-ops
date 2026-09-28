@@ -1,35 +1,37 @@
 #!/usr/bin/env python3
-"""Read-only Loop health and quote gate; it never creates a swap."""
-import json
-import os
-import subprocess
+"""Read-only Phase 4 gate: healthy daemon plus an actual successful swap."""
 import sys
-
-KUBECONFIG = os.environ.get("KUBECONFIG", os.path.expanduser("~/.local/state/lnd-ops/kubeconfig"))
-
-
-def run(*args):
-    return subprocess.run(args, text=True, capture_output=True, check=False)
+from loop_api import API, LoopError
+from loop_ops import number, state_of
 
 
-def fail(message, code=1):
-    print(message, file=sys.stderr)
-    raise SystemExit(code)
+def main():
+    api = API()
+    try:
+        deployment = api.command(['kubectl', '-n', 'lnd-testnet', 'get', 'deployment',
+                                  'loopd', '-o', 'json'], optional=True)
+        if deployment is None:
+            print('ACTION: enable Loop — Phase 4에서 인증 파일 생성 또는 기존 파일 선택')
+            return 10
+        if deployment.get('status', {}).get('availableReplicas') != 1:
+            print(api.startup_diagnostic() or 'ACTION: wait for loopd to become available; loopd 로그와 인증·TLS를 확인하세요.')
+            return 10
+        api.binding()
+        swaps = api.loop('/v1/loop/swaps').get('swaps', [])
+        successful = [s for s in swaps if state_of(s) == 'SUCCESS' and number(s.get('amt', 0)) > 0
+                      and s.get('type', 'LOOP_OUT') in ('LOOP_IN', 'LOOP_OUT')]
+        if '--ready' in sys.argv:
+            print('OK Loop 사용 준비 완료; 실제 swap 완료 판정과 별개입니다.')
+            return 0
+        if not successful:
+            print('PENDING: Loop 사용 준비 완료 / 실제 swap 성공 1건 필요')
+            return 10
+        print(f'OK Loop: 실제 swap 성공 {len(successful)}건 확인')
+        return 0
+    except (LoopError, ValueError, KeyError, TypeError) as exc:
+        print(f'Loop 조회 실패: {exc}', file=sys.stderr)
+        return 1
 
 
-if not os.path.isfile(KUBECONFIG):
-    fail("Kubeconfig missing: run ops/bootstrap")
-os.environ["KUBECONFIG"] = KUBECONFIG
-health = run("kubectl", "-n", "lnd-testnet", "get", "deployment", "loopd", "-o", "json")
-if health.returncode:
-    fail("ACTION: enable Loop with ops/enable-loop --macaroon /secure/path/loop.macaroon", 10)
-deployment = json.loads(health.stdout)
-if deployment.get("status", {}).get("availableReplicas") != 1:
-    fail("ACTION: wait for loopd to become available", 10)
-metric = run("kubectl", "-n", "lnd-testnet", "exec", "deployment/loopd", "-c", "loop-health", "--", "python3", "-c", "from urllib.request import urlopen; print(urlopen(\"http://127.0.0.1:9094/metrics\").read().decode())")
-if metric.returncode or "lnd_ops_loop_healthy 1" not in metric.stdout:
-    fail("Loop health endpoint is not ready")
-quote = run("kubectl", "-n", "lnd-testnet", "exec", "deployment/loopd", "-c", "loopd", "--", "loop", "--loopdir=/loop", "--network=testnet", "quote", "out", "--amt=10000")
-if quote.returncode:
-    fail("Loop quote failed: " + quote.stderr.strip())
-print("OK Loop: daemon healthy and testnet quote returned; no swap was created")
+if __name__ == '__main__':
+    raise SystemExit(main())
