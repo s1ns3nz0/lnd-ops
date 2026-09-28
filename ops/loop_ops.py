@@ -128,7 +128,7 @@ class Operations:
                 max(0, number(channel['remote_balance']) - remote_reserve))
 
     def plan(self, direction, scid, amount, fee_limit, routing_limit=10,
-             payment_timeout=DEFAULT_PAYMENT_TIMEOUT):
+             payment_timeout=DEFAULT_PAYMENT_TIMEOUT, outgoing_scids=None):
         if direction not in ('out', 'in'):
             raise LoopError('Loop 방향은 out 또는 in이어야 합니다.')
         self.api.binding()
@@ -143,6 +143,13 @@ class Operations:
         if len(selected) != 1 or selected[0].get('pending_htlcs'):
             raise LoopError('대상 채널이 비활성이거나 처리 중인 HTLC가 있습니다.')
         channel = selected[0]
+        ids = [str(scid)] if outgoing_scids is None else [str(i) for i in outgoing_scids]
+        if (not ids or len(set(ids)) != len(ids) or str(scid) not in ids
+                or (direction != 'out' and ids != [str(scid)])):
+            raise LoopError('송신 채널 목록은 중복 없이 대상 채널을 포함해야 하며 Loop Out에서만 확장할 수 있습니다.')
+        pool = [c for c in channels if channel_id(c) in ids]
+        if len(pool) != len(ids) or any(c.get('pending_htlcs') for c in pool):
+            raise LoopError('선택한 송신 채널이 비활성이거나 처리 중인 HTLC가 있습니다.')
         if direction == 'in' and sum(c['remote_pubkey'] == channel['remote_pubkey'] for c in channels) != 1:
             raise LoopError('Loop In은 마지막 peer만 지정합니다. 같은 peer의 활성 채널이 여러 개면 개별 채널을 보장할 수 없습니다.')
         terms = self.api.loop(f'/v1/loop/{direction}/terms')
@@ -166,6 +173,8 @@ class Operations:
         if reservation > fee_limit:
             raise LoopError(f'견적 기반 수수료 한도 {reservation:,} sat가 승인 한도 {fee_limit:,} sat보다 큽니다.')
         outbound, inbound = self.available(channel)
+        if direction == 'out':
+            outbound = sum(self.available(c)[0] for c in pool)
         wallet = self.api.lnd('walletbalance')
         onchain = max(0, number(wallet['confirmed_balance']) - number(wallet.get('locked_balance', 0)) - number(wallet.get('reserved_balance_anchor_chan', 0)))
         # The prepay is included in the total invoices (amount + server fee),
@@ -179,7 +188,7 @@ class Operations:
         payload = {'amt': str(amount), 'max_swap_fee': str(server_fee),
                    'max_miner_fee': str(miner_limit), 'initiator': 'lnd-ops-phase4'}
         if direction == 'out':
-            payload.update(outgoing_chan_set=[str(scid)], max_swap_routing_fee=str(routing_limit),
+            payload.update(outgoing_chan_set=ids, max_swap_routing_fee=str(routing_limit),
                            max_prepay_routing_fee=str(routing_limit), max_prepay_amt=str(prepay),
                            sweep_conf_target=6, htlc_confirmations=3,
                            swap_publication_deadline=str(deadline), payment_timeout=payment_timeout)
@@ -189,6 +198,8 @@ class Operations:
         return {'label': 'lnd-ops-' + uuid.uuid4().hex,
                 'payload_hash': hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
                 'direction': direction, 'scid': str(scid), 'peer': channel['remote_pubkey'],
+                'outgoing_channels': [{'scid': channel_id(c), 'peer': c['remote_pubkey'],
+                                       'channel_point': c.get('channel_point', '')} for c in pool],
                 'amount': amount, 'fee_limit': fee_limit, 'routing_limit': routing_limit,
                 'reservation': reservation, 'miner_estimate': miner_estimate, 'created': self.clock(),
                 'binding': self.api.binding(), 'payload': payload,
@@ -203,7 +214,12 @@ class Operations:
             raise LoopError('요청 금액과 견적이 다릅니다.')
         payload = plan['payload']
         if plan['direction'] == 'out':
-            if payload.get('outgoing_chan_set') != [plan['scid']]:
+            approved = plan.get('outgoing_channels', [{'scid': plan['scid'], 'peer': plan['peer']}])
+            approved_ids = [c['scid'] for c in approved]
+            requested_ids = payload.get('outgoing_chan_set', [])
+            if (not approved_ids or len(set(approved_ids)) != len(approved_ids)
+                    or len(requested_ids) != len(approved_ids) or set(requested_ids) != set(approved_ids)
+                    or plan['scid'] not in approved_ids):
                 raise LoopError('요청 채널과 승인 채널이 다릅니다.')
             reserved = max(number(payload['max_swap_fee']), number(payload['max_prepay_amt'])) + number(payload['max_miner_fee']) + number(payload['max_swap_routing_fee']) + number(payload['max_prepay_routing_fee'])
         elif plan['direction'] == 'in':
@@ -226,6 +242,17 @@ class Operations:
         if len(selected) != 1 or selected[0].get('pending_htlcs'):
             raise LoopError('승인 이후 채널 상태가 바뀌었습니다. 다시 견적을 확인하세요.')
         outbound, inbound = self.available(selected[0])
+        if plan['direction'] == 'out':
+            pool = []
+            for approved_channel in approved:
+                matches = [c for c in channels if channel_id(c) == approved_channel['scid']
+                           and c['remote_pubkey'] == approved_channel['peer']
+                           and ('channel_point' not in approved_channel
+                                or c.get('channel_point', '') == approved_channel['channel_point'])]
+                if len(matches) != 1 or matches[0].get('pending_htlcs'):
+                    raise LoopError('승인 이후 송신 채널 상태가 바뀌었습니다. 다시 견적을 확인하세요.')
+                pool.append(matches[0])
+            outbound = sum(self.available(c)[0] for c in pool)
         required_outbound = plan['amount'] + number(plan['payload']['max_swap_fee']) + number(plan['payload'].get('max_swap_routing_fee', 0)) + number(plan['payload'].get('max_prepay_routing_fee', 0))
         if plan['direction'] == 'out' and outbound < required_outbound:
             raise LoopError('승인 이후 송신 잔액이 부족해졌습니다.')
@@ -240,6 +267,8 @@ class Operations:
         if params.get('autoloop') or params.get('easy_autoloop'):
             raise LoopError('Loop 자체 Autoloop가 켜져 있습니다. 중복 자동 운영을 먼저 해제하세요.')
         if automatic:
+            if plan['direction'] == 'out' and payload.get('outgoing_chan_set') != [plan['scid']]:
+                raise LoopError('자동 실행은 승인한 단일 채널만 사용할 수 있습니다.')
             rule = state['automatic']
             if not rule.get('enabled') or rule.get('approval_id') != approval_id:
                 raise LoopError('자동 실행 승인이 변경되거나 해제됐습니다.')

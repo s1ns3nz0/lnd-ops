@@ -90,6 +90,54 @@ class OperationTests(unittest.TestCase):
             with self.assertRaises(LoopError):
                 self.ops.plan('out', '12345', 10000, 500, payment_timeout=value)
 
+    def multi_channel(self):
+        self.api.channel['local_balance'] = '7000'
+        second = copy.deepcopy(self.api.channel)
+        second.update(scid='67890', remote_pubkey='02' + 'ef' * 32)
+        original = self.api.lnd
+        def lnd(command, *args):
+            if command == 'listchannels':
+                return {'channels': [copy.deepcopy(self.api.channel), copy.deepcopy(second)]}
+            return original(command, *args)
+        self.api.lnd = lnd
+        return second
+
+    def multi_plan(self):
+        return self.ops.plan('out', '12345', 10000, 500, outgoing_scids=['12345', '67890'])
+
+    def test_multiple_approved_channels_supply_aggregate_liquidity(self):
+        self.multi_channel()
+        with self.assertRaisesRegex(LoopError, '송신 여력 부족'): self.plan()
+        plan = self.multi_plan()
+        self.ops.submit(plan, 1000)
+        self.assertEqual(self.api.posts[0][1]['outgoing_chan_set'], ['12345', '67890'])
+
+    def test_extra_channel_changes_block_before_post(self):
+        for changed in ('balance', 'active', 'peer', 'htlc'):
+            with self.subTest(changed=changed):
+                self.setUp(); second = self.multi_channel(); plan = self.multi_plan()
+                if changed == 'balance': second['local_balance'] = '0'
+                if changed == 'active': second['active'] = False
+                if changed == 'peer': second['remote_pubkey'] = 'other'
+                if changed == 'htlc': second['pending_htlcs'] = [{}]
+                with self.assertRaises(LoopError): self.ops.submit(plan, 1000)
+                self.assertEqual(self.api.posts, [])
+
+    def test_invalid_pool_and_loop_in_pool_rejected(self):
+        self.multi_channel()
+        for ids in ([], ['67890'], ['12345', '12345'], ['12345', '99999']):
+            with self.assertRaises(LoopError):
+                self.ops.plan('out', '12345', 10000, 500, outgoing_scids=ids)
+        with self.assertRaises(LoopError):
+            self.ops.plan('in', '12345', 10000, 500, outgoing_scids=['12345', '67890'])
+
+    def test_auto_cannot_expand_channel_approval(self):
+        self.multi_channel()
+        approval = self.ops.arm(self.rule())
+        with self.assertRaisesRegex(LoopError, '단일 채널'):
+            self.ops.submit(self.multi_plan(), 1000, True, approval)
+        self.assertEqual(self.api.posts, [])
+
     def failed_out(self):
         self.ops.submit(self.plan(), 500)
         self.api.swap_list[0].update(state='FAILED', failure_reason='FAILURE_REASON_OFFCHAIN',

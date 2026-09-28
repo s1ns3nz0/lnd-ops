@@ -103,6 +103,19 @@ def show(ops):
 
 def manual(ops, direction):
     channel = pick_channel(ops)
+    outgoing = None
+    if direction == 'out':
+        others = [c for c in ops.channels() if channel_id(c) != channel_id(channel)]
+        if others:
+            print('  여러 채널을 허용하면 선택한 채널들 사이에 결제가 분할될 수 있습니다.')
+            for i, c in enumerate(others, 1):
+                print(f"  추가 [{i}] SCID {channel_id(c)} / peer {c['remote_pubkey']} / 송신 여력 {ops.available(c)[0]:,} sat")
+            raw = input('  추가 허용 채널 번호 (쉼표 구분, Enter=기존 단일 채널): ').strip()
+            if raw:
+                indices = [number(v.strip(), '채널 번호', 1) - 1 for v in raw.split(',')]
+                if len(set(indices)) != len(indices) or any(i >= len(others) for i in indices):
+                    raise LoopError('추가 채널 번호를 중복 없이 목록에서 선택하세요.')
+                outgoing = [channel_id(channel)] + [channel_id(others[i]) for i in indices]
     terms = ops.api.loop(f'/v1/loop/{direction}/terms')
     print(f"  서버 금액 범위: {terms['min_swap_amount']}~{terms['max_swap_amount']} sat")
     amount = read_number('  swap 금액 (sat)')
@@ -110,10 +123,12 @@ def manual(ops, direction):
     routing = read_number('  결제별 라우팅 수수료 상한 (sat)', 10, 0) if direction == 'out' else 0
     timeout = read_number('  결제 시도 제한 시간 (초, 1~1800)', DEFAULT_PAYMENT_TIMEOUT) if direction == 'out' else DEFAULT_PAYMENT_TIMEOUT
     budget = read_number('  최근 24시간 수수료 예산 (sat)', limit)
-    plan = ops.plan(direction, channel_id(channel), amount, limit, routing, timeout)
+    plan = ops.plan(direction, channel_id(channel), amount, limit, routing, timeout, outgoing)
     print(f"  노드 {plan['binding']['identity']} / Loop {direction.upper()} / {amount:,} sat")
     print(f"  서버 수수료 {plan['payload']['max_swap_fee']} / 채굴 예상 {plan['miner_estimate']} / 채굴 시작 상한 {plan['payload']['max_miner_fee']} sat")
     if direction == 'out':
+        print('  승인할 송신 채널: ' + ', '.join(plan['payload']['outgoing_chan_set']))
+        print('  허용한 채널만 사용하며, 각 채널의 사용 금액과 외부 경로 성공은 보장되지 않습니다.')
         print(f"  선결제 {plan['payload']['max_prepay_amt']} sat (서버 비용 일부), 라우팅 한도 각각 {routing} sat")
         print('  반환 주소: 같은 LND의 온체인 지갑')
         print(f'  결제 시도 제한 {timeout}초 / 기존 HTLC 해소까지 전체 대기는 더 길어질 수 있습니다.')
