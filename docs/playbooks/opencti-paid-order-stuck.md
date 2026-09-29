@@ -53,8 +53,10 @@ Read these fields in order:
 
 | Field | Meaning |
 |---|---|
-| `status` | `observed`: fresh facts. `unknown`: no diagnosis (step 7) |
+| `status` | `observed`: fresh facts. `unknown`: no diagnosis (step 7); its `next_check` is `restore_diagnostic_evidence` |
 | `stage` | Where the order stopped (step 4) |
+| `observed_facts.order_state` | Order state: `awaiting_payment`, `payment_pending`, `paid`, `expired`, `payment_failed` |
+| `observed_facts.payment_rail` | `l402` or `x402`; decides which payment backend to check |
 | `observed_facts.observed_at` | Database snapshot time; the tool rejects anything older than 30 seconds |
 | `observed_facts.dispatch_state_age_seconds` | How long dispatch has been in its current state |
 | `observed_facts.scan_failure_reason`, `dispatch_reason` | Allowlisted codes; `other` means not a known code |
@@ -72,19 +74,19 @@ are incidents immediately. The thresholds come from the system's own timers:
 - the Basic profile's `wall_time_seconds` of 300 s, which is also the Job's
   `activeDeadlineSeconds`.
 
-| Stage | Incident when | Likely cause | Confirm with | Go to |
-|---|---|---|---|---|
-| `payment` | Only after the quote/challenge expired and the order is still not `expired`/`payment_failed` | Payment backend not settling | `challenge_state` stuck in `issuing`/`verifying`/`pending`; `lnd-merchant`, `x402-facilitator`, Aperture readiness | [L402 playbook](opencti-l402-funnel.md) for L402 |
-| `payment_records_need_review` | Immediately | Paid, but the receipt commit is `pending` or the challenge isn't `settled` | `receipt_commit_state`, `challenge_state` | **Escalate** (data) |
-| `inconsistent_records` | Immediately | Paid with no payment event, or a result recorded on a scan that isn't completed | `payment_event_recorded`, `result_recorded`, `scan_state` | **Escalate** (data); take no action |
-| `scan_creation` | Over 1 min | Paid but no scan row | `paid-scan-api` / `paid-scan-internal` readiness | Fix the service (step 5), else escalate |
-| `dispatch` | Over 5 min | Dispatcher not running, or the outbox is `blocked`/`failed` | `dispatch_state`, `dispatch_reason`, `paid-scan-dispatcher` readiness | Fix the service (step 5) |
-| `dispatch_registration` | Over 5 min | Registered with the broker, no Job yet | `scanner-broker`, `paid-scan-dispatcher` readiness; Warning events | Fix the service (step 5) |
-| `worker_start` | Immediately | Outbox `dispatched` but scan still `queued`. The dispatcher sets both in one transaction, so this suggests a cancellation race or a partial update | `dispatch_job_name`, Job existence | **Escalate** (data) |
-| `scan_running` | Past the deadline + 5 min (Basic: 300 s + 5 min) | Before the deadline: normal, or a worker pod that can't start (Kubernetes fails the Job at the deadline anyway). Past it: the dispatcher isn't reconciling the finished Job | Pod `waiting_reason` (`ImagePullBackOff`, `ErrImagePull`), `FailedScheduling` events, Job `condition`, `paid-scan-dispatcher` readiness | Scanner Job failed (planned playbook) |
-| `scan_terminal_without_result` | Immediately | The scan failed or was cancelled | `scan_failure_reason` (`evidence_sink_unavailable`, `limit_reached`, `deadline_exceeded`, `authorization_unavailable`). `other` usually means `platform_job_failed:<reason>`, so read the Job's `condition_reason` | Fix the cause for **future** orders; this order needs **escalation** for customer remediation |
-| `result_persistence` | Over 1 min | Scan completed, result not recorded | `paid-scan-internal` readiness; `evidence_sink_unavailable` | Fix the service (step 5) |
-| `result_recorded` | Never | Normal. If the customer still sees nothing, it's API or UI delivery, which this playbook doesn't cover | — | — |
+| Stage | Incident when | Likely cause | Confirm with | Go to | Tool `next_check` |
+|---|---|---|---|---|---|
+| `payment` | Only after the quote/challenge expired and the order is still not `expired`/`payment_failed` | Payment backend not settling | `challenge_state` stuck in `issuing`/`verifying`/`pending`; `lnd-merchant`, `x402-facilitator`, Aperture readiness | [L402 playbook](opencti-l402-funnel.md) for L402 | `inspect_payment_confirmation_and_receipt_commit` |
+| `payment_records_need_review` | Immediately | Paid, but the receipt commit is `pending` or the challenge isn't `settled` | `receipt_commit_state`, `challenge_state` | **Escalate** (data) | `inspect_payment_confirmation_and_receipt_commit` |
+| `inconsistent_records` | Immediately | Paid with no payment event, or a result recorded on a scan that isn't completed | `payment_event_recorded`, `result_recorded`, `scan_state` | **Escalate** (data); take no action | `inspect_backend_reconciliation` |
+| `scan_creation` | Over 1 min | Paid but no scan row | `paid-scan-api` / `paid-scan-internal` readiness | Fix the service (step 5), else escalate | `inspect_backend_reconciliation` |
+| `dispatch` | Over 5 min | Dispatcher not running, or the outbox is `blocked`/`failed` | `dispatch_state`, `dispatch_reason`, `paid-scan-dispatcher` readiness | Fix the service (step 5) | `inspect_dispatcher_and_outbox` |
+| `dispatch_registration` | Over 5 min | Registered with the broker, no Job yet | `scanner-broker`, `paid-scan-dispatcher` readiness; Warning events | Fix the service (step 5) | `inspect_dispatcher_and_outbox` |
+| `worker_start` | Immediately | Outbox `dispatched` but scan still `queued`. The dispatcher sets both in one transaction, so this suggests a cancellation race or a partial update; the tool's next_check is `escalate_inconsistent_dispatch_state` | `dispatch_job_name`, Job existence | **Escalate** (data) | `escalate_inconsistent_dispatch_state` |
+| `scan_running` | Past the deadline + 5 min (Basic: 300 s + 5 min) | Before the deadline: normal, or a worker pod that can't start (Kubernetes fails the Job at the deadline anyway). Past it: the dispatcher isn't reconciling the finished Job | Pod `waiting_reason` (`ImagePullBackOff`, `ErrImagePull`), `FailedScheduling` events, Job `condition`, `paid-scan-dispatcher` readiness | Scanner Job failed (planned playbook) | `inspect_job_and_completion_callback` |
+| `scan_terminal_without_result` | Immediately | The scan failed or was cancelled | `scan_failure_reason` (`evidence_sink_unavailable`, `limit_reached`, `deadline_exceeded`, `authorization_unavailable`). `other` usually means `platform_job_failed:<reason>`, so read the Job's `condition_reason` | Fix the cause for **future** orders; this order needs **escalation** for customer remediation | `inspect_scan_attempt_and_job` |
+| `result_persistence` | Over 1 min | Scan completed, result not recorded | `paid-scan-internal` readiness; `evidence_sink_unavailable` | Fix the service (step 5) | `inspect_result_ingestion` |
+| `result_recorded` | Never | Normal. If the customer still sees nothing, it's API or UI delivery, which this playbook doesn't cover | — | — | `verify_result_retrieval` |
 
 **Two recovery targets.** Fixing the system saves **future** orders. It may
 not save **this** one: for example, a Job that passed its deadline is lost for
@@ -149,6 +151,7 @@ and actions. It becomes the postmortem draft.
 | `invalid_response`, `response_too_large`, `identity_mismatch` | The endpoint and the tool disagree on the contract, e.g. only one side was deployed |
 | `not_configured`, `invalid_configuration` | Missing or invalid tool settings: origin, credentials, `OPENCTI_NAMESPACE` |
 | `kubernetes_unavailable` (workload tool) | RBAC, or egress to the Kubernetes API |
+| `playbook_unavailable` (from `get_playbook`) | The playbook ConfigMap `paid-scan-playbooks` is missing or unreadable. The agent must say so and answer from tool evidence only, with lower confidence. Redeploy with `ops/deploy-agent` |
 
 **What the tools never see:**
 

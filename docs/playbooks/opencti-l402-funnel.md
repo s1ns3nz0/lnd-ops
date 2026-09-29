@@ -133,6 +133,7 @@ Keep a timestamped incident log. It becomes the postmortem draft.
 |---|---|
 | `aperture_not_scraped` | Is Aperture running? Does the `l402-aperture` Service expose port `metrics` (9000)? Is `prometheus.enabled: true` in its config? Check the `aperture` target in Prometheus |
 | `prometheus_unavailable` | Is Prometheus in `lndops-monitoring` up? Does the paid-scan NetworkPolicy allow egress to it on 9090? |
+| `playbook_unavailable` (from `get_playbook`) | The playbook ConfigMap `paid-scan-playbooks` is missing or unreadable. The agent must say so and answer from tool evidence only, with lower confidence. Redeploy with `ops/deploy-agent` |
 
 ## 8. Security signal (`rejected`)
 

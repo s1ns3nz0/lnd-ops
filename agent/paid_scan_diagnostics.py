@@ -207,7 +207,7 @@ def diagnose(arguments, fetch=None, now=None):
     elif dispatch == "registered":
         stage, check = "dispatch_registration", "inspect_dispatcher_and_outbox"
     elif dispatch == "dispatched":
-        stage, check = "worker_start", "inspect_job_scheduling_and_worker_start"
+        stage, check = "worker_start", "escalate_inconsistent_dispatch_state"
     else:
         stage, check = "dispatch", "inspect_dispatcher_and_outbox"
     if stage in {"worker_start", "scan_running", "scan_terminal_without_result"} and facts["dispatch_job_name"]:

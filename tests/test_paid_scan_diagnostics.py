@@ -648,6 +648,11 @@ class ChartTests(unittest.TestCase):
         self.assertRegex(deployment, r'name: playbooks, mountPath: /playbooks, readOnly: true')
         self.assertRegex(deployment, r'name: playbooks\s+configMap: \{name: paid-scan-playbooks, defaultMode: 0444\}')
         self.assertIn('call get_playbook', PROMPT)
+        self.assertIn('you cannot change anything', PROMPT)
+        self.assertIn('recommend the human actions the playbook lists as allowed', PROMPT)
+        self.assertIn('Ask for the IDs only when', PROMPT)
+        self.assertIn('If get_playbook returns unknown', PROMPT)
+        self.assertIn('Never add credential_verified to accepted', PROMPT)
         self.assertRegex(deployment, r'name: PROMETHEUS_URL, value: "?http://lnd-ops-monitoring-kube-pr-prometheus\.lndops-monitoring\.svc:9090')
 
     def test_networkpolicy_has_kube_api_egress(self):

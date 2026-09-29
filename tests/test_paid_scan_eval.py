@@ -290,7 +290,8 @@ class ChartTests(unittest.TestCase):
         found = docs(helm("paidScan.eval.enabled=true"))
         prod, ev = found[("Agent", "paid-scan-diagnosis")], found[("Agent", "paid-scan-diagnosis-eval")]
         self.assertEqual(system_message(prod), system_message(ev))
-        self.assertIn("call get_playbook", system_message(ev))
+        for phrase in ("call get_playbook", "you cannot change anything", "Ask for the IDs only when", "If get_playbook returns unknown"):
+            self.assertIn(phrase, system_message(ev))
         tools = lambda doc: re.search(r"toolNames: (\[.*?\])", doc).group(1)
         self.assertEqual(tools(prod), tools(ev))
         self.assertIn("name: paid-scan-eval\n", ev)
