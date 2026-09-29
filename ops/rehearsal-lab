@@ -1,0 +1,729 @@
+#!/usr/bin/env python3
+"""Disposable kind cluster for rehearsing the L402 funnel agents and alerts.
+
+Runs the REAL kagent, agent chart (both agents + eval fixture), kube-prometheus-stack and alert rules against a
+SYNTHETIC Aperture metrics pod and DUMMY OpenCTI workloads whose faults `inject` toggles.
+
+Isolation: own state dir (XDG_STATE_HOME/lnd-ops-rehearsal, 0700) and own kubeconfig inside it. Every kubectl,
+helm and kind call passes that kubeconfig explicitly. Everything except up/down/status refuses to run unless the
+kubeconfig's current context is kind-lndops-rehearsal.
+
+Usage: ops/rehearsal-lab up|status|inject <scenario>|reset|ui|ask <agent> "<question>"|down [--purge]
+"""
+
+import argparse
+import contextlib
+import hashlib
+import ipaddress
+import json
+import os
+import pathlib
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops-rehearsal"
+KUBECONFIG = STATE / "kubeconfig"
+CLUSTER = "lndops-rehearsal"
+CONTEXT = f"kind-{CLUSTER}"
+NODE = f"{CLUSTER}-control-plane"
+OLLAMA_PORT = 11434
+KAGENT_VERSION = "0.9.12"
+
+# kind v0.31.0 embeds this exact image as its default node image (found with:
+#   strings $(command -v kind) | grep -o 'kindest/node:v[0-9.]*@sha256:[0-9a-f]*').
+# A digest is only meaningful for the kind release that built the image, so preflight requires that release.
+KIND_VERSION = "v0.31.0"
+NODE_IMAGE = "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f"
+PY_IMAGE = "docker.io/library/python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
+
+APP_NS = "opencti-paid-scan-e2e"
+MAIN_NAMESPACES = ("lndops-kagent", "lndops-agent", "lndops-monitoring", APP_NS)
+NAMESPACES = {  # name -> labels (pod-security levels copied from ops/deploy-agent and ops/deploy-monitoring)
+    "lndops-kagent": {"pod-security.kubernetes.io/enforce": "baseline"},
+    "lndops-agent": {"pod-security.kubernetes.io/enforce": "restricted"},
+    "lndops-monitoring": {"lnd-ops-monitoring": "true", "pod-security.kubernetes.io/enforce": "privileged"},
+    APP_NS: {},
+    # Only so the agent chart's Roles and RoleBindings apply.
+    "lnd-regtest": {}, "lnd-testnet": {}, "lndops-falco": {},
+}
+DUMMIES = ("payment-aperture-services", "lnd-merchant", "paid-scan-api", "paid-scan-internal",
+           "paid-scan-dispatcher", "scanner-broker", "postgres")
+HEALTHY_CMD = ["sh", "-c", "while true; do sleep 3600; done"]
+BROKEN_CMD = ["sh", "-c", "echo rehearsal fault injected; exit 1"]
+APERTURE = "l402-aperture"
+AGENTS = ("paid-scan-diagnosis", "lnd-ops-runbook-agent")
+KAGENT_DEPLOYMENTS = ("paid-scan-diagnosis", "lnd-ops-runbook-agent", "paid-scan-diagnosis-eval")
+PLAYBOOK = "docs/playbooks/opencti-l402-funnel.md"
+PROM_SVC, AM_SVC = "lnd-ops-monitoring-kube-pr-prometheus", "lnd-ops-monitoring-kube-pr-alertmanager"
+
+HEALTHY_RATES = {"mint": {"ok": 2}, "verify": {"missing_credentials": 2, "accepted": 1,
+                                                "credential_verified": 1, "invoice_state_mismatch": 1}}
+# Per-minute counter rates each scenario feeds the synthetic exporter, plus the workload faults.
+SCENARIOS = {
+    "healthy": dict(
+        summary="Baseline traffic, every workload healthy.",
+        rates=HEALTHY_RATES, broken=(), replicas=1, alert=None,
+        timing="No alert expected. paid-scan-diagnosis: verdict healthy (needs a few minutes of traffic).",
+        section="## 3. Triage"),
+    "pricer-down": dict(
+        summary="Tabletop 2: pricer crash-looping; requests arrive but no invoice is ever minted.",
+        rates={"verify": {"missing_credentials": 2}}, broken=("payment-aperture-services",), replicas=1,
+        alert="OpenCTIL402RequestsWithoutInvoice",
+        timing="The 15m windows still hold baseline mints, so allow up to ~17 minutes (window ageing + for: 1m).",
+        section="## Worked example: dead pricer (tabletop 2)"),
+    "invoice-failure": dict(
+        summary="Merchant LND crash-looping; Aperture cannot create invoices.",
+        rates={"verify": {"missing_credentials": 2}, "mint": {"challenge_failed": 2}},
+        broken=("lnd-merchant",), replicas=1, alert="OpenCTIL402InvoiceIssuanceFailing",
+        timing="Fires about 1-2 minutes after the first failed mint is scraped (for: 1m).",
+        section="## 4. Diagnose: signal, cause, evidence"),
+    "rejection-spike": dict(
+        summary="Tabletop 3: healthy service, but forged/unknown tokens spike.",
+        rates={"mint": HEALTHY_RATES["mint"],
+               "verify": {**HEALTHY_RATES["verify"], "invalid_signature": 15, "unknown_credential": 12}},
+        broken=(), replicas=1, alert=None,
+        timing="NO alert expected. paid-scan-diagnosis: verdict healthy with security_signal true.",
+        section="## Worked example: rejection spike at night (tabletop 3)"),
+    "metrics-absent": dict(
+        summary="Aperture scaled to zero; its metrics disappear.",
+        rates=None, broken=(), replicas=0, alert="OpenCTIL402MetricsAbsent",
+        timing="Fires about 10 minutes after the target disappears (for: 10m).",
+        section="## 7. When `status` is `unknown`"),
+}
+GUARDED = {"inject", "reset", "ui", "ask"}
+
+
+class LabError(Exception):
+    pass
+
+
+# --- process helpers -----------------------------------------------------------------------------------------
+def env():
+    return {**os.environ, "KUBECONFIG": str(KUBECONFIG)}  # belt and braces next to the explicit flags
+
+
+def run(args, input_text=None, timeout=1200, check=True, extra_env=None):
+    try:
+        result = subprocess.run([str(a) for a in args], input=input_text, text=True, capture_output=True,
+                                timeout=timeout, env={**env(), **(extra_env or {})})
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LabError(f"{args[0]}: {exc}") from None
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise LabError(f"{args[0]} failed: {lines[-1] if lines else 'no output'}")
+    return result.stdout if check else result
+
+
+def kubectl(*args, **kw):
+    return run(["kubectl", "--kubeconfig", KUBECONFIG, *args], **kw)
+
+
+def helm(*args, **kw):
+    return run(["helm", "--kubeconfig", KUBECONFIG, *args], **kw)
+
+
+def kubectl_json(*args):
+    return json.loads(kubectl(*args, "-o", "json"))
+
+
+def apply(obj):
+    kubectl("apply", "-f", "-", input_text=json.dumps(obj))
+
+
+def apply_configmap(namespace, name, *sources):
+    """kubectl create configmap --dry-run | apply, like ops/deploy-agent. Sources: files or key=literal strings."""
+    args = ["-n", namespace, "create", "configmap", name, "--dry-run=client", "-o", "yaml"]
+    for source in sources:
+        args.append(f"--from-literal={source[0]}={source[1]}" if isinstance(source, tuple) else f"--from-file={source}")
+    kubectl("apply", "-f", "-", input_text=kubectl(*args))
+
+
+def write_private(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(text)
+    os.chmod(path, 0o600)
+
+
+def ensure_state():
+    if STATE.is_symlink():
+        raise LabError(f"{STATE} must not be a symlink")
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(STATE, 0o700)
+
+
+def http_json(url, timeout=10):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": "application/json"}), timeout=timeout) as r:
+            return json.load(r)
+    except (OSError, ValueError) as exc:
+        raise LabError(f"GET {url} failed: {exc}") from None
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@contextlib.contextmanager
+def port_forward(namespace, target, remote, local=None):
+    local = local or free_port()
+    process = subprocess.Popen(
+        ["kubectl", "--kubeconfig", str(KUBECONFIG), "-n", namespace, "port-forward", "--address", "127.0.0.1",
+         target, f"{local}:{remote}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env())
+    try:
+        wait_port(local, process, f"{namespace}/{target}")
+        yield local
+    finally:
+        stop(process)
+
+
+def wait_port(port, process, what):
+    for _ in range(150):
+        if process.poll() is not None:
+            raise LabError(f"port-forward to {what} exited early")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                return
+        except OSError:
+            time.sleep(.1)
+    raise LabError(f"port-forward to {what} did not become ready")
+
+
+def stop(process):
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def wait_for(description, predicate, timeout=300, interval=3):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with contextlib.suppress(LabError, KeyError, IndexError, ValueError):
+            if predicate():
+                return
+        time.sleep(interval)
+    raise LabError(f"timed out waiting for {description}")
+
+
+def wait_deployment(namespace, name, timeout=300):
+    wait_for(f"deployment {namespace}/{name} to exist", lambda: kubectl("-n", namespace, "get", "deployment", name), 300)
+    kubectl("-n", namespace, "rollout", "status", f"deployment/{name}", f"--timeout={timeout}s", timeout=timeout + 30)
+
+
+# --- guard ---------------------------------------------------------------------------------------------------
+def current_context():
+    return run(["kubectl", "--kubeconfig", KUBECONFIG, "config", "current-context"], timeout=30).strip()
+
+
+def check_context(context):
+    if context != CONTEXT:
+        raise LabError(f"refusing to run: kubeconfig context is {context!r}, expected {CONTEXT!r}")
+
+
+def guard():
+    if not KUBECONFIG.is_file():
+        raise LabError(f"lab kubeconfig missing ({KUBECONFIG}); run `ops/rehearsal-lab up` first")
+    check_context(current_context())
+
+
+# --- step 1: preflight ---------------------------------------------------------------------------------------
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def expected_checksums():
+    """SHA256SUMS covers kagent and kagent-crds; the monitoring chart's digest lives in ops/deploy-monitoring."""
+    vendor = REPO / "charts/vendor"
+    sums = {name: digest for digest, name in
+            (line.split() for line in (vendor / "SHA256SUMS").read_text().splitlines() if line.strip())}
+    charts = {f"kagent-{KAGENT_VERSION}.tgz": sums.get(f"kagent-{KAGENT_VERSION}.tgz"),
+              f"kagent-crds-{KAGENT_VERSION}.tgz": sums.get(f"kagent-crds-{KAGENT_VERSION}.tgz")}
+    monitoring = re.search(r"^chart=.*/(kube-prometheus-stack-[\d.]+\.tgz)$", (REPO / "ops/deploy-monitoring").read_text(), re.M)
+    digest = re.search(r"^expected=([0-9a-f]{64})$", (REPO / "ops/deploy-monitoring").read_text(), re.M)
+    if not monitoring or not digest:
+        raise LabError("could not read the kube-prometheus-stack checksum from ops/deploy-monitoring")
+    charts[monitoring.group(1)] = digest.group(1)
+    if not all(charts.values()):
+        raise LabError("charts/vendor/SHA256SUMS lacks a kagent or kagent-crds checksum")
+    return charts
+
+
+def monitoring_chart():
+    return next(name for name in expected_checksums() if name.startswith("kube-prometheus-stack"))
+
+
+def step_preflight(model):
+    for tool in ("docker", "kind", "helm", "kubectl", "openssl"):
+        if not shutil.which(tool):
+            raise LabError(f"{tool} is not installed")
+    run(["docker", "info"], timeout=60)
+    version = run(["kind", "version"], timeout=30)
+    if not re.match(rf"kind {re.escape(KIND_VERSION)}\b", version):
+        raise LabError(f"kind {KIND_VERSION} required: the pinned node image digest belongs to that release (found: {version.strip()})")
+    base = f"http://127.0.0.1:{OLLAMA_PORT}"
+    if "version" not in http_json(f"{base}/api/version"):
+        raise LabError("Ollama /api/version did not return a version")
+    names = {m.get("name") for m in http_json(f"{base}/api/tags").get("models", [])}
+    if model not in names and f"{model}:latest" not in names:
+        raise LabError(f"Ollama does not have model {model!r} (has: {', '.join(sorted(n for n in names if n)) or 'none'})")
+    for name, digest in expected_checksums().items():
+        if sha256(REPO / "charts/vendor" / name) != digest:
+            raise LabError(f"vendor chart checksum mismatch: {name}")
+    print(f"ok: tools, kind {KIND_VERSION}, Ollama model {model}, vendor chart checksums")
+
+
+# --- step 2/3: cluster and host address ---------------------------------------------------------------------
+def step_cluster():
+    if CLUSTER in run(["kind", "get", "clusters"], timeout=60).split():
+        run(["kind", "export", "kubeconfig", "--name", CLUSTER, "--kubeconfig", KUBECONFIG], timeout=60)
+        print(f"cluster {CLUSTER} already exists; reusing it")
+    else:
+        run(["kind", "create", "cluster", "--name", CLUSTER, "--image", NODE_IMAGE, "--kubeconfig", KUBECONFIG,
+             "--wait", "5m"], timeout=900)
+    os.chmod(KUBECONFIG, 0o600)
+    check_context(current_context())
+    kubectl("wait", "--for=condition=Ready", "node", "--all", "--timeout=2m")
+    print(f"ok: {CONTEXT} node Ready, image {NODE_IMAGE}")
+
+
+def parse_host_address(getent_output):
+    for line in getent_output.splitlines():
+        fields = line.split()
+        if fields:
+            with contextlib.suppress(ValueError):
+                address = ipaddress.ip_address(fields[0])
+                if address.version == 4:
+                    return str(address)
+    raise LabError("host.docker.internal did not resolve to an IPv4 address inside the kind node")
+
+
+def step_host_address():
+    out = run(["docker", "exec", NODE, "getent", "ahostsv4", "host.docker.internal"], timeout=60, check=False)
+    if out.returncode:
+        raise LabError("host.docker.internal does not resolve inside the kind node (Docker Desktop required)")
+    address = parse_host_address(out.stdout)
+    url = f"http://{address}:{OLLAMA_PORT}/api/version"
+    probe = ("import sys,urllib.request;print(urllib.request.urlopen(sys.argv[1],timeout=10).read().decode())")
+    result = kubectl("run", "ollama-probe", "--rm", "-i", "-q", "--restart=Never", "--image", PY_IMAGE,
+                     "--pod-running-timeout=5m", "--command", "--", "python3", "-c", probe, url, timeout=420, check=False)
+    if result.returncode or '"version"' not in result.stdout:
+        raise LabError(f"a pod in the cluster cannot reach Ollama at {url}. Ollama must listen on more than "
+                       "127.0.0.1 (start it with OLLAMA_HOST=0.0.0.0:11434) and Docker Desktop must allow host access")
+    print(f"ok: pod reached Ollama at {url}")
+    return address
+
+
+# --- step 4/5: namespaces, monitoring ------------------------------------------------------------------------
+def step_namespaces():
+    for name, labels in NAMESPACES.items():
+        apply({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "labels": labels}})
+    missing = set(NAMESPACES) - {i["metadata"]["name"] for i in kubectl_json("get", "namespaces")["items"]}
+    if missing:
+        raise LabError(f"namespaces missing: {sorted(missing)}")
+    print("ok: " + ", ".join(NAMESPACES))
+
+
+def monitoring_override():
+    """Lab-only values on top of charts/monitoring-values.yaml (JSON is valid YAML)."""
+    return {
+        "prometheus": {"prometheusSpec": {
+            "retention": "1d", "scrapeInterval": "15s", "evaluationInterval": "15s",
+            "storageSpec": None,  # null deletes the base file's 10Gi PVC template: emptyDir, gone with the cluster
+            "resources": {"requests": {"cpu": "100m", "memory": "512Mi"}, "limits": {"memory": "1Gi"}}}},
+        "alertmanager": {"alertmanagerSpec": {"resources": {"requests": {"cpu": "10m", "memory": "64Mi"}}}},
+        "grafana": {"resources": {"requests": {"cpu": "50m", "memory": "128Mi"}}},
+    }
+
+
+def step_monitoring():
+    chart = REPO / "charts/vendor" / monitoring_chart()
+    password = STATE / "grafana-admin-password"
+    if not password.is_file():
+        write_private(password, secrets.token_urlsafe(32))
+    write_private(STATE / "grafana-admin-user", "admin")
+    if kubectl("-n", "lndops-monitoring", "get", "secret", "lnd-ops-grafana-admin", check=False).returncode:
+        kubectl("-n", "lndops-monitoring", "create", "secret", "generic", "lnd-ops-grafana-admin",
+                f"--from-file=admin-user={STATE / 'grafana-admin-user'}", f"--from-file=admin-password={password}")
+    apply_configmap("lndops-monitoring", "lnd-ops-dashboards", REPO / "charts/dashboards")
+    kubectl("-n", "lndops-monitoring", "label", "configmap", "lnd-ops-dashboards", "grafana_dashboard=1", "--overwrite")
+    override = STATE / "monitoring-lab-values.yaml"
+    write_private(override, json.dumps(monitoring_override(), indent=2) + "\n")
+    helm("upgrade", "--install", "lnd-ops-monitoring", chart, "--namespace", "lndops-monitoring",
+         "--values", REPO / "charts/monitoring-values.yaml", "--values", override, "--wait", "--timeout", "15m")
+    kubectl("apply", "-f", REPO / "charts/monitoring-rules.yaml")
+
+    def rules_loaded():
+        with port_forward("lndops-monitoring", f"service/{PROM_SVC}", 9090) as port:
+            groups = http_json(f"http://127.0.0.1:{port}/api/v1/rules")["data"]["groups"]
+        return any(g["name"] == "opencti-l402" for g in groups)
+    wait_for("Prometheus to load the opencti-l402 rule group", rules_loaded, 300, 5)
+    kubectl("-n", "lndops-monitoring", "rollout", "status", f"statefulset/alertmanager-{AM_SVC}", "--timeout=5m")
+    print("ok: monitoring installed, opencti-l402 rules loaded in Prometheus")
+
+
+# --- step 6: synthetic Aperture + dummy workloads -----------------------------------------------------------
+def deployment(name, command, extra_pod=None, extra_container=None, replicas=1):
+    labels = {"app.kubernetes.io/name": name}
+    container = {"name": "main", "image": PY_IMAGE, "command": command,
+                 "resources": {"requests": {"cpu": "5m", "memory": "16Mi"}, "limits": {"memory": "128Mi"}},
+                 "readinessProbe": {"exec": {"command": ["true"]}, "periodSeconds": 5}, **(extra_container or {})}
+    return {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "namespace": APP_NS, "labels": labels},
+            "spec": {"replicas": replicas, "selector": {"matchLabels": labels},
+                     "template": {"metadata": {"labels": labels}, "spec": {"containers": [container], **(extra_pod or {})}}}}
+
+
+def workload_objects():
+    objects = [deployment(name, HEALTHY_CMD) for name in DUMMIES]
+    aperture = deployment(
+        APERTURE, ["python3", "/app/aperture_exporter.py"],
+        extra_pod={"volumes": [{"name": "app", "configMap": {"name": "aperture-exporter"}},
+                               {"name": "state", "emptyDir": {}}]},
+        extra_container={"ports": [{"name": "metrics", "containerPort": 9000}],
+                         "readinessProbe": {"httpGet": {"path": "/metrics", "port": 9000}, "periodSeconds": 5},
+                         "volumeMounts": [{"name": "app", "mountPath": "/app", "readOnly": True},
+                                          {"name": "state", "mountPath": "/state"}]})
+    service = {"apiVersion": "v1", "kind": "Service",
+               "metadata": {"name": APERTURE, "namespace": APP_NS, "labels": {"app.kubernetes.io/name": APERTURE}},
+               "spec": {"selector": {"app.kubernetes.io/name": APERTURE},
+                        "ports": [{"name": "metrics", "port": 9000, "targetPort": "metrics"}]}}
+    return objects + [aperture, service]
+
+
+def step_workloads():
+    apply_configmap(APP_NS, "aperture-exporter", REPO / "lab/rehearsal/aperture_exporter.py")
+    for obj in workload_objects():
+        apply(obj)
+    for name in (*DUMMIES, APERTURE):
+        kubectl("-n", APP_NS, "rollout", "status", f"deployment/{name}", "--timeout=5m", timeout=330)
+    endpoints = kubectl_json("-n", APP_NS, "get", "endpoints", APERTURE)
+    if not endpoints.get("subsets"):
+        raise LabError("l402-aperture Service has no ready endpoints")
+    print(f"ok: {len(DUMMIES)} dummy workloads and the synthetic {APERTURE} are Ready")
+
+
+# --- step 7/8: kagent and the agent chart -------------------------------------------------------------------
+def step_kagent(model, address):
+    vendor = REPO / "charts/vendor"
+    helm("upgrade", "--install", "kagent-crds", vendor / f"kagent-crds-{KAGENT_VERSION}.tgz",
+         "--namespace", "lndops-kagent", "--wait", "--timeout", "10m")
+    kubectl("wait", "--for=condition=Established", "crd/agents.kagent.dev", "crd/modelconfigs.kagent.dev",
+            "crd/remotemcpservers.kagent.dev", "--timeout=2m")
+    helm("upgrade", "--install", "kagent", vendor / f"kagent-{KAGENT_VERSION}.tgz", "--namespace", "lndops-kagent",
+         "--values", REPO / "charts/kagent-values.yaml",
+         "--set-string", f"providers.ollama.model={model}",
+         "--set-string", f"providers.ollama.config.host=http://{address}:{OLLAMA_PORT}", "--wait", "--timeout", "15m")
+    for name in ("kagent-controller", "kagent-ui"):
+        kubectl("-n", "lndops-kagent", "rollout", "status", f"deployment/{name}", "--timeout=5m", timeout=330)
+    print("ok: kagent controller and UI rolled out")
+
+
+def shipped_runbooks():
+    """The runbooks ops/deploy-agent ships, read from that script so the lists cannot drift."""
+    names = re.findall(r'REPO / "docs/runbooks/([\w-]+\.md)"', (REPO / "ops/deploy-agent").read_text())
+    if not names:
+        raise LabError("could not read the runbook list from ops/deploy-agent")
+    return [REPO / "docs/runbooks" / n for n in names]
+
+
+def kube_api_endpoint():
+    """Same computation as ops/deploy-agent."""
+    items = kubectl_json("-n", "default", "get", "endpointslice", "-l", "kubernetes.io/service-name=kubernetes")["items"]
+    addresses = sorted({a for i in items for e in i.get("endpoints", []) for a in e.get("addresses", [])
+                        if ipaddress.ip_address(a).version == 4})
+    ports = sorted({int(p["port"]) for i in items for p in i.get("ports", []) if p.get("port")})
+    if len(addresses) != 1 or len(ports) != 1:
+        raise LabError("expected exactly one IPv4 Kubernetes API endpoint")
+    return addresses[0], ports[0]
+
+
+def step_agent(address):
+    ns = "lndops-agent"
+    apply_configmap(ns, "runbook-gateway-source", REPO / "agent/runbook_gateway.py",
+                    REPO / "agent/paid_scan_diagnostics.py", REPO / "agent/paid_scan_eval_fixture.py")
+    apply_configmap(ns, "runbook-agent-runbooks", *shipped_runbooks())
+    head = run(["git", "-C", REPO, "rev-parse", "HEAD"], timeout=30).strip()
+    apply_configmap(ns, "paid-scan-playbooks", REPO / "docs/playbooks/opencti-paid-order-stuck.md", REPO / PLAYBOOK,
+                    ("revision", head))
+    apply_configmap(ns, "paid-scan-eval-scenarios", *sorted((REPO / "tests/eval/scenarios").glob("*.json")))
+    apply_configmap(ns, "runbook-action-state", ("lastRestartEpoch", "0"))
+    # Dummy credentials: order diagnosis will return unknown in the lab, by design.
+    key, ca = STATE / "dummy-ca.key", STATE / "dummy-ca.crt"
+    run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+         "-keyout", key, "-out", ca, "-subj", "/CN=rehearsal-dummy-ca", "-days", "2"], timeout=60)
+    os.chmod(key, 0o600)
+    kubectl("apply", "-f", "-", input_text=kubectl(
+        "-n", ns, "create", "secret", "generic", "paid-scan-diagnostics-client", "--from-literal=token=rehearsal-dummy",
+        f"--from-file=ca.crt={ca}", "--dry-run=client", "-o", "yaml"))
+    api_address, api_port = kube_api_endpoint()
+    helm("upgrade", "--install", "lnd-ops-agent", REPO / "charts/agent", "--namespace", ns,
+         "--values", REPO / "charts/agent/paid-scan-wsl-e2e.values.yaml",
+         "--set-string", f"ollama.serverCIDR={address}/32", "--set", f"ollama.port={OLLAMA_PORT}",
+         "--set-string", f"kubeApi.serverCIDR={api_address}/32", "--set", f"kubeApi.port={api_port}",
+         "--wait", "--timeout", "10m")
+    for name in ("runbook-gateway", "runbook-diagnostic-probe", "paid-scan-diagnostics", "paid-scan-eval-fixture"):
+        wait_deployment(ns, name)
+    for name in KAGENT_DEPLOYMENTS:
+        wait_deployment("lndops-kagent", name)
+    print("ok: agent chart installed; gateway, diagnostics, eval fixture and the 3 agents are Ready")
+
+
+# --- scenarios -----------------------------------------------------------------------------------------------
+RATE_WRITER = ("import os,sys;p='/state/rates.json';t=p+'.tmp';"
+               "open(t,'w').write(sys.argv[1]);os.replace(t,p)")
+
+
+def set_rates(rates):
+    payload = json.dumps(rates or {})
+    kubectl("-n", APP_NS, "exec", f"deploy/{APERTURE}", "--", "python3", "-c", RATE_WRITER, payload)
+
+
+def command_patch(command):
+    return json.dumps({"spec": {"template": {"spec": {"containers": [{"name": "main", "command": command}]}}}})
+
+
+def restore_workloads():
+    for name in DUMMIES:
+        kubectl("-n", APP_NS, "patch", f"deployment/{name}", "-p", command_patch(HEALTHY_CMD))
+    kubectl("-n", APP_NS, "scale", f"deployment/{APERTURE}", "--replicas=1")
+
+
+def apply_scenario(name):
+    scenario = SCENARIOS[name]
+    restore_workloads()
+    for broken in scenario["broken"]:
+        kubectl("-n", APP_NS, "patch", f"deployment/{broken}", "-p", command_patch(BROKEN_CMD))
+    if scenario["replicas"] == 0:
+        kubectl("-n", APP_NS, "scale", f"deployment/{APERTURE}", "--replicas=0")
+    else:
+        kubectl("-n", APP_NS, "rollout", "status", f"deployment/{APERTURE}", "--timeout=3m", timeout=210)
+        set_rates(scenario["rates"])
+    for dummy in DUMMIES:
+        if dummy not in scenario["broken"]:
+            kubectl("-n", APP_NS, "rollout", "status", f"deployment/{dummy}", "--timeout=3m", timeout=210)
+    write_private(STATE / "scenario", name + "\n")
+
+
+def describe(name):
+    s = SCENARIOS[name]
+    print(f"scenario {name}: {s['summary']}")
+    print(f"  expected alert : {s['alert'] or 'none'}")
+    print(f"  timing         : {s['timing']}")
+    print(f"  compare with   : {PLAYBOOK}  ->  {s['section']}")
+    print("  next           : ops/rehearsal-lab status | ui | ask paid-scan-diagnosis \"Is the L402 payment gate healthy?\"")
+
+
+def step_baseline():
+    apply_scenario("healthy")
+
+    def scraped():
+        with port_forward("lndops-monitoring", f"service/{PROM_SVC}", 9090) as port:
+            url = f"http://127.0.0.1:{port}/api/v1/query?query=" + urllib.parse.quote('up{job="aperture"}==1')
+            return bool(http_json(url)["data"]["result"])
+    wait_for("Prometheus to scrape the aperture target", scraped, 300, 5)
+    print("ok: baseline traffic seeded and up{job=\"aperture\"} == 1")
+
+
+# --- commands ------------------------------------------------------------------------------------------------
+def cmd_up(args):
+    ensure_state()
+    steps = [
+        ("preflight", lambda: step_preflight(args.model)),
+        ("kind cluster", step_cluster),
+        ("host address for Ollama", lambda: ctx.update(address=step_host_address())),
+        ("namespaces", step_namespaces),
+        ("monitoring", step_monitoring),
+        ("synthetic Aperture and dummy workloads", step_workloads),
+        ("kagent", lambda: step_kagent(args.model, ctx["address"])),
+        ("agent chart", lambda: step_agent(ctx["address"])),
+        ("baseline traffic", step_baseline),
+    ]
+    ctx = {}
+    for number, (title, action) in enumerate(steps, 1):
+        print(f"\n== [{number}/{len(steps)}] {title}", flush=True)
+        try:
+            action()
+        except LabError as exc:
+            raise LabError(f"step {number} ({title}): {exc}") from None
+    write_private(STATE / "lab.json", json.dumps({"model": args.model, "ollama": ctx["address"]}) + "\n")
+    print("\nLab is up. Watch it with: ops/rehearsal-lab ui   (then: inject <scenario>, ask <agent> \"...\", down)")
+
+
+def cmd_status(args):
+    if not KUBECONFIG.is_file():
+        print(f"no lab kubeconfig at {KUBECONFIG}; the lab is not up")
+        return
+    print(kubectl("get", "nodes", timeout=30), end="")
+    for namespace in MAIN_NAMESPACES:
+        for pod in kubectl_json("-n", namespace, "get", "pods")["items"]:
+            statuses = pod["status"].get("containerStatuses", [])
+            if pod["status"].get("phase") != "Succeeded" and (
+                    pod["status"].get("phase") != "Running" or not all(c["ready"] for c in statuses)):
+                print(f"not ready: {namespace}/{pod['metadata']['name']} ({pod['status'].get('phase')})")
+    scenario = STATE / "scenario"
+    print("scenario:", scenario.read_text().strip() if scenario.is_file() else "none injected")
+    with port_forward("lndops-monitoring", f"service/{AM_SVC}", 9093) as port:
+        alerts = http_json(f"http://127.0.0.1:{port}/api/v2/alerts?active=true&silenced=false&inhibited=false")
+    print(f"firing alerts: {len(alerts)}")
+    for alert in alerts:
+        labels = alert["labels"]
+        print(f"  {labels.get('alertname')} severity={labels.get('severity')} since {alert.get('startsAt')}")
+
+
+def cmd_inject(args):
+    apply_scenario(args.scenario)
+    describe(args.scenario)
+
+
+def cmd_reset(args):
+    args.scenario = "healthy"
+    cmd_inject(args)
+
+
+def cmd_ui(args):
+    ui_port = kubectl_json("-n", "lndops-kagent", "get", "service", "kagent-ui")["spec"]["ports"][0]["port"]
+    targets = [("lndops-kagent", "service/kagent-ui", ui_port, 18080, "kagent UI"),
+               ("lndops-monitoring", f"service/{AM_SVC}", 9093, 9093, "Alertmanager"),
+               ("lndops-monitoring", f"service/{PROM_SVC}", 9090, 9090, "Prometheus")]
+    processes = []
+    try:
+        for namespace, target, remote, local, label in targets:
+            process = subprocess.Popen(
+                ["kubectl", "--kubeconfig", str(KUBECONFIG), "-n", namespace, "port-forward", "--address", "127.0.0.1",
+                 target, f"{local}:{remote}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env())
+            processes.append(process)
+            wait_port(local, process, label)
+            print(f"{label}: http://127.0.0.1:{local}")
+        print("Ctrl-C to stop")
+        while all(p.poll() is None for p in processes):
+            time.sleep(1)
+        raise LabError("a port-forward exited")
+    except KeyboardInterrupt:
+        print()
+    finally:
+        for process in processes:
+            stop(process)
+
+
+def parts_of(event):
+    return [p for p in event.get("parts", []) if isinstance(p, dict)] if isinstance(event, dict) else []
+
+
+def parse_invocation(invocation):
+    """(final answer text, [(tool name, arguments)]) from a kagent invocation's history and artifacts."""
+    def text_of(part):
+        text = part.get("text")
+        return text if isinstance(text, str) else ""
+    chunks = [text_of(p) for a in invocation.get("artifacts") or [] for p in parts_of(a)]
+    answer = "\n".join(c for c in chunks if c)
+    if not answer:
+        for event in reversed(invocation.get("history", [])):
+            answer = "\n".join(t for t in map(text_of, parts_of(event)) if t)
+            if answer:
+                break
+    calls = []
+    for event in invocation.get("history", []):
+        for part in parts_of(event):
+            data = part.get("data")
+            if isinstance(data, dict) and isinstance(data.get("name"), str) and "response" not in data:
+                calls.append((data["name"], data.get("args", data.get("arguments"))))
+    return answer, calls
+
+
+def cmd_ask(args):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    raw = STATE / "evidence" / f"ask-{args.agent}-{stamp}.json"
+    with port_forward("lndops-kagent", "service/kagent-controller", 8083) as port:
+        # ops/kagent-cli caches its binary under XDG_STATE_HOME; point that at the lab state dir.
+        result = run([REPO / "ops/kagent-cli", "--kagent-url", f"http://127.0.0.1:{port}", "--namespace", "lndops-kagent",
+                      "invoke", "--agent", args.agent, "--task", args.question, "--timeout", "8m"],
+                     timeout=600, extra_env={"XDG_STATE_HOME": str(STATE / "xdg")})
+    write_private(raw, result)
+    try:
+        invocation = json.loads(result)
+    except ValueError:
+        raise LabError(f"kagent-cli did not return JSON; raw output saved to {raw}") from None
+    answer, calls = parse_invocation(invocation)
+    print("== tool calls")
+    for name, arguments in calls:
+        print(f"  {name} {json.dumps(arguments, sort_keys=True)}")
+    if not calls:
+        print("  (none)")
+    print("== final answer")
+    print(answer or "(no answer text)")
+    print(f"\nraw JSON: {raw}")
+
+
+def cmd_down(args):
+    ensure_state()
+    if KUBECONFIG.is_file() or CLUSTER in run(["kind", "get", "clusters"], timeout=60).split():
+        run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", KUBECONFIG], timeout=300)
+    KUBECONFIG.unlink(missing_ok=True)
+    (STATE / "scenario").unlink(missing_ok=True)
+    if args.purge:
+        shutil.rmtree(STATE)
+        print(f"purged {STATE}")
+    else:
+        print(f"cluster deleted; evidence and secrets kept in {STATE} (use --purge to remove)")
+
+
+COMMANDS = {"up": cmd_up, "status": cmd_status, "inject": cmd_inject, "reset": cmd_reset, "ui": cmd_ui,
+            "ask": cmd_ask, "down": cmd_down}
+
+
+def model_name(value):
+    if not value.strip() or any(c.isspace() for c in value):
+        raise argparse.ArgumentTypeError("model must be a non-empty Ollama model name without whitespace")
+    return value
+
+
+def question(value):
+    if not value.strip():
+        raise argparse.ArgumentTypeError("question must not be empty")
+    return value
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("up", help="create the lab").add_argument("--model", type=model_name, default="gpt-oss:20b")
+    sub.add_parser("status", help="nodes, unready pods, scenario, firing alerts")
+    sub.add_parser("inject", help="apply a fault scenario").add_argument("scenario", choices=sorted(SCENARIOS))
+    sub.add_parser("reset", help="same as inject healthy")
+    sub.add_parser("ui", help="port-forward kagent UI, Alertmanager, Prometheus")
+    ask = sub.add_parser("ask", help="invoke an agent")
+    ask.add_argument("agent", choices=AGENTS)
+    ask.add_argument("question", type=question)
+    sub.add_parser("down", help="delete the lab").add_argument("--purge", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
+    os.umask(0o077)
+    try:
+        if args.command in GUARDED:
+            guard()
+        COMMANDS[args.command](args)
+        return 0
+    except (LabError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
