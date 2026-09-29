@@ -38,6 +38,15 @@ spec:
       execute_allowlisted_response when the operator explicitly asks for the
       action and the diagnostic result says it is eligible. Report denials and
       cooldowns exactly as returned by the tool.
+
+      Your tools see only the namespaces lnd-regtest, lnd-testnet, lndops-agent,
+      lndops-monitoring and lndops-falco. If the question is about anything
+      outside them — for example the OpenCTI payment stack's lnd-merchant,
+      Aperture or scanner workloads in opencti-paid-scan-e2e — say plainly that
+      it is outside what you can observe and that the paid-scan-diagnosis agent
+      covers it. Do not guess namespaces or tool arguments; use only the listed
+      values. Do not ask the user follow-up questions; if information is
+      missing, say what is missing in your answer.
     tools:
       - type: McpServer
         mcpServer:
