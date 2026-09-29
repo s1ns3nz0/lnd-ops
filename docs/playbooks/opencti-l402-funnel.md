@@ -150,9 +150,29 @@ Look closer when:
 - `payment_proof_mismatch` climbs: tokens presented with wrong payment proofs;
 - `restriction_failure`: expired tokens, or tokens reused for another service.
 
-The funnel can't tell *who*; that needs Aperture's security events, which
+**"Healthy" is about availability, not security.** Alerts and the verdict
+ignore rejections by design, so a large jump in rejections (for example 200×
+the usual 0–2 per 15 minutes) is found by looking, not by an alert. Treat it
+as a low-severity security investigation until there's evidence that a forged
+token succeeded.
+
+**Test competing hypotheses before acting.** They need different responses:
+
+| Hypothesis | Points to it | Test |
+|---|---|---|
+| One client stuck in a retry loop | Steady rate; the same reason over and over | Security events: one `credential_ref` or `source_ip` repeating |
+| Aperture's database or root key was reset | `unknown_credential` / `invalid_signature` start right after an Aperture restart or PVC change; legitimate customers are affected | Aperture restart time; `l402-aperture-db` PVC events. **A block here would shut out paying customers** |
+| Forgery or probing | Many distinct credentials; no link to a restart | Security events: many `credential_ref` values from few sources |
+
+The funnel can't tell *who*. That needs Aperture's security events, which
 aren't collected yet. Record the counts and time window, and block nothing on
 this signal alone. **During an outage, note it and come back after recovery.**
+
+**Don't turn on debug logs casually.** Aperture logs rejections only at
+`debug` level, and the error text includes the submitted preimage. For a
+legitimate customer's mistake, that writes their payment proof to the logs.
+Enabling it needs approval and a short time limit. Structured security events
+are the intended way to get this detail.
 
 ## 9. What the tools can't see
 
@@ -170,7 +190,8 @@ this signal alone. **During an outage, note it and come back after recovery.**
 ## 10. Known gaps
 
 - Alerts reach only the Alertmanager UI. No notification channel has been chosen yet.
-- No security-event collection.
+- No security-event collection, so no per-source or per-credential correlation. The fork branch `feat/l402-security-events` provides the events; collection is the missing step.
+- No baseline for normal rejection rates; "usually 0–2" lives only in people's heads.
 - No MPP metrics.
 - No pricer metric.
 - Disabling L402 for new orders is a config change and restart, not a switch.
@@ -208,3 +229,22 @@ this signal alone. **During an outage, note it and come back after recovery.**
    fix the cause and let it restart.
 6. **Verify:** `challenges_issued` rises, customers get a 402 with an invoice,
    and the verdict becomes `healthy`.
+
+## Worked example: rejection spike at night (tabletop 3)
+
+1. **Morning check (02:10):** `verdict: healthy`, no alerts, `accepted: 5`,
+   `challenges_issued: 41`, but `rejected: {"invalid_signature": 212,
+   "unknown_credential": 187, "malformed_identifier": 3}`, against a usual 0–2.
+2. **Impact:** paying customers get through, so there's no availability
+   incident. The jump is 200× normal, so open a low-severity security
+   investigation.
+3. **Hypotheses:** a retry loop, an Aperture database or root key reset, or
+   forgery. Check first whether Aperture restarted or its PVC changed. If so,
+   a reset is likely and legitimate customers are affected.
+4. **Don't block.** There's nothing to block by, and under the reset
+   hypothesis a block shuts out paying customers. Watch `secret_store_error`
+   in case the lookups load the store.
+5. **Escalate** to whoever handles security, with counts and time windows.
+6. **Lesson:** the metrics detected the problem, but only per-request
+   security events can tell the three hypotheses apart. This exercise is why
+   security-event collection is the next monitoring slice.
