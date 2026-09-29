@@ -383,7 +383,8 @@ def deployment(name, command, extra_pod=None, extra_container=None, replicas=1):
                  "resources": {"requests": {"cpu": "5m", "memory": "16Mi"}, "limits": {"memory": "128Mi"}},
                  "readinessProbe": {"exec": {"command": ["true"]}, "periodSeconds": 5}, **(extra_container or {})}
     return {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "namespace": APP_NS, "labels": labels},
-            "spec": {"replicas": replicas, "selector": {"matchLabels": labels},
+            "spec": {"replicas": replicas, **({} if name == APERTURE else {"strategy": {"type": "Recreate"}}),
+                     "selector": {"matchLabels": labels},
                      "template": {"metadata": {"labels": labels}, "spec": {"containers": [container], **(extra_pod or {})}}}}
 
 
@@ -500,22 +501,109 @@ def restore_workloads():
     for name in DUMMIES:
         kubectl("-n", APP_NS, "patch", f"deployment/{name}", "-p", command_patch(HEALTHY_CMD))
     kubectl("-n", APP_NS, "scale", f"deployment/{APERTURE}", "--replicas=1")
+    for name in DUMMIES:
+        kubectl("-n", APP_NS, "rollout", "status", f"deployment/{name}", "--timeout=120s", timeout=150)
+        print(f"restored: {name} ready")
 
 
-def apply_scenario(name):
+def fault_active(name):
+    """True once the Deployment has no ready replica and a pod is crashing (restart, CrashLoopBackOff or Error)."""
+    if kubectl_json("-n", APP_NS, "get", "deployment", name)["status"].get("readyReplicas"):
+        return False
+    pods = kubectl_json("-n", APP_NS, "get", "pods", "-l", f"app.kubernetes.io/name={name}")["items"]
+    return any(c.get("restartCount", 0) >= 1 or c.get("state", {}).get("waiting", {}).get("reason") in ("CrashLoopBackOff", "Error")
+               for pod in pods for c in pod["status"].get("containerStatuses", []))
+
+
+def break_workload(name):
+    kubectl("-n", APP_NS, "patch", f"deployment/{name}", "-p", command_patch(BROKEN_CMD))
+    wait_for(f"{name} to be down (ready 0, crashing)", lambda: fault_active(name), 120, 3)
+    print(f"fault active: {name} ready 0/1")
+
+
+# --- funnel verdict, and the 15-minute window that scenarios bleed through ----------------------------------
+FUNNEL_CLIENT = ("import sys,urllib.request;r=urllib.request.Request('http://127.0.0.1:8080/mcp',data=sys.argv[1].encode(),"
+                 "headers={'Content-Type':'application/json','Accept':'application/json'},method='POST');"
+                 "print(urllib.request.urlopen(r,timeout=30).read().decode())")
+FUNNEL_CALL = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "diagnose_l402_funnel", "arguments": {}}})
+WINDOW_SECONDS = 15 * 60 + 30
+LEFT_FILE = "left-fault"
+
+
+def funnel_state():
+    """(verdict, challenges_issued) from the paid-scan MCP tool, via the diagnostics pod like exercise-phase7-agent."""
+    out = kubectl("-n", "lndops-agent", "exec", "deploy/paid-scan-diagnostics", "-c", "gateway", "--",
+                  "python3", "-c", FUNNEL_CLIENT, FUNNEL_CALL)
+    reply = json.loads(out)
+    if "error" in reply:
+        raise LabError(f"diagnose_l402_funnel: {reply['error'].get('message')}")
+    result = json.loads(reply["result"]["content"][0]["text"])
+    return result.get("verdict"), result.get("challenges_issued") or 0
+
+
+def wait_funnel_healthy(timeout=360, interval=15):
+    last = []
+
+    def healthy():
+        last[:] = [funnel_state()]
+        return last[0][0] == "healthy" and last[0][1] >= 1
+    try:
+        wait_for("the funnel verdict to be healthy", healthy, timeout, interval)
+    except LabError as exc:
+        raise LabError(f"{exc} (last seen verdict/challenges_issued: {last[0] if last else 'no answer'})") from None
+    print(f"ok: funnel verdict healthy (challenges_issued={last[0][1]})", flush=True)
+
+
+def read_scenario():
+    path = STATE / "scenario"
+    return path.read_text().strip() if path.is_file() else None
+
+
+def window_remaining():
+    try:
+        return float((STATE / LEFT_FILE).read_text()) + WINDOW_SECONDS - time.time()
+    except (OSError, ValueError):
+        return 0.0
+
+
+def wait_window():
+    remaining = window_remaining()
+    while remaining > 0:
+        minutes, seconds = divmod(int(remaining + .999), 60)
+        print(f"previous scenario still inside the 15-minute window: waiting {minutes} min {seconds} s (use --force to skip)",
+              flush=True)
+        time.sleep(min(60, remaining))
+        remaining = window_remaining()
+
+
+def settle_previous():
+    """Before a fault: drain the old scenario's metrics from the alert windows and confirm the funnel is clean."""
+    if not (STATE / LEFT_FILE).is_file():
+        return
+    kubectl("-n", APP_NS, "rollout", "status", f"deployment/{APERTURE}", "--timeout=3m", timeout=210)
+    set_rates(HEALTHY_RATES)  # stop feeding the old fault while the window drains
+    wait_window()
+    wait_funnel_healthy(timeout=180)
+
+
+def apply_scenario(name, force=False):
     scenario = SCENARIOS[name]
+    previous = read_scenario()
     restore_workloads()
+    if previous not in (None, "healthy"):
+        write_private(STATE / LEFT_FILE, f"{time.time()}\n")
+    if name != "healthy" and not force:
+        settle_previous()
     for broken in scenario["broken"]:
-        kubectl("-n", APP_NS, "patch", f"deployment/{broken}", "-p", command_patch(BROKEN_CMD))
+        break_workload(broken)
     if scenario["replicas"] == 0:
         kubectl("-n", APP_NS, "scale", f"deployment/{APERTURE}", "--replicas=0")
     else:
         kubectl("-n", APP_NS, "rollout", "status", f"deployment/{APERTURE}", "--timeout=3m", timeout=210)
         set_rates(scenario["rates"])
-    for dummy in DUMMIES:
-        if dummy not in scenario["broken"]:
-            kubectl("-n", APP_NS, "rollout", "status", f"deployment/{dummy}", "--timeout=3m", timeout=210)
     write_private(STATE / "scenario", name + "\n")
+    return previous
 
 
 def describe(name):
@@ -523,6 +611,8 @@ def describe(name):
     print(f"scenario {name}: {s['summary']}")
     print(f"  expected alert : {s['alert'] or 'none'}")
     print(f"  timing         : {s['timing']}")
+    if name != "healthy":
+        print("  (injecting after another fault first waits out its 15-minute window; --force skips that)")
     print(f"  compare with   : {PLAYBOOK}  ->  {s['section']}")
     print("  next           : ops/rehearsal-lab status | ui | ask paid-scan-diagnosis \"Is the L402 payment gate healthy?\"")
 
@@ -536,6 +626,7 @@ def step_baseline():
             return bool(http_json(url)["data"]["result"])
     wait_for("Prometheus to scrape the aperture target", scraped, 300, 5)
     print("ok: baseline traffic seeded and up{job=\"aperture\"} == 1")
+    wait_funnel_healthy()
 
 
 # --- commands ------------------------------------------------------------------------------------------------
@@ -576,6 +667,9 @@ def cmd_status(args):
                 print(f"not ready: {namespace}/{pod['metadata']['name']} ({pod['status'].get('phase')})")
     scenario = STATE / "scenario"
     print("scenario:", scenario.read_text().strip() if scenario.is_file() else "none injected")
+    if window_remaining() > 0:
+        minutes, seconds = divmod(int(window_remaining()), 60)
+        print(f"previous fault window: {minutes} min {seconds} s left before the next fault injects cleanly")
     with port_forward("lndops-monitoring", f"service/{AM_SVC}", 9093) as port:
         alerts = http_json(f"http://127.0.0.1:{port}/api/v2/alerts?active=true&silenced=false&inhibited=false")
     print(f"firing alerts: {len(alerts)}")
@@ -585,8 +679,14 @@ def cmd_status(args):
 
 
 def cmd_inject(args):
-    apply_scenario(args.scenario)
+    previous = apply_scenario(args.scenario, getattr(args, "force", False))
     describe(args.scenario)
+    if args.scenario != "healthy":
+        return
+    if previous == "metrics-absent":
+        wait_funnel_healthy()
+    else:
+        print("alerts and the funnel verdict settle within ~15 min")
 
 
 def cmd_reset(args):
@@ -632,9 +732,10 @@ def parse_invocation(invocation):
     answer = "\n".join(c for c in chunks if c)
     if not answer:
         for event in reversed(invocation.get("history", [])):
-            answer = "\n".join(t for t in map(text_of, parts_of(event)) if t)
-            if answer:
-                break
+            if isinstance(event, dict) and event.get("role") == "agent":  # never echo the user's own message
+                answer = "\n".join(t for t in map(text_of, parts_of(event)) if t)
+                if answer:
+                    break
     calls = []
     for event in invocation.get("history", []):
         for part in parts_of(event):
@@ -642,6 +743,12 @@ def parse_invocation(invocation):
             if isinstance(data, dict) and isinstance(data.get("name"), str) and "response" not in data:
                 calls.append((data["name"], data.get("args", data.get("arguments"))))
     return answer, calls
+
+
+def task_state(invocation):
+    status = invocation.get("status")
+    state = status.get("state") if isinstance(status, dict) else status
+    return state if isinstance(state, str) and state else "unknown"
 
 
 def cmd_ask(args):
@@ -658,14 +765,18 @@ def cmd_ask(args):
     except ValueError:
         raise LabError(f"kagent-cli did not return JSON; raw output saved to {raw}") from None
     answer, calls = parse_invocation(invocation)
+    state = task_state(invocation)
+    print(f"task state: {state}")
     print("== tool calls")
     for name, arguments in calls:
         print(f"  {name} {json.dumps(arguments, sort_keys=True)}")
     if not calls:
         print("  (none)")
     print("== final answer")
-    print(answer or "(no answer text)")
+    print(answer or f"no agent answer (task {state})")
     print(f"\nraw JSON: {raw}")
+    if state != "completed":
+        raise LabError(f"task {state}, not completed")
 
 
 def cmd_down(args):
@@ -702,7 +813,9 @@ def parse_args(argv):
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("up", help="create the lab").add_argument("--model", type=model_name, default="gpt-oss:20b")
     sub.add_parser("status", help="nodes, unready pods, scenario, firing alerts")
-    sub.add_parser("inject", help="apply a fault scenario").add_argument("scenario", choices=sorted(SCENARIOS))
+    inject = sub.add_parser("inject", help="apply a fault scenario")
+    inject.add_argument("scenario", choices=sorted(SCENARIOS))
+    inject.add_argument("--force", action="store_true", help="skip waiting for the previous scenario's 15-minute window")
     sub.add_parser("reset", help="same as inject healthy")
     sub.add_parser("ui", help="port-forward kagent UI, Alertmanager, Prometheus")
     ask = sub.add_parser("ask", help="invoke an agent")

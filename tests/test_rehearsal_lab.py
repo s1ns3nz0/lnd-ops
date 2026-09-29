@@ -154,8 +154,130 @@ class ScenarioTest(unittest.TestCase):
         inv = {"history": [
             {"parts": [{"data": {"name": "diagnose_l402_funnel", "args": {}}}]},
             {"parts": [{"data": {"name": "diagnose_l402_funnel", "response": {"content": []}}}]},
-            {"parts": [{"text": "all healthy"}]}]}
+            {"role": "agent", "parts": [{"text": "all healthy"}]}]}
         self.assertEqual(lab.parse_invocation(inv), ("all healthy", [("diagnose_l402_funnel", {})]))
+
+
+class FakeTime:
+    def __init__(self):
+        self.now = 1000.0
+        self.slept = []
+
+    def time(self):
+        return self.now
+
+    monotonic = time
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def funnel_reply(verdict, issued):
+    text = json.dumps({"verdict": verdict, "challenges_issued": issued})
+    return json.dumps({"result": {"content": [{"type": "text", "text": text}]}})
+
+
+class FaultAndWaitTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = FakeTime()
+        for patch in (mock.patch.object(lab, "STATE", pathlib.Path(self.tmp.name)),
+                      mock.patch.object(lab, "time", self.clock), mock.patch("builtins.print")):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_dummies_recreate_aperture_does_not(self):
+        for o in lab.workload_objects():
+            if o["kind"] == "Deployment":
+                strategy = o["spec"].get("strategy")
+                self.assertEqual(strategy, None if o["metadata"]["name"] == lab.APERTURE else {"type": "Recreate"})
+
+    def test_break_waits_for_crash(self):
+        deploy = {"status": {}}
+        pods = {"items": [{"status": {"containerStatuses": [{"restartCount": 1}]}}]}
+        with mock.patch.object(lab, "kubectl") as kubectl, \
+                mock.patch.object(lab, "kubectl_json", side_effect=[{"status": {"readyReplicas": 1}}, deploy, pods]):
+            lab.break_workload("lnd-merchant")
+        self.assertIn("patch", kubectl.call_args.args)
+        self.assertEqual(self.clock.slept, [3])
+
+    def test_break_fails_when_never_down(self):
+        with mock.patch.object(lab, "kubectl"), \
+                mock.patch.object(lab, "kubectl_json", return_value={"status": {"readyReplicas": 1}}):
+            with self.assertRaises(lab.LabError):
+                lab.break_workload("lnd-merchant")
+
+    def test_restore_waits_for_each_rollout(self):
+        with mock.patch.object(lab, "kubectl") as kubectl:
+            lab.restore_workloads()
+        rollouts = [c.args for c in kubectl.call_args_list if "rollout" in c.args]
+        self.assertEqual([a[-2] for a in rollouts], [f"deployment/{n}" for n in lab.DUMMIES])
+        self.assertTrue(all(a[-1] == "--timeout=120s" for a in rollouts))
+
+    def test_funnel_wait_polls_until_healthy(self):
+        replies = [funnel_reply("no_l402_traffic", 0), funnel_reply("healthy", 3)]
+        with mock.patch.object(lab, "kubectl", side_effect=replies) as kubectl:
+            lab.wait_funnel_healthy()
+        self.assertEqual(self.clock.slept, [15])
+        self.assertIn("diagnose_l402_funnel", kubectl.call_args.args[-1])
+        self.assertIn("deploy/paid-scan-diagnostics", kubectl.call_args.args)
+
+    def test_funnel_wait_times_out(self):
+        with mock.patch.object(lab, "kubectl", return_value=funnel_reply("incident", 1)):
+            with self.assertRaises(lab.LabError):
+                lab.wait_funnel_healthy(timeout=30)
+
+    def test_stage9_waits_for_funnel(self):
+        with mock.patch.object(lab, "apply_scenario"), mock.patch.object(lab, "wait_for"), \
+                mock.patch.object(lab, "wait_funnel_healthy") as wait:
+            lab.step_baseline()
+        wait.assert_called_once_with()
+
+    def test_window_wait_and_force(self):
+        (lab.STATE / "scenario").write_text("invoice-failure\n")
+        calls = []
+        with mock.patch.object(lab, "restore_workloads"), mock.patch.object(lab, "kubectl"), \
+                mock.patch.object(lab, "set_rates"), \
+                mock.patch.object(lab, "wait_funnel_healthy", side_effect=lambda **k: calls.append(k)), \
+                mock.patch.object(lab, "break_workload"):
+            self.assertEqual(lab.apply_scenario("pricer-down"), "invoice-failure")
+            self.assertAlmostEqual(sum(self.clock.slept), lab.WINDOW_SECONDS, delta=1)
+            self.assertEqual(calls, [{"timeout": 180}])
+            (lab.STATE / "scenario").write_text("invoice-failure\n")
+            self.clock.slept.clear()
+            lab.apply_scenario("pricer-down", force=True)
+            self.assertEqual(self.clock.slept, [])
+            self.assertEqual(len(calls), 1)
+
+    def test_no_wait_from_healthy(self):
+        (lab.STATE / "scenario").write_text("healthy\n")
+        with mock.patch.object(lab, "restore_workloads"), mock.patch.object(lab, "kubectl"), \
+                mock.patch.object(lab, "set_rates"), mock.patch.object(lab, "break_workload"):
+            lab.apply_scenario("pricer-down")
+        self.assertEqual(self.clock.slept, [])
+
+    def test_reset_waits_for_funnel_only_after_metrics_absent(self):
+        args = mock.Mock(scenario="healthy", force=False)
+        for previous, waits in (("metrics-absent", 1), ("pricer-down", 0)):
+            with mock.patch.object(lab, "apply_scenario", return_value=previous), \
+                    mock.patch.object(lab, "wait_funnel_healthy") as wait:
+                lab.cmd_inject(args)
+            self.assertEqual(wait.call_count, waits)
+
+    def test_ask_failed_task_never_echoes_user_text(self):
+        inv = {"status": {"state": "failed"}, "artifacts": None, "history": [
+            {"role": "user", "parts": [{"text": "Is it healthy?"}]},
+            {"role": "user", "parts": [{"text": "again"}]},
+            {"role": "agent", "parts": [{"data": {"name": "diagnose_l402_funnel", "args": {}}}]}]}
+        self.assertEqual(lab.parse_invocation(inv), ("", [("diagnose_l402_funnel", {})]))
+        self.assertEqual(lab.task_state(inv), "failed")
+        self.assertEqual(lab.task_state({"status": "completed"}), "completed")
+        with mock.patch.object(lab, "port_forward"), mock.patch.object(lab, "write_private"), \
+                mock.patch.object(lab, "run", return_value=json.dumps(inv)):
+            with self.assertRaises(lab.LabError):
+                lab.cmd_ask(mock.Mock(agent="paid-scan-diagnosis", question="q"))
 
 
 class GuardTest(unittest.TestCase):
