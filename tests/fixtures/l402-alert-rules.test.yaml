@@ -1,0 +1,63 @@
+# promtool `test rules` cases for the opencti-l402 group (Aperture pre-initializes all label series at 0).
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  - name: pricer dead, tokenless requests, no invoices
+    interval: 1m
+    input_series:
+      - {series: 'up{job="aperture"}', values: '1x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}', values: '0x30'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0x30'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="challenge_failed"}', values: '0x30'}
+    alert_rule_test:
+      - {eval_time: 15m, alertname: OpenCTIL402RequestsWithoutInvoice, exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Requests arrive without an L402 token but Aperture issues no invoices", playbook: docs/playbooks/opencti-l402-funnel.md}}]}
+      - {eval_time: 15m, alertname: OpenCTIL402InvoiceIssuanceFailing, exp_alerts: []}
+      - {eval_time: 15m, alertname: OpenCTIL402SecretStoreFailing, exp_alerts: []}
+      - {eval_time: 15m, alertname: OpenCTIL402MetricsAbsent, exp_alerts: []}
+  - name: mint failure fires issuance alert, not the no-invoice one
+    interval: 1m
+    input_series:
+      - {series: 'up{job="aperture"}', values: '1x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0x30'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="challenge_failed"}', values: '0 0 0 0 0 0 0 0 0 0 2+0x20'}
+    alert_rule_test:
+      - {eval_time: 15m, alertname: OpenCTIL402InvoiceIssuanceFailing, exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Aperture failed to mint L402 invoices; paying customers cannot get an invoice", playbook: docs/playbooks/opencti-l402-funnel.md}}]}
+      - {eval_time: 15m, alertname: OpenCTIL402RequestsWithoutInvoice, exp_alerts: []}
+  - name: normal traffic is silent
+    interval: 1m
+    input_series:
+      - {series: 'up{job="aperture"}', values: '1x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}', values: '0x30'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="challenge_failed"}', values: '0x30'}
+    alert_rule_test:
+      - {eval_time: 15m, alertname: OpenCTIL402RequestsWithoutInvoice, exp_alerts: []}
+      - {eval_time: 15m, alertname: OpenCTIL402InvoiceIssuanceFailing, exp_alerts: []}
+      - {eval_time: 15m, alertname: OpenCTIL402SecretStoreFailing, exp_alerts: []}
+      - {eval_time: 15m, alertname: OpenCTIL402MetricsAbsent, exp_alerts: []}
+  - name: single tokenless request is below the threshold
+    interval: 1m
+    input_series:
+      - {series: 'up{job="aperture"}', values: '1x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 1+0x20'}
+      - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0x30'}
+    alert_rule_test:
+      - {eval_time: 15m, alertname: OpenCTIL402RequestsWithoutInvoice, exp_alerts: []}
+  - name: missing up fires metrics absent after 10m
+    interval: 1m
+    input_series:
+      - {series: 'aperture_l402_mint_total{job="other",result="ok"}', values: '0x30'}
+    alert_rule_test:
+      - {eval_time: 5m, alertname: OpenCTIL402MetricsAbsent, exp_alerts: []}
+      - {eval_time: 12m, alertname: OpenCTIL402MetricsAbsent, exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "Aperture metrics are absent; the L402 payment gate is unobserved (no data is not healthy)", playbook: docs/playbooks/opencti-l402-funnel.md}}]}
+  - name: secret store lookup error
+    interval: 1m
+    input_series:
+      - {series: 'up{job="aperture"}', values: '1x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}', values: '0 0 0 0 0 0 0 0 0 0 1+0x20'}
+    alert_rule_test:
+      - {eval_time: 15m, alertname: OpenCTIL402SecretStoreFailing, exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Aperture cannot read its L402 secret store; token verification is failing", playbook: docs/playbooks/opencti-l402-funnel.md}}]}

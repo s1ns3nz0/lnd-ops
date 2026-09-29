@@ -94,6 +94,8 @@ jobs:
           docker run --rm --network none -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
             python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 \
             python3 -m unittest discover -s tests -p test_paid_scan_diagnostics.py
+      - name: Evaluate L402 alert rules in pinned Prometheus
+        run: python3 tests/integration_l402_alert_rules.py
       - name: Render both profiles in pinned Linux Helm image
         run: |
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml
