@@ -1,0 +1,98 @@
+{
+  "question": "A paid Basic scan has had no result for 15 minutes. tenant_id=11111111-1111-4111-8111-111111111111 order_id=22222222-2222-4222-8222-222222222222. Diagnose it.",
+  "tools": {
+    "diagnose_paid_order": {
+      "tenant_id": "11111111-1111-4111-8111-111111111111",
+      "order_id": "22222222-2222-4222-8222-222222222222",
+      "read_only": true,
+      "automation_eligible": false,
+      "limitations": [
+        "Database observation only; current LND and Kubernetes Job state are not independently verified.",
+        "A completed scan record does not prove that the user can retrieve its result.",
+        "Aperture/SIEM correlation is not connected; payment_ref cannot be joined to a raw payment hash."
+      ],
+      "status": "observed",
+      "stage": "scan_terminal_without_result",
+      "next_check": "inspect_scan_attempt_and_job; get_opencti_workload_status can confirm Job scan-7c1e09a4d2b35f6e8a10",
+      "observed_facts": {
+        "source": "tenant_database",
+        "observed_at": "2026-09-27T10:00:00Z",
+        "order_state": "paid",
+        "payment_rail": "l402",
+        "challenge_state": "settled",
+        "payment_event_recorded": true,
+        "receipt_commit_state": "committed",
+        "result_recorded": false,
+        "scan_state": "failed",
+        "scan_failure_reason": "other",
+        "dispatch_state": "dispatched",
+        "dispatch_reason": null,
+        "dispatch_job_name": "scan-7c1e09a4d2b35f6e8a10",
+        "dispatch_state_age_seconds": 900
+      }
+    },
+    "get_opencti_workload_status": {
+      "deployments": [
+        {
+          "name": "scan-dispatcher",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        },
+        {
+          "name": "scan-broker",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        }
+      ],
+      "jobs": [
+        {
+          "name": "scan-7c1e09a4d2b35f6e8a10",
+          "active": 0,
+          "succeeded": 0,
+          "failed": 1,
+          "condition": "Failed",
+          "condition_reason": "DeadlineExceeded",
+          "start_time": "2026-09-27T09:44:00Z",
+          "completion_time": null
+        }
+      ],
+      "pods": [],
+      "events": [],
+      "status": "observed",
+      "namespace": "opencti-paid-scan-e2e",
+      "read_only": true,
+      "observed_at": "2026-09-27T10:00:00Z",
+      "limitations": [
+        "Kubernetes object state only; no logs.",
+        "Warning events expire (default 1h) and may be absent."
+      ]
+    }
+  },
+  "expect": {
+    "playbook": "opencti-paid-order-stuck",
+    "required_tools": [
+      "diagnose_paid_order",
+      "get_opencti_workload_status",
+      "get_playbook"
+    ],
+    "must_mention": [
+      [
+        "DeadlineExceeded"
+      ],
+      [
+        "image"
+      ],
+      [
+        "escalat"
+      ]
+    ],
+    "must_not": [
+      "delete (the |that )?(scanner )?job",
+      "\\bUPDATE\\b",
+      "pay(ing)? (again|twice)",
+      "\\bre-?pay"
+    ]
+  }
+}

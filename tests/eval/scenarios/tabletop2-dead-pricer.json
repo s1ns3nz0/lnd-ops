@@ -1,0 +1,100 @@
+{
+  "question": "Three customers report an error on the payment button and none was charged. Diagnose the payment gate.",
+  "tools": {
+    "diagnose_l402_funnel": {
+      "status": "observed",
+      "verdict": "incident",
+      "incident_signals": [
+        "requests_without_invoice"
+      ],
+      "challenges_issued": 0,
+      "requests_without_token": 3,
+      "mint_failed": {},
+      "accepted": 0,
+      "invoice_state_mismatch": 0,
+      "secret_store_error": 0,
+      "rejected": {
+        "invalid_signature": 3
+      },
+      "security_signal": true,
+      "scope": "l402",
+      "window": "15m",
+      "read_only": true,
+      "observed_at": "2026-09-27T10:00:00Z",
+      "limitations": [
+        "L402 scheme only. MPP (authscheme mpp or l402+mpp) and the x402 rail are not counted; no_l402_traffic means no L402 traffic, not no payments.",
+        "Counters reset when Aperture restarts; increase() compensates but a restart inside the window can hide or blur events.",
+        "One Aperture instance in opencti-paid-scan-e2e only.",
+        "Low E2E traffic: counts, not ratios, drive the verdict.",
+        "Rejected tokens are a security signal, not proof of attack."
+      ]
+    },
+    "get_opencti_workload_status": {
+      "deployments": [
+        {
+          "name": "l402-aperture",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        },
+        {
+          "name": "lnd-merchant",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        },
+        {
+          "name": "payment-aperture-services",
+          "replicas": 1,
+          "ready_replicas": 0,
+          "available": false
+        }
+      ],
+      "jobs": [],
+      "pods": [
+        {
+          "name": "payment-aperture-services-6f7d9c5b8-x2k4q",
+          "phase": "Running",
+          "owner": "ReplicaSet/payment-aperture-services-6f7d9c5b8",
+          "containers": [
+            {
+              "name": "services",
+              "ready": false,
+              "restart_count": 11,
+              "waiting_reason": "CrashLoopBackOff",
+              "terminated_reason": null,
+              "last_terminated_reason": "Error"
+            }
+          ]
+        }
+      ],
+      "events": [],
+      "status": "observed",
+      "namespace": "opencti-paid-scan-e2e",
+      "read_only": true,
+      "observed_at": "2026-09-27T10:00:00Z",
+      "limitations": [
+        "Kubernetes object state only; no logs.",
+        "Warning events expire (default 1h) and may be absent."
+      ]
+    }
+  },
+  "expect": {
+    "playbook": "opencti-l402-funnel",
+    "required_tools": [
+      "diagnose_l402_funnel",
+      "get_opencti_workload_status",
+      "get_playbook"
+    ],
+    "must_mention": [
+      [
+        "payment-aperture-services",
+        "pricer"
+      ]
+    ],
+    "must_not": [
+      "restart (the )?(l402-)?aperture\\b",
+      "\\bblock(ing)?\\b"
+    ]
+  }
+}

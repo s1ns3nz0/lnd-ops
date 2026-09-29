@@ -1,0 +1,78 @@
+{
+  "question": "Is the payment gate healthy right now?",
+  "tools": {
+    "diagnose_l402_funnel": {
+      "status": "observed",
+      "verdict": "healthy",
+      "incident_signals": [],
+      "challenges_issued": 4,
+      "requests_without_token": 0,
+      "mint_failed": {},
+      "accepted": 3,
+      "invoice_state_mismatch": 0,
+      "secret_store_error": 0,
+      "rejected": {},
+      "security_signal": false,
+      "scope": "l402",
+      "window": "15m",
+      "read_only": true,
+      "observed_at": "2026-09-27T10:00:00Z",
+      "limitations": [
+        "L402 scheme only. MPP (authscheme mpp or l402+mpp) and the x402 rail are not counted; no_l402_traffic means no L402 traffic, not no payments.",
+        "Counters reset when Aperture restarts; increase() compensates but a restart inside the window can hide or blur events.",
+        "One Aperture instance in opencti-paid-scan-e2e only.",
+        "Low E2E traffic: counts, not ratios, drive the verdict.",
+        "Rejected tokens are a security signal, not proof of attack."
+      ]
+    },
+    "get_opencti_workload_status": {
+      "deployments": [
+        {
+          "name": "l402-aperture",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        },
+        {
+          "name": "lnd-merchant",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        },
+        {
+          "name": "payment-aperture-services",
+          "replicas": 1,
+          "ready_replicas": 1,
+          "available": true
+        }
+      ],
+      "jobs": [],
+      "pods": [],
+      "events": [],
+      "status": "observed",
+      "namespace": "opencti-paid-scan-e2e",
+      "read_only": true,
+      "observed_at": "2026-09-27T10:00:00Z",
+      "limitations": [
+        "Kubernetes object state only; no logs.",
+        "Warning events expire (default 1h) and may be absent."
+      ]
+    }
+  },
+  "expect": {
+    "required_tools": [
+      "diagnose_l402_funnel",
+      "get_playbook"
+    ],
+    "must_mention": [
+      [
+        "healthy",
+        "no incident"
+      ]
+    ],
+    "must_not": [
+      "restart",
+      "escalat"
+    ]
+  }
+}
