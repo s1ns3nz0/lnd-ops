@@ -66,7 +66,8 @@ security-event reasons.
 | `verdict` | `incident`, `inconclusive`, `no_l402_traffic` or `healthy`, over the last 15 minutes |
 | `incident_signals` | Why it's an incident |
 | counts | `requests_without_token`, `challenges_issued`, `accepted`, `invoice_state_mismatch`, `rejected{reason}` |
-| `security_signal` | `true` when any token was rejected. It never changes the verdict (step 8) |
+| `rejected_total`, `rejected_baseline_per_15m` | Rejections in the window, and the per-15-minute average of the previous 24 hours (excluding the window) |
+| `security_signal` | `none` (no rejections), `present` (rejections, not unusual) or `elevated` (at least 20 and 10x the baseline, or any 20+ when the baseline is 0). It never changes the verdict (step 8) |
 
 **Counts, not ratios:** E2E traffic is a handful of payments, and one unpaid
 invoice would swing a conversion ratio wildly. Any mint failure or store error
@@ -152,10 +153,10 @@ Look closer when:
 - `restriction_failure`: expired tokens, or tokens reused for another service.
 
 **"Healthy" is about availability, not security.** Alerts and the verdict
-ignore rejections by design, so a large jump in rejections (for example 200×
-the usual 0–2 per 15 minutes) is found by looking, not by an alert. Treat it
-as a low-severity security investigation until there's evidence that a forged
-token succeeded.
+ignore rejections by design, so a jump in rejections is found by looking, not
+by an alert. When `security_signal` is `elevated`, treat it as a low-severity
+security investigation until there's evidence that a forged token succeeded.
+`present` means rejections exist but are not unusual.
 
 **Test competing hypotheses before acting.** They need different responses:
 
@@ -192,7 +193,7 @@ are the intended way to get this detail.
 
 - Alerts reach only the Alertmanager UI. No notification channel has been chosen yet.
 - No security-event collection, so no per-source or per-credential correlation. The fork branch `feat/l402-security-events` provides the events; collection is the missing step.
-- No baseline for normal rejection rates; "usually 0–2" lives only in people's heads.
+- The rejection baseline is only a 24-hour average and resets with Prometheus retention; after a restart or on a new deployment it may be low or zero.
 - No MPP metrics.
 - No pricer metric.
 - Disabling L402 for new orders is a config change and restart, not a switch.
@@ -224,7 +225,7 @@ are the intended way to get this detail.
 3. **Workload:** `l402-aperture` and `lnd-merchant` are ready.
    `payment-aperture-services` shows `ready_replicas: 0`, `CrashLoopBackOff`
    and `restart_count: 11`.
-4. **Side signal:** `rejected: {"invalid_signature": 3}`. Note it and move on;
+4. **Side signal:** `security_signal: present` (`rejected: {"invalid_signature": 3}`). Note it and move on;
    don't chase it mid-outage.
 5. **Fix:** check `kubectl logs deploy/payment-aperture-services --previous`,
    fix the cause and let it restart.
@@ -235,9 +236,10 @@ are the intended way to get this detail.
 
 1. **Morning check (02:10):** `verdict: healthy`, no alerts, `accepted: 5`,
    `challenges_issued: 41`, but `rejected: {"invalid_signature": 212,
-   "unknown_credential": 187, "malformed_identifier": 3}`, against a usual 0–2.
+   "unknown_credential": 187, "malformed_identifier": 3}`, `rejected_total: 402`,
+   `rejected_baseline_per_15m: 1.5` and `security_signal: elevated`.
 2. **Impact:** paying customers get through, so there's no availability
-   incident. The jump is 200× normal, so open a low-severity security
+   incident. `security_signal` is `elevated`, so open a low-severity security
    investigation.
 3. **Hypotheses:** a retry loop, an Aperture database or root key reset, or
    forgery. Check first whether Aperture restarted or its PVC changed. If so,

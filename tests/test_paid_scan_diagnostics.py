@@ -481,14 +481,14 @@ class FunnelTests(unittest.TestCase):
         self.assertEqual((r['challenges_issued'], r['accepted']), (4, 3))
         self.assertEqual(r['incident_signals'], [])
         self.assertEqual((r['window'], r['read_only'], r['observed_at']), ('15m', True, '2026-09-27T10:00:00Z'))
-        self.assertEqual(len(r['limitations']), 5)
+        self.assertEqual(len(r['limitations']), 6)
         self.assertTrue(r['limitations'][0].startswith('L402 scheme only. MPP'))
         self.assertEqual(r['scope'], 'l402')
 
     def test_no_l402_traffic_is_not_a_fault(self):
         r = self.run_funnel()
         self.assertEqual(r['verdict'], 'no_l402_traffic')
-        self.assertEqual((r['mint_failed'], r['rejected'], r['security_signal']), ({}, {}, False))
+        self.assertEqual((r['mint_failed'], r['rejected'], r['security_signal']), ({}, {}, 'none'))
 
     def test_unsettled_only_is_healthy(self):
         self.assertEqual(self.run_funnel({'UNSETTLED': vec(({}, 2))})['verdict'], 'healthy')
@@ -545,17 +545,51 @@ class FunnelTests(unittest.TestCase):
                          (3, 0, 0, 0))
         self.assertEqual(r['verdict'], 'healthy')
 
+    def signal(self, total, baseline=None):
+        over = {'REJECTED': vec(({'reason': 'invalid_signature'}, total))} if total else {}
+        if baseline is not None:
+            over['REJECTED_BASELINE'] = vec(({}, baseline))
+        return self.run_funnel(over)
+
+    def test_security_signal_boundaries(self):
+        cases = [(0, None, 'none'), (5, None, 'present'), (19, 0, 'present'), (20, 0, 'elevated'),
+                 (25, 0, 'elevated'), (25, 3, 'present'), (25, 2, 'elevated'), (300, 1.5, 'elevated')]
+        for total, base, want in cases:
+            self.assertEqual(self.signal(total, base)['security_signal'], want, (total, base))
+
+    def test_security_output_types(self):
+        r = self.signal(25, 1.2345)
+        self.assertEqual((r['rejected_total'], r['rejected_baseline_per_15m']), (25, 1.23))
+        self.assertIs(type(r['rejected_total']), int)
+        self.assertIs(type(r['rejected_baseline_per_15m']), float)
+        self.assertEqual(self.signal(0)['rejected_baseline_per_15m'], 0.0)
+        self.assertEqual(self.signal(25, -1)['rejected_baseline_per_15m'], 0.0)
+        self.assertIn('24 hours', ' '.join(r['limitations']))
+
+    def test_baseline_query_shape(self):
+        q = gateway.FUNNEL_QUERIES['REJECTED_BASELINE']
+        self.assertIn('[1d] offset 15m', q)
+        self.assertTrue(q.endswith('/ 96'))
+        self.assertNotIn('credential_verified', q)
+        rx = lambda x: x.split('reason=~"')[1].split('"')[0]
+        self.assertEqual(rx(q), rx(gateway.FUNNEL_QUERIES['REJECTED']))
+
+    def test_bad_baseline_fails_closed(self):
+        r = self.run_funnel({'REJECTED_BASELINE': vec(({}, 'NaN'))})
+        self.assertEqual(r, {'status': 'unknown', 'reason': 'prometheus_unavailable'})
+
     def test_security_signal_does_not_change_verdict(self):
-        r = self.run_funnel({'MINT_OK': vec(({}, 1)), 'REJECTED': vec(({'reason': 'invalid_signature'}, 5))})
-        self.assertEqual((r['verdict'], r['security_signal']), ('healthy', True))
-        r = self.run_funnel({'REJECTED': vec(({'reason': 'invalid_signature'}, 5))})
-        self.assertEqual((r['verdict'], r['security_signal']), ('healthy', True))
+        for total in (0, 5, 500):
+            r = self.signal(total, 0)
+            self.assertEqual(r['verdict'], 'healthy' if total else 'no_l402_traffic')
+        r = self.run_funnel({'MINT_OK': vec(({}, 1)), 'REJECTED': vec(({'reason': 'invalid_signature'}, 500))})
+        self.assertEqual((r['verdict'], r['security_signal']), ('healthy', 'elevated'))
 
     def test_fixed_queries_never_use_credential_verified(self):
         q = prom()
         gateway.funnel_status(None, query=q, now=NOW)
         self.assertEqual(sorted(q.seen), sorted(gateway.FUNNEL_QUERIES.values()))
-        self.assertEqual(len(q.seen), 8)
+        self.assertEqual(len(q.seen), 9)
         self.assertFalse(any('credential_verified' in x for x in q.seen))
 
     def test_pricer_failure_is_incident(self):

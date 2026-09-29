@@ -58,6 +58,8 @@ class Consistency(unittest.TestCase):
     def test_funnel_verdicts_and_signals_are_in_funnel_playbook(self):
         for word in ('incident', 'inconclusive', 'no_l402_traffic', 'healthy', 'requests_without_invoice', 'secret_store_error'):
             self.assertIn(f'`{word}`', FUNNEL_DOC)
+        for word in ('none', 'present', 'elevated', 'rejected_total', 'rejected_baseline_per_15m'):
+            self.assertIn(f'`{word}`', FUNNEL_DOC)
         for result in gw.MINT_RESULTS:
             self.assertIn(result, FUNNEL_DOC)
 

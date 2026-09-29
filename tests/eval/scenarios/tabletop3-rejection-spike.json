@@ -16,7 +16,9 @@
         "unknown_credential": 187,
         "malformed_identifier": 3
       },
-      "security_signal": true,
+      "rejected_total": 402,
+      "rejected_baseline_per_15m": 1.5,
+      "security_signal": "elevated",
       "scope": "l402",
       "window": "15m",
       "read_only": true,
@@ -26,7 +28,8 @@
         "Counters reset when Aperture restarts; increase() compensates but a restart inside the window can hide or blur events.",
         "One Aperture instance in opencti-paid-scan-e2e only.",
         "Low E2E traffic: counts, not ratios, drive the verdict.",
-        "Rejected tokens are a security signal, not proof of attack."
+        "Rejected tokens are a security signal, not proof of attack.",
+        "The rejection baseline is the average of the previous 24 hours; after a restart or on a new deployment it may be low or zero."
       ]
     },
     "get_opencti_workload_status": {

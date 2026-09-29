@@ -357,6 +357,7 @@ PROM_DEFAULT = "http://lnd-ops-monitoring-kube-pr-prometheus.lndops-monitoring.s
 PROM_MAX_BYTES = 256 * 1024
 _MINT = 'sum(increase(aperture_l402_mint_total{job="aperture",result="ok"}[15m]))'
 _V = 'aperture_l402_verify_total{job="aperture",reason%s}'
+_REJ = '=~"payment_proof_mismatch|invalid_signature|malformed_credentials|malformed_identifier|unknown_credential|restriction_failure"'
 FUNNEL_QUERIES = {
     "UP": 'max(up{job="aperture"})',
     "MINT_OK": _MINT,
@@ -365,8 +366,11 @@ FUNNEL_QUERIES = {
     "UNSETTLED": f'sum(increase({_V % "=\"invoice_state_mismatch\""}[15m]))',
     "NO_CREDENTIALS": f'sum(increase({_V % "=\"missing_credentials\""}[15m]))',
     "LOOKUP_ERROR": f'sum(increase({_V % "=\"secret_store_error\""}[15m]))',
-    "REJECTED": "sum by (reason) (increase(" + _V % '=~"payment_proof_mismatch|invalid_signature|malformed_credentials|malformed_identifier|unknown_credential|restriction_failure"' + "[15m]))",
+    "REJECTED": "sum by (reason) (increase(" + _V % _REJ + "[15m]))",
+    # 24h average per 15m window, excluding the current window
+    "REJECTED_BASELINE": "sum(increase(" + _V % _REJ + "[1d] offset 15m)) / 96",
 }
+SECURITY_MIN, SECURITY_FACTOR = 20, 10  # elevated: at least 20 rejections AND 10x the 24h per-15m baseline (or baseline 0)
 NO_INVOICE_MIN = 2  # one tokenless request may sit at the window edge before its invoice is minted
 MINT_RESULTS = frozenset({"challenge_failed", "identifier_failed", "secret_failed", "macaroon_failed", "caveat_failed"})
 REJECT_REASONS = frozenset({"payment_proof_mismatch", "invalid_signature", "malformed_credentials", "malformed_identifier",
@@ -377,6 +381,7 @@ FUNNEL_LIMITATIONS = [
     "One Aperture instance in opencti-paid-scan-e2e only.",
     "Low E2E traffic: counts, not ratios, drive the verdict.",
     "Rejected tokens are a security signal, not proof of attack.",
+    "The rejection baseline is the average of the previous 24 hours; after a restart or on a new deployment it may be low or zero.",
 ]
 
 
@@ -410,7 +415,7 @@ def prom_query(query):
             connection.close()
 
 
-def _series(rows, label=None, allowed=frozenset()):
+def _series(rows, label=None, allowed=frozenset(), whole=True):
     """Vector -> total, or {allowlisted label: total} with unknown labels folded into "other"."""
     totals = {}
     for row in rows:
@@ -425,6 +430,8 @@ def _series(rows, label=None, allowed=frozenset()):
             key = metric.get(label)
             key = key if key in allowed else "other"
         totals[key] = totals.get(key, 0.0) + number
+    if not whole:
+        return max(0.0, sum(totals.values()))
     whole = lambda x: int(max(0.0, x) + 0.5)  # round half up, clamp negatives
     if label:
         return {k: whole(v) for k, v in sorted(totals.items()) if whole(v) > 0}
@@ -445,12 +452,19 @@ def funnel_status(arguments, query=None, now=None):
         tokenless = _series(raw["NO_CREDENTIALS"])
         failed = _series(raw["MINT_FAILED"], "result", MINT_RESULTS)
         rejected = _series(raw["REJECTED"], "reason", REJECT_REASONS)
+        baseline = round(_series(raw["REJECTED_BASELINE"], whole=False), 2)
     except Exception:  # fail closed on any query/shape error; never surface raw text
         return {"status": "unknown", "reason": "prometheus_unavailable"}
     signals = [f"mint_failed:{k}" for k in failed] + (["secret_store_error"] if lookup else [])
     if tokenless >= NO_INVOICE_MIN and not issued and not failed:
         signals.append("requests_without_invoice")
     total_rejected = sum(rejected.values())
+    if not total_rejected:
+        security = "none"
+    elif total_rejected >= SECURITY_MIN and (baseline == 0 or total_rejected >= SECURITY_FACTOR * baseline):
+        security = "elevated"
+    else:
+        security = "present"
     if signals:
         verdict = "incident"
     elif not (issued or accepted or unsettled or total_rejected or tokenless):
@@ -463,7 +477,7 @@ def funnel_status(arguments, query=None, now=None):
     return {"status": "observed", "verdict": verdict, "incident_signals": signals,
             "challenges_issued": issued, "requests_without_token": tokenless, "mint_failed": failed, "accepted": accepted,
             "invoice_state_mismatch": unsettled, "secret_store_error": lookup, "rejected": rejected,
-            "security_signal": total_rejected > 0, "scope": "l402", "window": "15m", "read_only": True,
+            "rejected_total": total_rejected, "rejected_baseline_per_15m": baseline, "security_signal": security, "scope": "l402", "window": "15m", "read_only": True,
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", observed), "limitations": list(FUNNEL_LIMITATIONS)}
 
 
