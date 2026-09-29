@@ -114,6 +114,12 @@ def main(argv):
         run(["kubectl", "apply", "-f", "-"], source)
         runbooks = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-agent-runbooks",
                         "--from-file", str(REPO / "docs/runbooks/channel-inactive.md"),
+                        "--from-file", str(REPO / "docs/runbooks/router-operations.md"),
+                        "--from-file", str(REPO / "docs/runbooks/wallet-locked.md"),
+                        "--from-file", str(REPO / "docs/runbooks/chain-sync-stalled.md"),
+                        "--from-file", str(REPO / "docs/runbooks/liquidity-low.md"),
+                        "--from-file", str(REPO / "docs/runbooks/scb-backup-stale.md"),
+                        "--from-file", str(REPO / "docs/runbooks/lnd-monitoring-unavailable.md"),
                         "--from-file", str(REPO / "docs/runbooks/pod-not-ready.md"),
                         "--from-file", str(REPO / "docs/runbooks/falco-runtime-event.md"),
                         "--dry-run=client", "-o", "yaml"])

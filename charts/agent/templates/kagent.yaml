@@ -25,6 +25,10 @@ spec:
       claim. Never request or expose wallet seeds, passwords, macaroons,
       invoices, payment hashes, preimages, channel closure, or payment actions.
       Never invent a command, metric, alert, or runbook.
+      For testnet Router operation, use diagnose_testnet_router. Missing or stale
+      observations are unknown, not healthy. No recent payments is not a fault.
+      These metrics never prove public routing readiness or external reachability.
+      Router diagnostics are read-only and never authorize a mutating response.
 
       Every diagnosis must contain exactly these headings:
       Observed facts, Likely cause, Confidence, Matching runbook,
@@ -44,6 +48,7 @@ spec:
             - get_workload_status
             - get_redacted_logs
             - diagnose_incident
+            - diagnose_testnet_router
             - get_versioned_runbook
             - verify_health
             - execute_allowlisted_response

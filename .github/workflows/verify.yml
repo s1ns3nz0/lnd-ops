@@ -85,6 +85,8 @@ jobs:
           docker run --rm --platform linux/amd64 --network none -v "$PWD:/repo:ro" -w /repo \
             mcr.microsoft.com/powershell@sha256:62300a213a9293916333df2b014cd3a8f22fb0b0b65f2bb446aaf436bcf8c868 \
             pwsh -NoLogo -NoProfile -File tests/windows-router-startup.ps1
+      - name: Evaluate Router diagnostic queries in pinned Prometheus
+        run: python3 tests/integration_router_metrics.py
       - name: Test authenticated Router observer in isolated Linux container
         run: |
           docker build -f observer/Dockerfile.test -t localhost/lnd-ops-router-observer-test observer
