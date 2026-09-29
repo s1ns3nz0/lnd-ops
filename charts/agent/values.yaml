@@ -23,3 +23,6 @@ paidScan:
   podLabels: {app: paid-scan-diagnostics}
   port: 8443
   credentialSecret: paid-scan-diagnostics-client
+  # Evaluation harness: canned-scenario fixture + a second Agent with the same prompt. Off in production.
+  eval:
+    enabled: false

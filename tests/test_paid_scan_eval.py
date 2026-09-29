@@ -134,5 +134,62 @@ class ScenarioFileTests(unittest.TestCase):
                 self.assertTrue(tool == "get_playbook" or tool in data["tools"], (path.name, tool))
 
 
+def helm(*sets):
+    cmd = ["helm", "template", "r", str(ROOT / "charts/agent"), "--namespace", "lndops-agent",
+           "--set", "paidScan.enabled=true", "--set", "paidScan.origin=https://diagnostics.example:8443"]
+    for s in sets:
+        cmd += ["--set", s]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+def docs(rendered):
+    out = {}
+    for doc in re.split(r"^---\n", rendered, flags=re.M):
+        kind = re.search(r"^kind: (\S+)", doc, re.M)
+        name = re.search(r"^  name: (\S+)", doc, re.M) or re.search(r"^metadata: \{name: ([^,}]+)", doc, re.M)
+        if kind and name:
+            out[(kind.group(1), name.group(1))] = doc
+    return out
+
+
+def system_message(doc):
+    return re.search(r"systemMessage: \|\n(.*?)\n    tools:", doc, re.S).group(1)
+
+
+@unittest.skipUnless(shutil.which("helm"), "helm not installed")
+class ChartTests(unittest.TestCase):
+    def test_eval_is_off_by_default(self):
+        rendered = helm()
+        self.assertNotIn("paid-scan-eval", rendered)
+        self.assertIn(("Agent", "paid-scan-diagnosis"), docs(rendered))
+
+    def test_eval_objects_render_when_enabled(self):
+        found = docs(helm("paidScan.eval.enabled=true"))
+        for key in (("Deployment", "paid-scan-eval-fixture"), ("Service", "paid-scan-eval-fixture"),
+                    ("NetworkPolicy", "paid-scan-eval-fixture"), ("NetworkPolicy", "kagent-paid-scan-eval"),
+                    ("RemoteMCPServer", "paid-scan-eval"), ("Agent", "paid-scan-diagnosis-eval")):
+            self.assertIn(key, found)
+        deployment = found[("Deployment", "paid-scan-eval-fixture")]
+        self.assertIn("automountServiceAccountToken: false", deployment)
+        self.assertNotIn("secret", deployment.lower())
+        self.assertIn("paid_scan_eval_fixture.py", deployment)
+        for volume in ("runbook-gateway-source", "paid-scan-playbooks", "paid-scan-eval-scenarios", "emptyDir"):
+            self.assertIn(volume, deployment)
+        policy = found[("NetworkPolicy", "paid-scan-eval-fixture")]
+        self.assertIn("lndops-kagent", policy)
+        self.assertNotIn("ipBlock", policy)
+        self.assertNotIn("lndops-monitoring", policy)
+
+    def test_both_agents_share_message_and_tools(self):
+        found = docs(helm("paidScan.eval.enabled=true"))
+        prod, ev = found[("Agent", "paid-scan-diagnosis")], found[("Agent", "paid-scan-diagnosis-eval")]
+        self.assertEqual(system_message(prod), system_message(ev))
+        self.assertIn("call get_playbook", system_message(ev))
+        tools = lambda doc: re.search(r"toolNames: (\[.*?\])", doc).group(1)
+        self.assertEqual(tools(prod), tools(ev))
+        self.assertIn("name: paid-scan-eval\n", ev)
+        self.assertIn("modelConfig: default-model-config", ev)
+
+
 if __name__ == "__main__":
     unittest.main()
