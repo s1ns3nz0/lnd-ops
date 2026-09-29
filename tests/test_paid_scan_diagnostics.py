@@ -612,6 +612,8 @@ class PrometheusTransportTests(unittest.TestCase):
 
 CHART = (pathlib.Path(__file__).parents[1] / 'charts/agent/templates/paid-scan.yaml').read_text()
 
+PROMPT = (pathlib.Path(__file__).parents[1] / 'charts/agent/templates/_helpers.tpl').read_text()  # shared systemMessage
+
 
 def doc(kind):
     (found,) = [d for d in CHART.split('\n---\n') if re.search(rf'^kind: {kind}$', d, re.M)
@@ -640,12 +642,12 @@ class ChartTests(unittest.TestCase):
         deployment = doc('Deployment')
         self.assertIn('automountServiceAccountToken: true', deployment)
         self.assertIn('OPENCTI_NAMESPACE', deployment)
-        self.assertIn('never proves MPP or x402 health', CHART)
+        self.assertIn('never proves MPP or x402 health', PROMPT)
         self.assertIn('toolNames: [diagnose_paid_order, get_opencti_workload_status, diagnose_l402_funnel, get_playbook]', CHART)
         self.assertIn('{name: PLAYBOOK_DIR, value: /playbooks}', deployment)
         self.assertRegex(deployment, r'name: playbooks, mountPath: /playbooks, readOnly: true')
         self.assertRegex(deployment, r'name: playbooks\s+configMap: \{name: paid-scan-playbooks, defaultMode: 0444\}')
-        self.assertIn('call get_playbook', CHART)
+        self.assertIn('call get_playbook', PROMPT)
         self.assertRegex(deployment, r'name: PROMETHEUS_URL, value: "?http://lnd-ops-monitoring-kube-pr-prometheus\.lndops-monitoring\.svc:9090')
 
     def test_networkpolicy_has_kube_api_egress(self):
