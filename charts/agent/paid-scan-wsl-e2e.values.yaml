@@ -5,3 +5,5 @@ paidScan:
   podLabels: {app: null, app.kubernetes.io/name: order-diagnostics}  # null drops the chart default label (Helm merges maps)
   port: 8443
   credentialSecret: paid-scan-diagnostics-client
+  # E2E only: fixture-backed eval agent; no Secrets, no token, DNS-only egress.
+  eval: {enabled: true}
