@@ -480,84 +480,66 @@ helm template lnd-ops-agent charts/agent -n lndops-agent \
   -f "$RUN/agent-live-values.yaml" -f charts/agent/paid-scan-wsl-e2e.values.yaml > "$RUN/agent-new.yaml"
 "${ka[@]}" get configmap runbook-gateway-source -o json > "$RUN/cm-source.json"
 "${ka[@]}" get configmap runbook-agent-runbooks -o json > "$RUN/cm-runbooks.json"
-git show 6603fb3~1:agent/runbook_gateway.py > "$RUN/gateway-pre-router.py"   # the committed version before the Router change
-git show 6603fb3:agent/runbook_gateway.py > "$RUN/gateway-router-commit.py"   # the committed Router version, before the isError fix
+# Every committed revision the LND side may legitimately be at: pre-Router, Router, and each later
+# commit on this branch that changed the LND agent chart or gateway. Extracted without a worktree.
+KN="$RUN/known"; rm -rf "$KN"
+for r in '6603fb3~1' 6603fb3 $(git log --format=%H 6603fb3..HEAD -- charts/agent/templates/kagent.yaml charts/agent/templates/resources.yaml agent/runbook_gateway.py); do
+  sha=$(git rev-parse "$r"); d="$KN/$sha"; mkdir -p "$d/src" "$d/runbooks"
+  git archive "$sha" charts/agent | tar -x -C "$d/src"
+  helm template lnd-ops-agent "$d/src/charts/agent" -n lndops-agent -f "$RUN/agent-live-values.yaml" \
+    --set paidScan.enabled=false > "$d/render.yaml"
+  git show "$sha:agent/runbook_gateway.py" > "$d/gateway.py"
+  for f in $(git show "$sha:ops/deploy-agent" | grep -o 'docs/runbooks/[A-Za-z0-9._-]*\.md' | sort -u); do
+    git show "$sha:$f" > "$d/runbooks/$(basename "$f")"   # the runbooks deploy-agent shipped at that revision
+  done
+done
 python3 - "$RUN" <<'PY'
-import copy, difflib, json, sys, yaml
+import json, sys, yaml
 from pathlib import Path
 run = Path(sys.argv[1])
-def objs(p):
+def objs(text):
     return {(d["kind"], d["metadata"].get("namespace", "lndops-agent"), d["metadata"]["name"]): d
-            for d in yaml.safe_load_all(p.read_text()) if d}
-live, new = objs(run / "agent-live.yaml"), objs(run / "agent-new.yaml")
-AGENT, GW = ("Agent", "lndops-kagent", "lnd-ops-runbook-agent"), ("Deployment", "lndops-agent", "runbook-gateway")
-def tools(o):
-    return o["spec"]["declarative"]["tools"][0]["mcpServer"]["toolNames"]
-router_live = "diagnose_testnet_router" in tools(live[AGENT])
-changed = {k for k in live if k in new and live[k] != new[k]}
+            for d in yaml.safe_load_all(text) if d}
+paid = lambda k: "paid-scan" in k[2]
+live, new = objs((run / "agent-live.yaml").read_text()), objs((run / "agent-new.yaml").read_text())
 removed = sorted(k for k in live if k not in new)
 added = sorted(set(new) - set(live))
-print("Router live:", router_live); print("added:", added); print("changed:", sorted(changed)); print("removed:", removed)
-assert not removed, "chart would remove objects"
-assert added and all("paid-scan" in k[2] for k in added), "unexpected non-paid-scan additions"
-if router_live:
-    assert not changed, "chart would change existing objects"
-else:
-    # This rollout also ships the committed Router change. Allow exactly that delta, nothing else.
-    assert changed <= {AGENT, GW}, f"unexpected changes: {sorted(changed - {AGENT, GW})}"
-    la, na = live[AGENT], new[AGENT]
-    assert set(tools(na)) - set(tools(la)) == {"diagnose_testnet_router"} and set(tools(la)) <= set(tools(na))
-    lm, nm = la["spec"]["declarative"]["systemMessage"], na["spec"]["declarative"]["systemMessage"]
-    assert not [l for l in difflib.ndiff(lm.splitlines(), nm.splitlines()) if l.startswith("- ")], "system message loses lines"
-    def strip(a):
-        a = copy.deepcopy(a); d = a["spec"]["declarative"]
-        d["systemMessage"] = ""; d["tools"][0]["mcpServer"]["toolNames"] = []
-        return a
-    assert strip(la) == strip(na), "LND agent differs beyond the Router tool and prompt lines"
-    def allow(d):
-        env = d["spec"]["template"]["spec"]["containers"][0]["env"]
-        return next(e["value"] for e in env if e["name"] == "RUNBOOK_ALLOWLIST")
-    lv, nv = set(allow(live[GW]).split(",")), set(allow(new[GW]).split(","))
-    assert lv <= nv, "runbook allowlist would lose entries"
-    def unify(d):
-        d = copy.deepcopy(d)
-        for e in d["spec"]["template"]["spec"]["containers"][0]["env"]:
-            if e["name"] == "RUNBOOK_ALLOWLIST":
-                e["value"] = ""
-        return d
-    assert unify(live[GW]) == unify(new[GW]), "runbook-gateway differs beyond RUNBOOK_ALLOWLIST"
-    print("Router delta verified: +diagnose_testnet_router, prompt lines added only, allowlist", sorted(nv - lv))
+lnd = {k: v for k, v in live.items() if not paid(k)}
+print("added:", added); print("removed:", removed)
+if removed: sys.exit(f"STOP: the chart would remove live objects: {removed}")
+if [k for k in added if not paid(k)]: sys.exit(f"STOP: non-paid-scan objects would be added: {[k for k in added if not paid(k)]}")
+if not added: sys.exit("STOP: no paid-scan objects would be added")
 src = json.loads((run / "cm-source.json").read_text())["data"]["runbook_gateway.py"]
-known = {"branch": Path("agent/runbook_gateway.py").read_text(), "Router (6603fb3)": (run / "gateway-router-commit.py").read_text(),
-         "pre-Router": (run / "gateway-pre-router.py").read_text()}
-match = [n for n, v in known.items() if v == src]
-assert len(match) == 1 and (match[0] in ("branch", "Router (6603fb3)") if router_live else match[0] == "pre-Router"), f"live runbook_gateway.py is an unknown version (matches: {match})"
 books = json.loads((run / "cm-runbooks.json").read_text())["data"]
-for name, text in books.items():
-    assert Path("docs/runbooks", name).read_text() == text, f"live runbook differs: {name}"
-print(f"GATE OK: {len(added)} paid-scan objects added; live gateway code is the {match[0]} version; runbooks live: {sorted(books)}")
+matched, explained = [], set()
+for d in sorted((run / "known").iterdir()):
+    ref = {k: v for k, v in objs((d / "render.yaml").read_text()).items() if not paid(k)}
+    same = {k for k in lnd if ref.get(k) == lnd[k]}
+    explained |= same
+    files = src == (d / "gateway.py").read_text() and books == {p.name: p.read_text() for p in (d / "runbooks").glob("*.md")}
+    if same == set(lnd) == set(ref) and files:
+        matched.append(d.name)
+if not matched:
+    sys.exit(f"STOP: live LND objects match no known committed revision: {sorted(set(lnd) - explained)}"
+             " (or the gateway code or runbooks differ from every revision's)")
+print(f"live LND side matches committed revision {matched[0]}")
+print(f"GATE OK: {len(added)} paid-scan objects added; LND objects and gateway code move from that revision to this branch")
 PY
 STEP
 ```
 
-**Success:** `GATE OK`.
+**Success:** `GATE OK` after `live LND side matches committed revision <sha>`.
 
 - `removed` is empty, and every added object is a paid-scan one: the tool pod
   and its RBAC, the eval fixture, both Agents and both RemoteMCPServers.
-- This branch also contains the committed testnet Router diagnosis
-  (`6603fb3`), so there are two valid cases:
-  - **Router already live:** `changed` is empty.
-  - **Router not live yet:** `changed` is exactly the LND agent and
-    `runbook-gateway`, and the gate proves the only difference is the Router
-    delta: one new tool, prompt lines added (none removed) and more runbooks
-    in the allowlist. The gate also requires the live gateway code to be the
-    exact pre-Router committed version.
-  - When the Router is live, the live gateway code may be the Router commit
-    (`6603fb3`) or this branch's version. The only gateway change left is then
-    the code update (tool argument errors returned as `isError` results),
-    delivered by the ConfigMap and restart that `deploy-agent` already does.
+- Every non-paid-scan live object, the live `runbook_gateway.py` and the live
+  runbooks ConfigMap must all equal one known committed revision (pre-Router
+  `6603fb3~1`, the Router commit `6603fb3`, or a later commit on this branch
+  that changed the LND agent or gateway). Changed LND objects are then fine:
+  they move from that revision to this branch.
 
-**STOP** on anything else. Live objects are then in a state this branch
+**STOP** on anything else, with the list of objects that match no known
+revision. Live objects are then in a state this branch
 doesn't know about.
 
 ### 14. Deploy
