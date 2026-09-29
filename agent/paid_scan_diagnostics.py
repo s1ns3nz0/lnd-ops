@@ -3,6 +3,7 @@
 
 import http.client
 import json
+import math
 import os
 import re
 import ssl
@@ -10,13 +11,13 @@ import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 MAX_RESPONSE_BYTES = 32768
 FAILURE_REASONS = frozenset({
     "not_configured", "invalid_configuration", "access_denied", "not_found_or_not_visible",
     "upstream_unavailable", "invalid_response", "response_too_large", "identity_mismatch",
-    "stale_or_future_observation", "kubernetes_unavailable",
+    "stale_or_future_observation", "kubernetes_unavailable", "prometheus_unavailable",
 })
 
 
@@ -350,6 +351,113 @@ def workload_status(arguments, get=None, now=None):
                              "Warning events expire (default 1h) and may be absent."])
 
 
+PROM_DEFAULT = "http://lnd-ops-monitoring-kube-pr-prometheus.lndops-monitoring.svc:9090"
+PROM_MAX_BYTES = 256 * 1024
+_MINT = 'sum(increase(aperture_l402_mint_total{job="aperture",result="ok"}[15m]))'
+_V = 'aperture_l402_verify_total{job="aperture",reason%s}'
+FUNNEL_QUERIES = {
+    "UP": 'max(up{job="aperture"})',
+    "MINT_OK": _MINT,
+    "MINT_FAILED": 'sum by (result) (increase(aperture_l402_mint_total{job="aperture",result!="ok"}[15m]))',
+    "ACCEPTED": f'sum(increase({_V % "=\"accepted\""}[15m]))',
+    "UNSETTLED": f'sum(increase({_V % "=\"invoice_unsettled\""}[15m]))',
+    "LOOKUP_ERROR": f'sum(increase({_V % "=\"secret_lookup_error\""}[15m]))',
+    "REJECTED": "sum by (reason) (increase(" + _V % '=~"bad_preimage|bad_signature|malformed_header|malformed_macaroon|secret_not_found|caveat_unsatisfied"' + "[15m]))",
+}
+MINT_RESULTS = frozenset({"challenge_failed", "identifier_failed", "secret_failed", "macaroon_failed", "caveat_failed"})
+REJECT_REASONS = frozenset({"bad_preimage", "bad_signature", "malformed_header", "malformed_macaroon",
+                            "secret_not_found", "caveat_unsatisfied"})
+FUNNEL_LIMITATIONS = [
+    "L402 scheme only. MPP (authscheme mpp or l402+mpp) and the x402 rail are not counted; no_l402_traffic means no L402 traffic, not no payments.",
+    "Counters reset when Aperture restarts; increase() compensates but a restart inside the window can hide or blur events.",
+    "One Aperture instance in opencti-paid-scan-e2e only.",
+    "Low E2E traffic: counts, not ratios, drive the verdict.",
+    "Rejected tokens are a security signal, not proof of attack.",
+]
+
+
+def prom_query(query):
+    """GET one fixed-shape instant query. No redirects, proxies, TLS or caller URL."""
+    connection = None
+    try:
+        parsed = urlsplit(os.environ.get("PROMETHEUS_URL") or PROM_DEFAULT)
+        if (parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password
+                or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
+            raise Unavailable("prometheus_unavailable")
+        connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=5)
+        connection.request("GET", "/api/v1/query?" + urlencode({"query": query}), headers={"Accept": "application/json"})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise Unavailable("prometheus_unavailable")
+        raw = response.read(PROM_MAX_BYTES + 1)
+        if len(raw) > PROM_MAX_BYTES:
+            raise Unavailable("prometheus_unavailable")
+        payload = json.loads(raw)
+        result = payload["data"]["result"]
+        if payload["status"] != "success" or not isinstance(result, list):
+            raise Unavailable("prometheus_unavailable")
+        return result
+    except Unavailable:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+        raise Unavailable("prometheus_unavailable") from None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _series(rows, label=None, allowed=frozenset()):
+    """Vector -> total, or {allowlisted label: total} with unknown labels folded into "other"."""
+    totals = {}
+    for row in rows:
+        metric, value = row["metric"], row["value"]
+        if not isinstance(metric, dict) or not isinstance(value, list) or len(value) != 2:
+            raise ValueError()
+        number = float(value[1])
+        if not math.isfinite(number):
+            raise ValueError()
+        key = None
+        if label:
+            key = metric.get(label)
+            key = key if key in allowed else "other"
+        totals[key] = totals.get(key, 0.0) + number
+    whole = lambda x: int(max(0.0, x) + 0.5)  # round half up, clamp negatives
+    if label:
+        return {k: whole(v) for k, v in sorted(totals.items()) if whole(v) > 0}
+    return whole(sum(totals.values()))
+
+
+def funnel_status(arguments, query=None, now=None):
+    if arguments not in (None, {}):
+        raise ValueError("no arguments are accepted")
+    query = query or prom_query
+    try:
+        raw = {name: query(q) for name, q in FUNNEL_QUERIES.items()}
+        if not raw["UP"]:
+            return {"status": "unknown", "reason": "aperture_not_scraped"}
+        if _series(raw["UP"]) < 1:
+            return {"status": "unknown", "reason": "aperture_not_scraped"}
+        issued, accepted, unsettled, lookup = (_series(raw[k]) for k in ("MINT_OK", "ACCEPTED", "UNSETTLED", "LOOKUP_ERROR"))
+        failed = _series(raw["MINT_FAILED"], "result", MINT_RESULTS)
+        rejected = _series(raw["REJECTED"], "reason", REJECT_REASONS)
+    except Exception:  # fail closed on any query/shape error; never surface raw text
+        return {"status": "unknown", "reason": "prometheus_unavailable"}
+    signals = [f"mint_failed:{k}" for k in failed] + (["secret_lookup_error"] if lookup else [])
+    total_rejected = sum(rejected.values())
+    if signals:
+        verdict = "incident"
+    elif not (issued or accepted or unsettled or total_rejected):
+        verdict = "no_l402_traffic"
+    else:
+        verdict = "healthy"
+    observed = time.gmtime(time.time() if now is None else now)
+    return {"status": "observed", "verdict": verdict, "incident_signals": signals,
+            "challenges_issued": issued, "mint_failed": failed, "accepted": accepted,
+            "invoice_unsettled": unsettled, "secret_lookup_error": lookup, "rejected": rejected,
+            "security_signal": total_rejected > 0, "scope": "l402", "window": "15m", "read_only": True,
+            "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", observed), "limitations": list(FUNNEL_LIMITATIONS)}
+
+
 TOOL = {
     "name": "diagnose_paid_order",
     "description": "Read one tenant-scoped order projection to locate payment, dispatch or result stage. Database facts only; no automatic repair.",
@@ -360,6 +468,12 @@ TOOL = {
 WORKLOAD_TOOL = {
     "name": "get_opencti_workload_status",
     "description": "Read Deployment, scanner Job, Pod and Warning Event state in the OpenCTI namespace. Object state only; no logs or messages.",
+    "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+}
+
+FUNNEL_TOOL = {
+    "name": "diagnose_l402_funnel",
+    "description": "Read fixed Aperture L402 counters from Prometheus (15m window) to judge challenge issuance and token verification. Counts only; no per-request data.",
     "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
 }
 
@@ -405,14 +519,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
                           "serverInfo": {"name": "paid-scan-diagnostics", "version": "1.0.0"}}
             elif method == "tools/list":
-                result = {"tools": [TOOL, WORKLOAD_TOOL]}
+                result = {"tools": [TOOL, WORKLOAD_TOOL, FUNNEL_TOOL]}
             elif method == "ping":
                 result = {}
             elif method == "tools/call":
                 params = request.get("params")
-                if not isinstance(params, dict) or params.get("name") not in (TOOL["name"], WORKLOAD_TOOL["name"]):
+                if not isinstance(params, dict) or params.get("name") not in (TOOL["name"], WORKLOAD_TOOL["name"], FUNNEL_TOOL["name"]):
                     raise ValueError()
-                run = diagnose if params["name"] == TOOL["name"] else workload_status
+                run = {TOOL["name"]: diagnose, WORKLOAD_TOOL["name"]: workload_status, FUNNEL_TOOL["name"]: funnel_status}[params["name"]]
                 value = run(params.get("arguments"))
                 result = {"content": [{"type": "text", "text": json.dumps(value)}]}
             else:

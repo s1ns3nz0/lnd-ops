@@ -82,6 +82,16 @@ RBAC: Role `paid-scan-workload-reader` in the OpenCTI namespace grants get/list 
 
 Status: implemented and unit/chart-tested; not live-verified against a cluster.
 
+## Slice 3: `diagnose_l402_funnel`
+
+Takes no arguments. Runs seven fixed instant queries (GET `/api/v1/query`, `PROMETHEUS_URL`, default the monitoring Prometheus service; 5 s timeout, 256 KiB cap) over a 15m window against the `aperture` job: `up`, mint `ok`/failed by result, and verify `accepted`, `invoice_unsettled`, `secret_lookup_error` and rejected by reason. `macaroon_valid` is never queried (it is nested in `accepted`). Empty vectors count as 0; increases are rounded and clamped at 0; labels outside the allowlists become `other`.
+
+Verdict: `incident` on any mint failure or `secret_lookup_error`; `no_l402_traffic` when nothing was minted, accepted, unsettled or rejected; otherwise `healthy`. Output carries `scope: "l402"`: Aperture metrics cover the L402 scheme only, so MPP and the x402 rail are not counted and `no_l402_traffic` does not mean no payments. Rejected tokens set `security_signal` only and never change the verdict. Any Prometheus/shape error gives `unknown` + `prometheus_unavailable`; an empty or zero `up` gives `unknown` + `aperture_not_scraped`. No partial data is returned.
+
+Requires the new `aperture` scrape job in [monitoring-values.yaml](../charts/monitoring-values.yaml) (service `l402-aperture`, port name `metrics`, namespace `opencti-paid-scan-e2e`) and the Aperture metrics build referenced below. The NetworkPolicy allows egress to `lndops-monitoring:9090`.
+
+Status: implemented and unit/chart-tested; the scrape job and tool are not live-verified against a cluster.
+
 ## Remaining integration
 
 After the first projection is connected, add bounded Job/Pod evidence and structured Aperture events. Keep each source's timestamp and availability separate. Database payment state does not independently prove current LND settlement; `scan.state=completed` does not prove customer result retrieval.

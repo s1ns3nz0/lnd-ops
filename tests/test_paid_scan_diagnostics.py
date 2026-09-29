@@ -206,7 +206,7 @@ class MCPTests(unittest.TestCase):
 
     def test_only_readonly_tool_discovered(self):
         result = self.call('tools/list')['result']
-        self.assertEqual([t['name'] for t in result['tools']], ['diagnose_paid_order', 'get_opencti_workload_status'])
+        self.assertEqual([t['name'] for t in result['tools']], ['diagnose_paid_order', 'get_opencti_workload_status', 'diagnose_l402_funnel'])
         denied = self.call('tools/call', {'name': 'execute_allowlisted_response', 'arguments': {}})
         self.assertIn('error', denied)
 
@@ -430,6 +430,157 @@ class KubeTransportTests(unittest.TestCase):
                 gateway.kube_get('x')
 
 
+def vec(*rows):
+    return [{'metric': m, 'value': [1, str(v)]} for m, v in rows]
+
+
+def prom(overrides=None, up=1):
+    """Fake query fn keyed by metric/label fragment; unspecified queries return an empty vector."""
+    overrides = overrides or {}
+    seen = []
+
+    def query(q):
+        seen.append(q)
+        if q == gateway.FUNNEL_QUERIES['UP']:
+            return vec(({}, up)) if up is not None else []
+        for name, rows in overrides.items():
+            if q == gateway.FUNNEL_QUERIES[name]:
+                return rows
+        return []
+    query.seen = seen
+    return query
+
+
+class FunnelTests(unittest.TestCase):
+    def run_funnel(self, overrides=None, up=1, args=None):
+        return gateway.funnel_status(args, query=prom(overrides, up), now=NOW)
+
+    def test_healthy(self):
+        r = self.run_funnel({'MINT_OK': vec(({}, 4)), 'ACCEPTED': vec(({}, 3))})
+        self.assertEqual((r['status'], r['verdict']), ('observed', 'healthy'))
+        self.assertEqual((r['challenges_issued'], r['accepted']), (4, 3))
+        self.assertEqual(r['incident_signals'], [])
+        self.assertEqual((r['window'], r['read_only'], r['observed_at']), ('15m', True, '2026-09-27T10:00:00Z'))
+        self.assertEqual(len(r['limitations']), 5)
+        self.assertTrue(r['limitations'][0].startswith('L402 scheme only. MPP'))
+        self.assertEqual(r['scope'], 'l402')
+
+    def test_no_l402_traffic_is_not_a_fault(self):
+        r = self.run_funnel()
+        self.assertEqual(r['verdict'], 'no_l402_traffic')
+        self.assertEqual((r['mint_failed'], r['rejected'], r['security_signal']), ({}, {}, False))
+
+    def test_unsettled_only_is_healthy(self):
+        self.assertEqual(self.run_funnel({'UNSETTLED': vec(({}, 2))})['verdict'], 'healthy')
+
+    def test_incident_on_mint_failure(self):
+        r = self.run_funnel({'MINT_OK': vec(({}, 4)), 'MINT_FAILED': vec(({'result': 'challenge_failed'}, 1))})
+        self.assertEqual(r['verdict'], 'incident')
+        self.assertEqual(r['incident_signals'], ['mint_failed:challenge_failed'])
+        self.assertEqual(r['mint_failed'], {'challenge_failed': 1})
+
+    def test_incident_on_lookup_error(self):
+        r = self.run_funnel({'LOOKUP_ERROR': vec(({}, 1))})
+        self.assertEqual((r['verdict'], r['incident_signals']), ('incident', ['secret_lookup_error']))
+
+    def test_unknown_when_up_empty_or_zero(self):
+        for up in (None, 0):
+            r = self.run_funnel(up=up)
+            self.assertEqual(r, {'status': 'unknown', 'reason': 'aperture_not_scraped'})
+
+    def test_transport_and_shape_errors_are_unknown_without_raw_text(self):
+        def boom(q):
+            raise gateway.Unavailable('prometheus_unavailable')
+
+        def leaky(q):
+            raise RuntimeError('secret-body')
+        for fn in (boom, leaky, lambda q: 'not a list', lambda q: [{'metric': {}, 'value': [1, 'abc']}],
+                   lambda q: [{'metric': {}, 'value': 5}], lambda q: [{'metric': {}, 'value': [1, 'NaN']}]):
+            r = gateway.funnel_status(None, query=fn, now=NOW)
+            self.assertEqual(r, {'status': 'unknown', 'reason': 'prometheus_unavailable'})
+        self.assertIn('prometheus_unavailable', gateway.FAILURE_REASONS)
+
+    def test_partial_failure_returns_no_partial_data(self):
+        good = prom({'MINT_OK': vec(({}, 4))})
+
+        def flaky(q):
+            if q == gateway.FUNNEL_QUERIES['REJECTED']:
+                raise gateway.Unavailable('prometheus_unavailable')
+            return good(q)
+        r = gateway.funnel_status(None, query=flaky, now=NOW)
+        self.assertEqual(r, {'status': 'unknown', 'reason': 'prometheus_unavailable'})
+
+    def test_unknown_labels_are_other(self):
+        r = self.run_funnel({
+            'MINT_FAILED': vec(({'result': 'evil<x>'}, 1), ({'result': 'weird'}, 2), ({'result': 'secret_failed'}, 1)),
+            'REJECTED': vec(({'reason': 'bad_preimage'}, 1), ({'reason': 'zzz'}, 1), ({'reason': 'qqq'}, 1))})
+        self.assertEqual(r['mint_failed'], {'other': 3, 'secret_failed': 1})
+        self.assertEqual(r['rejected'], {'bad_preimage': 1, 'other': 2})
+        self.assertEqual(r['incident_signals'], ['mint_failed:other', 'mint_failed:secret_failed'])
+
+    def test_rounding_and_negative_clamp(self):
+        r = self.run_funnel({'MINT_OK': vec(({}, 2.6)), 'ACCEPTED': vec(({}, -0.4)), 'UNSETTLED': vec(({}, 0.4)),
+                             'LOOKUP_ERROR': vec(({}, -3))})
+        self.assertEqual((r['challenges_issued'], r['accepted'], r['invoice_unsettled'], r['secret_lookup_error']),
+                         (3, 0, 0, 0))
+        self.assertEqual(r['verdict'], 'healthy')
+
+    def test_security_signal_does_not_change_verdict(self):
+        r = self.run_funnel({'MINT_OK': vec(({}, 1)), 'REJECTED': vec(({'reason': 'bad_signature'}, 5))})
+        self.assertEqual((r['verdict'], r['security_signal']), ('healthy', True))
+        r = self.run_funnel({'REJECTED': vec(({'reason': 'bad_signature'}, 5))})
+        self.assertEqual((r['verdict'], r['security_signal']), ('healthy', True))
+
+    def test_fixed_queries_never_use_macaroon_valid(self):
+        q = prom()
+        gateway.funnel_status(None, query=q, now=NOW)
+        self.assertEqual(sorted(q.seen), sorted(gateway.FUNNEL_QUERIES.values()))
+        self.assertEqual(len(q.seen), 7)
+        self.assertFalse(any('macaroon_valid' in x for x in q.seen))
+
+    def test_arguments_must_be_empty(self):
+        for args in ({'query': 'up'}, [], 'x'):
+            with self.assertRaises(ValueError):
+                gateway.funnel_status(args, query=prom(), now=NOW)
+
+
+class PrometheusTransportTests(unittest.TestCase):
+    def fake(self, status=200, body=b'{"status":"success","data":{"resultType":"vector","result":[]}}'):
+        response = mock.Mock(status=status)
+        response.read.return_value = body
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        return connection
+
+    def test_get_only_fixed_path_and_bounds(self):
+        connection = self.fake()
+        with mock.patch.dict(os.environ, {'PROMETHEUS_URL': 'http://prom.example:9090'}), \
+                mock.patch.object(gateway.http.client, 'HTTPConnection', return_value=connection) as ctor:
+            self.assertEqual(gateway.prom_query('up'), [])
+        self.assertEqual(ctor.call_args.args[:2], ('prom.example', 9090))
+        self.assertEqual(ctor.call_args.kwargs['timeout'], 5)
+        (method, path), _ = connection.request.call_args
+        self.assertEqual(method, 'GET')
+        self.assertTrue(path.startswith('/api/v1/query?query='))
+        connection.getresponse.return_value.read.assert_called_once_with(gateway.PROM_MAX_BYTES + 1)
+        connection.close.assert_called_once()
+
+    def test_errors_are_fixed_code(self):
+        cases = [self.fake(status=302), self.fake(status=500, body=b'secret'), self.fake(body=b'not json'),
+                 self.fake(body=b'{"status":"error"}'), self.fake(body=b'x' * (gateway.PROM_MAX_BYTES + 1)),
+                 self.fake(body=b'{"status":"success","data":{"result":"x"}}')]
+        for connection in cases:
+            with mock.patch.object(gateway.http.client, 'HTTPConnection', return_value=connection):
+                with self.assertRaises(gateway.Unavailable) as ctx:
+                    gateway.prom_query('up')
+            self.assertEqual(str(ctx.exception), 'prometheus_unavailable')
+
+    def test_bad_url_is_unavailable(self):
+        with mock.patch.dict(os.environ, {'PROMETHEUS_URL': 'https://user:pw@x/'}):
+            with self.assertRaises(gateway.Unavailable):
+                gateway.prom_query('up')
+
+
 CHART = (pathlib.Path(__file__).parents[1] / 'charts/agent/templates/paid-scan.yaml').read_text()
 
 
@@ -460,12 +611,24 @@ class ChartTests(unittest.TestCase):
         deployment = doc('Deployment')
         self.assertIn('automountServiceAccountToken: true', deployment)
         self.assertIn('OPENCTI_NAMESPACE', deployment)
-        self.assertIn('toolNames: [diagnose_paid_order, get_opencti_workload_status]', CHART)
+        self.assertIn('never proves MPP or x402 health', CHART)
+        self.assertIn('toolNames: [diagnose_paid_order, get_opencti_workload_status, diagnose_l402_funnel]', CHART)
+        self.assertRegex(deployment, r'name: PROMETHEUS_URL, value: "?http://lnd-ops-monitoring-kube-pr-prometheus\.lndops-monitoring\.svc:9090')
 
     def test_networkpolicy_has_kube_api_egress(self):
         policy = doc('NetworkPolicy')
         self.assertIn('ipBlock: {cidr: {{ .Values.kubeApi.serverCIDR | quote }}}', policy)
         self.assertIn('port: {{ .Values.kubeApi.port }}', policy)
+
+    def test_networkpolicy_has_monitoring_egress(self):
+        self.assertRegex(doc('NetworkPolicy'), r'kubernetes\.io/metadata\.name: lndops-monitoring\}\}\s*\n\s*ports: \[\{protocol: TCP, port: 9090\}\]')
+
+    def test_aperture_scrape_job(self):
+        values = (pathlib.Path(__file__).parents[1] / 'charts/monitoring-values.yaml').read_text()
+        job = values.split('job_name: aperture')[1].split('- job_name:')[0]
+        self.assertIn('names: [opencti-paid-scan-e2e]', job)
+        self.assertRegex(job, r'__meta_kubernetes_service_name\]\s+action: keep\s+regex: l402-aperture')
+        self.assertRegex(job, r'__meta_kubernetes_endpoint_port_name\]\s+action: keep\s+regex: metrics')
 
 
 if __name__ == '__main__':
