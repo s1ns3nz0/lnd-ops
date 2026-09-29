@@ -127,7 +127,8 @@ def main(argv):
              "--wait", "--timeout", "15m"])
         source = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-gateway-source",
                       "--from-file", str(REPO / "agent/runbook_gateway.py"),
-                      "--from-file", str(REPO / "agent/paid_scan_diagnostics.py"), "--dry-run=client", "-o", "yaml"])
+                      "--from-file", str(REPO / "agent/paid_scan_diagnostics.py"),
+                      "--from-file", str(REPO / "agent/paid_scan_eval_fixture.py"), "--dry-run=client", "-o", "yaml"])
         run(["kubectl", "apply", "-f", "-"], source)
         runbooks = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-agent-runbooks",
                         "--from-file", str(REPO / "docs/runbooks/channel-inactive.md"),
@@ -141,6 +142,10 @@ def main(argv):
                          f"--from-literal=revision={playbook_revision()}",
                          "--dry-run=client", "-o", "yaml"])
         run(["kubectl", "apply", "-f", "-"], playbooks)
+        scenario_files = sorted((REPO / "tests/eval/scenarios").glob("*.json"))
+        scenarios = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "paid-scan-eval-scenarios",
+                         *[f"--from-file={path}" for path in scenario_files], "--dry-run=client", "-o", "yaml"])
+        run(["kubectl", "apply", "-f", "-"], scenarios)
         parsed = urllib.parse.urlparse(config["endpoint"])
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         endpoint_slice = json.loads(run([

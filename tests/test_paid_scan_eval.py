@@ -134,6 +134,15 @@ class ScenarioFileTests(unittest.TestCase):
                 self.assertTrue(tool == "get_playbook" or tool in data["tools"], (path.name, tool))
 
 
+class DeployAgentTests(unittest.TestCase):
+    def test_deploy_ships_fixture_source_and_scenarios(self):
+        text = (ROOT / "ops/deploy-agent").read_text()
+        self.assertIn("agent/paid_scan_eval_fixture.py", text)
+        self.assertIn("paid-scan-eval-scenarios", text)
+        self.assertIn('tests/eval/scenarios', text)
+        self.assertRegex(text, r"sorted\(.*glob\(\"\*\.json\"\)")
+
+
 def helm(*sets):
     cmd = ["helm", "template", "r", str(ROOT / "charts/agent"), "--namespace", "lndops-agent",
            "--set", "paidScan.enabled=true", "--set", "paidScan.origin=https://diagnostics.example:8443"]
