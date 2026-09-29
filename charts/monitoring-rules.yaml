@@ -157,7 +157,7 @@ spec:
             severity: critical
           annotations:
             summary: "Aperture failed to mint L402 invoices; paying customers cannot get an invoice"
-            playbook: docs/playbooks/opencti-l402-funnel.md
+            runbook_url: docs/playbooks/opencti-l402-funnel.md
         - alert: OpenCTIL402SecretStoreFailing
           expr: sum(increase(aperture_l402_verify_total{job="aperture",reason="secret_store_error"}[15m])) > 0
           for: 1m
@@ -165,7 +165,7 @@ spec:
             severity: critical
           annotations:
             summary: "Aperture cannot read its L402 secret store; token verification is failing"
-            playbook: docs/playbooks/opencti-l402-funnel.md
+            runbook_url: docs/playbooks/opencti-l402-funnel.md
         - alert: OpenCTIL402RequestsWithoutInvoice
           expr: |
             (sum(increase(aperture_l402_verify_total{job="aperture",reason="missing_credentials"}[15m])) >= 2)
@@ -176,7 +176,7 @@ spec:
             severity: critical
           annotations:
             summary: "Requests arrive without an L402 token but Aperture issues no invoices"
-            playbook: docs/playbooks/opencti-l402-funnel.md
+            runbook_url: docs/playbooks/opencti-l402-funnel.md
         - alert: OpenCTIL402MetricsAbsent
           expr: absent(up{job="aperture"} == 1)
           for: 10m
@@ -184,4 +184,4 @@ spec:
             severity: warning
           annotations:
             summary: "Aperture metrics are absent; the L402 payment gate is unobserved (no data is not healthy)"
-            playbook: docs/playbooks/opencti-l402-funnel.md
+            runbook_url: docs/playbooks/opencti-l402-funnel.md

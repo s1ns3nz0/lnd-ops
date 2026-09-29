@@ -1,5 +1,20 @@
 # Playbooks
 
+## Terminology
+
+- **Playbook**: an incident judgment document (impact, evidence, allowed
+  actions, escalation). Google's SRE book uses "playbook" this way.
+- **Runbook**: a fixed-step procedure for one task. AWS Well-Architected
+  distinguishes runbooks (routine procedures) from playbooks (investigation of
+  unknown or failing states) the same way.
+- Exception: the Prometheus alert annotation key is `runbook_url`. Grafana,
+  Alertmanager, and PagerDuty recognize that name, so it stays even though the
+  value points at a playbook.
+- Transitional state: the LND alerts still use `runbook:` (their documents
+  live in `../runbooks/`, a legacy path). The L402 alerts already use
+  `runbook_url:`. The LND documents will be renamed to playbooks in a later
+  change.
+
 A **playbook** guides judgment during an incident: what the impact is, how to
 stop the bleeding, which evidence confirms which cause, what is allowed, and
 when to escalate. A **runbook** is a fixed-step procedure for one task, such as

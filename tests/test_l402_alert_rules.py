@@ -31,7 +31,7 @@ class L402AlertRules(unittest.TestCase):
         self.assertEqual(len(rules), 4)
 
     def test_every_alert_links_existing_playbook(self):
-        self.assertEqual(group().count(f"playbook: {PLAYBOOK}"), 4)
+        self.assertEqual(group().count(f"runbook_url: {PLAYBOOK}"), 4)
         self.assertTrue((ROOT / PLAYBOOK).is_file())
 
     def test_threshold_matches_diagnostics(self):
