@@ -452,6 +452,19 @@ def kube_api_endpoint():
     return addresses[0], ports[0]
 
 
+MCP_DEPLOYMENTS = ("runbook-gateway", "paid-scan-diagnostics", "paid-scan-eval-fixture")
+
+
+def restart_mcp_servers(ns):
+    """ConfigMap-mounted code is only read at start: restart so a re-run of `up` runs the new Python."""
+    for name in MCP_DEPLOYMENTS:
+        kubectl("-n", ns, "rollout", "restart", f"deployment/{name}")
+    for name in MCP_DEPLOYMENTS:
+        kubectl("-n", ns, "rollout", "status", f"deployment/{name}", "--timeout=180s", timeout=210)
+    sha = run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], timeout=30).strip()
+    print(f"ok: MCP servers restarted with code from {sha}")
+
+
 def step_agent(address):
     ns = "lndops-agent"
     apply_configmap(ns, "runbook-gateway-source", REPO / "agent/runbook_gateway.py",
@@ -476,6 +489,7 @@ def step_agent(address):
          "--set-string", f"ollama.serverCIDR={address}/32", "--set", f"ollama.port={OLLAMA_PORT}",
          "--set-string", f"kubeApi.serverCIDR={api_address}/32", "--set", f"kubeApi.port={api_port}",
          "--wait", "--timeout", "10m")
+    restart_mcp_servers(ns)
     for name in ("runbook-gateway", "runbook-diagnostic-probe", "paid-scan-diagnostics", "paid-scan-eval-fixture"):
         wait_deployment(ns, name)
     for name in KAGENT_DEPLOYMENTS:
@@ -751,6 +765,20 @@ def task_state(invocation):
     return state if isinstance(state, str) and state else "unknown"
 
 
+def agent_questions(calls):
+    """Question texts from kagent's ask_user / adk_request_confirmation tool calls, in order, deduplicated."""
+    found = []
+    for name, arguments in calls:
+        if name not in ("ask_user", "adk_request_confirmation") or not isinstance(arguments, dict):
+            continue
+        items = arguments.get("questions")
+        texts = [q.get("question") for q in items if isinstance(q, dict)] if isinstance(items, list) else []
+        confirmation = arguments.get("toolConfirmation")
+        texts.append(confirmation.get("hint") if isinstance(confirmation, dict) else None)
+        found += [t for t in texts if isinstance(t, str) and t.strip() and t not in found]
+    return found
+
+
 def cmd_ask(args):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     raw = STATE / "evidence" / f"ask-{args.agent}-{stamp}.json"
@@ -772,6 +800,12 @@ def cmd_ask(args):
         print(f"  {name} {json.dumps(arguments, sort_keys=True)}")
     if not calls:
         print("  (none)")
+    if state == "input-required":
+        for text in agent_questions(calls) or ["(question text not found in the tool calls)"]:
+            print(f"agent asked: {text}")
+        print("continue in the kagent UI (ops/rehearsal-lab ui) or re-ask with the missing detail")
+        print(f"raw JSON: {raw}")
+        return 2  # distinct from failure (1)
     print("== final answer")
     print(answer or f"no agent answer (task {state})")
     print(f"\nraw JSON: {raw}")
@@ -831,8 +865,7 @@ def main(argv):
     try:
         if args.command in GUARDED:
             guard()
-        COMMANDS[args.command](args)
-        return 0
+        return COMMANDS[args.command](args) or 0
     except (LabError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1

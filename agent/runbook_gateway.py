@@ -315,6 +315,13 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:  # tool execution error: let the model see it and self-correct
                     err = {"status": "error", "reason": "invalid_arguments", "message": arguments_message(TOOLS[params["name"]][1])}
                     result = {"content": [{"type": "text", "text": json.dumps(err, sort_keys=True)}], "isError": True}
+                except (OSError, RuntimeError):  # includes URLError; fixed text only, exceptions may carry URLs
+                    name = params["name"]
+                    msg = (f"{name} could not confirm the action; it was not confirmed as done, check state before retrying"
+                           if name == "execute_allowlisted_response"
+                           else f"{name} could not reach its data source; treat as unknown, not healthy")
+                    err = {"status": "error", "reason": "tool_unavailable", "message": msg}
+                    result = {"content": [{"type": "text", "text": json.dumps(err, sort_keys=True)}], "isError": True}
             else:
                 raise ValueError("unsupported MCP method")
             self.send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})

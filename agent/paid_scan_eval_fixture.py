@@ -86,6 +86,8 @@ class Handler(prod.Handler):
                     result = {"content": [{"type": "text", "text": json.dumps(call(params["name"], params.get("arguments")))}]}
                 except ValueError:
                     result = prod.invalid_arguments(next(t for t in TOOLS if t["name"] == params["name"]))
+                except (OSError, RuntimeError):  # fixed text only; never surface exception details
+                    result = {"content": [{"type": "text", "text": json.dumps({"status": "error", "reason": "tool_unavailable", "message": params["name"] + " could not reach its data source; treat as unknown, not healthy"})}], "isError": True}
             else:
                 raise ValueError()
             self.reply(200, {"jsonrpc": "2.0", "id": request_id, "result": result})

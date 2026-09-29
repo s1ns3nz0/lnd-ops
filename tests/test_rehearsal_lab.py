@@ -209,6 +209,17 @@ class FaultAndWaitTest(unittest.TestCase):
             with self.assertRaises(lab.LabError):
                 lab.break_workload("lnd-merchant")
 
+    def test_mcp_servers_restarted_and_awaited(self):
+        with mock.patch.object(lab, "kubectl") as kubectl, mock.patch.object(lab, "run", return_value="abc1234\n"), \
+                mock.patch("builtins.print") as out:
+            lab.restart_mcp_servers("lndops-agent")
+        verbs = [c.args[3] for c in kubectl.call_args_list]
+        self.assertEqual(verbs, ["restart"] * 3 + ["status"] * 3)
+        self.assertEqual([c.args[4] for c in kubectl.call_args_list[:3]],
+                         [f"deployment/{n}" for n in ("runbook-gateway", "paid-scan-diagnostics", "paid-scan-eval-fixture")])
+        self.assertIn("--timeout=180s", kubectl.call_args_list[3].args)
+        out.assert_called_with("ok: MCP servers restarted with code from abc1234")
+
     def test_restore_waits_for_each_rollout(self):
         with mock.patch.object(lab, "kubectl") as kubectl:
             lab.restore_workloads()
@@ -278,6 +289,19 @@ class FaultAndWaitTest(unittest.TestCase):
                 mock.patch.object(lab, "run", return_value=json.dumps(inv)):
             with self.assertRaises(lab.LabError):
                 lab.cmd_ask(mock.Mock(agent="paid-scan-diagnosis", question="q"))
+
+    def test_ask_input_required_prints_question_and_exits_2(self):
+        inv = {"status": {"state": "input-required"}, "history": [
+            {"role": "agent", "parts": [{"data": {"name": "ask_user", "args": {"questions": [{"question": "Which namespace?"}]}}}]},
+            {"role": "agent", "parts": [{"data": {"name": "adk_request_confirmation",
+                                                  "args": {"toolConfirmation": {"hint": "Which namespace?"}}}}]}]}
+        self.assertEqual(lab.agent_questions(lab.parse_invocation(inv)[1]), ["Which namespace?"])
+        with mock.patch.object(lab, "port_forward"), mock.patch.object(lab, "write_private"), \
+                mock.patch.object(lab, "run", return_value=json.dumps(inv)), mock.patch("builtins.print") as out:
+            self.assertEqual(lab.cmd_ask(mock.Mock(agent="a", question="q")), 2)
+        printed = "\n".join(str(c.args[0]) for c in out.call_args_list)
+        self.assertIn("agent asked: Which namespace?", printed)
+        self.assertIn("ops/rehearsal-lab ui", printed)
 
 
 class GuardTest(unittest.TestCase):

@@ -2,6 +2,7 @@ import importlib.util
 import json
 import pathlib
 import threading
+import urllib.error
 import urllib.request
 import unittest
 from unittest import mock
@@ -118,3 +119,34 @@ class RunbookGatewayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_runtime_failures_are_iserror_without_leaking_exception_text(self):
+        server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def call(params):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/mcp", data=body,
+                                         headers={"Content-Type": "application/json"})
+            return json.load(urllib.request.urlopen(req, timeout=5))
+
+        boom = urllib.error.URLError("http://10.0.0.1:9090 LEAKMARKER")
+        with mock.patch.object(gateway, "kube_request", side_effect=boom):
+            down = call({"name": "get_workload_status", "arguments": {"kind": "pods", "namespace": "lnd-regtest"}})
+            self.assertTrue(down["result"]["isError"])
+            value = json.loads(down["result"]["content"][0]["text"])
+            self.assertEqual(value["reason"], "tool_unavailable")
+            self.assertEqual(value["message"], "get_workload_status could not reach its data source; treat as unknown, not healthy")
+            self.assertNotIn("LEAKMARKER", json.dumps(down))
+            self.assertIn("error", call({"name": "nope"}))
+        with mock.patch.object(gateway, "kube_request", side_effect=[{"data": {"lastRestartEpoch": "0"}}, RuntimeError("LEAKMARKER")]), \
+                mock.patch.object(gateway, "audit"):
+            act = call({"name": "execute_allowlisted_response", "arguments": {"action": "restart_diagnostic_probe"}})
+        self.assertTrue(act["result"]["isError"])
+        text = act["result"]["content"][0]["text"]
+        self.assertNotIn('"allowed"', text)
+        self.assertNotIn("LEAKMARKER", text)
+        self.assertEqual(json.loads(text)["reason"], "tool_unavailable")
+        self.assertIn("not confirmed", text)
