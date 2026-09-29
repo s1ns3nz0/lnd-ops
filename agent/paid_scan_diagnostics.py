@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only, bounded access to a tenant-scoped paid-scan status projection."""
 
+import hashlib
 import http.client
 import json
 import math
@@ -18,6 +19,7 @@ FAILURE_REASONS = frozenset({
     "not_configured", "invalid_configuration", "access_denied", "not_found_or_not_visible",
     "upstream_unavailable", "invalid_response", "response_too_large", "identity_mismatch",
     "stale_or_future_observation", "kubernetes_unavailable", "prometheus_unavailable",
+    "playbook_unavailable",
 })
 
 
@@ -465,6 +467,34 @@ def funnel_status(arguments, query=None, now=None):
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", observed), "limitations": list(FUNNEL_LIMITATIONS)}
 
 
+PLAYBOOKS = ("opencti-paid-order-stuck", "opencti-l402-funnel")  # keep in sync with docs/playbooks/README.md
+PLAYBOOK_MAX_BYTES = 64 * 1024
+REVISION = re.compile(r"[0-9a-f]{40}")
+
+
+def get_playbook(arguments):
+    """Serve one allowlisted, size-capped playbook from a fixed read-only mount."""
+    if not isinstance(arguments, dict) or set(arguments) != {"name"} or arguments["name"] not in PLAYBOOKS:
+        raise ValueError("name must be one of the listed playbooks")
+    name = arguments["name"]
+    root = os.environ.get("PLAYBOOK_DIR", "/playbooks")
+    try:  # ConfigMap mounts are symlinks, so no symlink check; the name is allowlisted.
+        with open(f"{root}/{name}.md", "rb") as stream:
+            raw = stream.read(PLAYBOOK_MAX_BYTES + 1)
+        if len(raw) > PLAYBOOK_MAX_BYTES:
+            raise ValueError()
+        content = raw.decode("utf-8")
+    except (OSError, ValueError):
+        return {"status": "unknown", "reason": "playbook_unavailable"}
+    try:
+        with open(f"{root}/revision", encoding="ascii") as stream:
+            revision = stream.read(64).strip()
+    except (OSError, ValueError):
+        revision = ""
+    return {"name": name, "content": content, "revision": revision if REVISION.fullmatch(revision) else "unknown",
+            "sha256": hashlib.sha256(raw).hexdigest(), "read_only": True}
+
+
 TOOL = {
     "name": "diagnose_paid_order",
     "description": "Read one tenant-scoped order projection to locate payment, dispatch or result stage. Database facts only; no automatic repair.",
@@ -482,6 +512,13 @@ FUNNEL_TOOL = {
     "name": "diagnose_l402_funnel",
     "description": "Read fixed Aperture L402 counters from Prometheus (15m window) to judge challenge issuance and token verification. Verdict is incident | inconclusive | no_l402_traffic | healthy. Counts only; no per-request data.",
     "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+}
+
+PLAYBOOK_TOOL = {
+    "name": "get_playbook",
+    "description": "Read one reviewed incident playbook (triage order, allowed and forbidden actions) with its git revision and sha256. Read-only.",
+    "inputSchema": {"type": "object", "required": ["name"], "additionalProperties": False,
+                    "properties": {"name": {"type": "string", "enum": list(PLAYBOOKS)}}},
 }
 
 
@@ -526,14 +563,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
                           "serverInfo": {"name": "paid-scan-diagnostics", "version": "1.0.0"}}
             elif method == "tools/list":
-                result = {"tools": [TOOL, WORKLOAD_TOOL, FUNNEL_TOOL]}
+                result = {"tools": [TOOL, WORKLOAD_TOOL, FUNNEL_TOOL, PLAYBOOK_TOOL]}
             elif method == "ping":
                 result = {}
             elif method == "tools/call":
                 params = request.get("params")
-                if not isinstance(params, dict) or params.get("name") not in (TOOL["name"], WORKLOAD_TOOL["name"], FUNNEL_TOOL["name"]):
+                if not isinstance(params, dict) or params.get("name") not in (TOOL["name"], WORKLOAD_TOOL["name"], FUNNEL_TOOL["name"], PLAYBOOK_TOOL["name"]):
                     raise ValueError()
-                run = {TOOL["name"]: diagnose, WORKLOAD_TOOL["name"]: workload_status, FUNNEL_TOOL["name"]: funnel_status}[params["name"]]
+                run = {TOOL["name"]: diagnose, WORKLOAD_TOOL["name"]: workload_status, FUNNEL_TOOL["name"]: funnel_status, PLAYBOOK_TOOL["name"]: get_playbook}[params["name"]]
                 value = run(params.get("arguments"))
                 result = {"content": [{"type": "text", "text": json.dumps(value)}]}
             else:

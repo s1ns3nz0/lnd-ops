@@ -26,6 +26,19 @@ def run(args, input_text=None, timeout=1200, cwd=None):
     return result.stdout
 
 
+def playbook_revision():
+    """Reviewed content only: HEAD sha, and no uncommitted playbook changes."""
+    try:
+        run(["git", "rev-parse", "--is-inside-work-tree"], timeout=30, cwd=REPO)
+        dirty = run(["git", "status", "--porcelain", "--", "docs/playbooks"], timeout=30, cwd=REPO)
+        head = run(["git", "rev-parse", "HEAD"], timeout=30, cwd=REPO).strip()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        raise RuntimeError("playbooks must be deployed from a git checkout of the repository") from None
+    if dirty.strip():
+        raise RuntimeError("commit or revert docs/playbooks changes before deploying; only reviewed playbooks are shipped")
+    return head
+
+
 def endpoint(value, allow_http):
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme not in ({"https", "http"} if allow_http else {"https"}):
@@ -122,6 +135,12 @@ def main(argv):
                         "--from-file", str(REPO / "docs/runbooks/falco-runtime-event.md"),
                         "--dry-run=client", "-o", "yaml"])
         run(["kubectl", "apply", "-f", "-"], runbooks)
+        playbooks = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "paid-scan-playbooks",
+                         "--from-file", str(REPO / "docs/playbooks/opencti-paid-order-stuck.md"),
+                         "--from-file", str(REPO / "docs/playbooks/opencti-l402-funnel.md"),
+                         f"--from-literal=revision={playbook_revision()}",
+                         "--dry-run=client", "-o", "yaml"])
+        run(["kubectl", "apply", "-f", "-"], playbooks)
         parsed = urllib.parse.urlparse(config["endpoint"])
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         endpoint_slice = json.loads(run([

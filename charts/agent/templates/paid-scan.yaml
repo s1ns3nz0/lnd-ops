@@ -69,6 +69,7 @@ spec:
             - {name: PAID_SCAN_DIAGNOSTICS_CA_FILE, value: /credentials/ca.crt}
             - {name: OPENCTI_NAMESPACE, value: {{ .Values.paidScan.namespace | quote }}}
             - {name: PROMETHEUS_URL, value: "http://lnd-ops-monitoring-kube-pr-prometheus.lndops-monitoring.svc:9090"}
+            - {name: PLAYBOOK_DIR, value: /playbooks}
           ports: [{name: mcp, containerPort: 8080}]
           readinessProbe: {httpGet: {path: /healthz, port: mcp}, periodSeconds: 5}
           livenessProbe: {httpGet: {path: /healthz, port: mcp}, periodSeconds: 10}
@@ -80,9 +81,12 @@ spec:
           volumeMounts:
             - {name: source, mountPath: /app, readOnly: true}
             - {name: credentials, mountPath: /credentials, readOnly: true}
+            - {name: playbooks, mountPath: /playbooks, readOnly: true}
       volumes:
         - name: source
           configMap: {name: runbook-gateway-source, defaultMode: 0444}
+        - name: playbooks
+          configMap: {name: paid-scan-playbooks, defaultMode: 0444}
         - name: credentials
           secret:
             secretName: {{ .Values.paidScan.credentialSecret | quote }}
@@ -160,6 +164,10 @@ spec:
     # Tenant data: self-hosted Ollama only; do not make configurable.
     modelConfig: default-model-config
     systemMessage: |
+      Before diagnosing, call get_playbook for the matching playbook (opencti-paid-order-stuck for a
+      specific order; opencti-l402-funnel for the payment gate or Aperture). Follow its triage order,
+      never recommend an action it lists as forbidden or approval-required without saying approval is
+      required, and name the playbook section you relied on.
       Diagnose one operator-supplied tenant_id and order_id using diagnose_paid_order.
       Use get_opencti_workload_status (no arguments) to confirm whether the Deployment or
       Job behind a stuck stage is healthy; match dispatch_job_name to a Job name. Kubernetes
@@ -184,7 +192,7 @@ spec:
           name: paid-scan-diagnostics
           kind: RemoteMCPServer
           apiGroup: kagent.dev
-          toolNames: [diagnose_paid_order, get_opencti_workload_status, diagnose_l402_funnel]
+          toolNames: [diagnose_paid_order, get_opencti_workload_status, diagnose_l402_funnel, get_playbook]
     deployment:
       replicas: 1
       serviceAccountName: kagent-no-kubernetes-api

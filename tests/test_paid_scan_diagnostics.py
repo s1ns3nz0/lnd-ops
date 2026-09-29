@@ -206,7 +206,7 @@ class MCPTests(unittest.TestCase):
 
     def test_only_readonly_tool_discovered(self):
         result = self.call('tools/list')['result']
-        self.assertEqual([t['name'] for t in result['tools']], ['diagnose_paid_order', 'get_opencti_workload_status', 'diagnose_l402_funnel'])
+        self.assertEqual([t['name'] for t in result['tools']], ['diagnose_paid_order', 'get_opencti_workload_status', 'diagnose_l402_funnel', 'get_playbook'])
         denied = self.call('tools/call', {'name': 'execute_allowlisted_response', 'arguments': {}})
         self.assertIn('error', denied)
 
@@ -216,6 +216,14 @@ class MCPTests(unittest.TestCase):
         value = json.loads(result['result']['content'][0]['text'])
         self.assertEqual(value['status'], 'unknown')
         self.assertEqual(value['reason'], 'not_configured')
+
+    def test_get_playbook_over_http(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {'PLAYBOOK_DIR': d}):
+            pathlib.Path(d, 'opencti-paid-order-stuck.md').write_text('hi')
+            result = self.call('tools/call', {'name': 'get_playbook', 'arguments': {'name': 'opencti-paid-order-stuck'}})
+            self.assertEqual(json.loads(result['result']['content'][0]['text'])['content'], 'hi')
+            bad = self.call('tools/call', {'name': 'get_playbook', 'arguments': {'name': '../x'}})
+            self.assertIn('error', bad)
 
 
 JOB = 'scan-0123456789abcdef0123'
@@ -633,7 +641,11 @@ class ChartTests(unittest.TestCase):
         self.assertIn('automountServiceAccountToken: true', deployment)
         self.assertIn('OPENCTI_NAMESPACE', deployment)
         self.assertIn('never proves MPP or x402 health', CHART)
-        self.assertIn('toolNames: [diagnose_paid_order, get_opencti_workload_status, diagnose_l402_funnel]', CHART)
+        self.assertIn('toolNames: [diagnose_paid_order, get_opencti_workload_status, diagnose_l402_funnel, get_playbook]', CHART)
+        self.assertIn('{name: PLAYBOOK_DIR, value: /playbooks}', deployment)
+        self.assertRegex(deployment, r'name: playbooks, mountPath: /playbooks, readOnly: true')
+        self.assertRegex(deployment, r'name: playbooks\s+configMap: \{name: paid-scan-playbooks, defaultMode: 0444\}')
+        self.assertIn('call get_playbook', CHART)
         self.assertRegex(deployment, r'name: PROMETHEUS_URL, value: "?http://lnd-ops-monitoring-kube-pr-prometheus\.lndops-monitoring\.svc:9090')
 
     def test_networkpolicy_has_kube_api_egress(self):
@@ -650,6 +662,71 @@ class ChartTests(unittest.TestCase):
         self.assertIn('names: [opencti-paid-scan-e2e]', job)
         self.assertRegex(job, r'__meta_kubernetes_service_name\]\s+action: keep\s+regex: l402-aperture')
         self.assertRegex(job, r'__meta_kubernetes_endpoint_port_name\]\s+action: keep\s+regex: metrics')
+
+
+REPO = pathlib.Path(__file__).parents[1]
+GOOD_REV = 'a' * 40
+
+
+class PlaybookTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = pathlib.Path(self.tmp.name)
+        patcher = mock.patch.dict(os.environ, {'PLAYBOOK_DIR': self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_allowed_playbook_returns_content_revision_and_hash(self):
+        (self.dir / 'opencti-l402-funnel.md').write_text('# steps\n')
+        (self.dir / 'revision').write_text(GOOD_REV + '\n')
+        result = gateway.get_playbook({'name': 'opencti-l402-funnel'})
+        import hashlib
+        self.assertEqual(result, {'name': 'opencti-l402-funnel', 'content': '# steps\n', 'revision': GOOD_REV,
+                                  'sha256': hashlib.sha256(b'# steps\n').hexdigest(), 'read_only': True})
+
+    def test_bad_or_missing_revision_is_unknown(self):
+        (self.dir / 'opencti-l402-funnel.md').write_text('x')
+        self.assertEqual(gateway.get_playbook({'name': 'opencti-l402-funnel'})['revision'], 'unknown')
+        (self.dir / 'revision').write_text('../../etc\n')
+        self.assertEqual(gateway.get_playbook({'name': 'opencti-l402-funnel'})['revision'], 'unknown')
+
+    def test_unlisted_and_traversal_names_rejected(self):
+        for name in ('other', '../revision', 'opencti-l402-funnel/../x', 'opencti-l402-funnel.md', '', None, 1):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                gateway.get_playbook({'name': name})
+        for arguments in (None, {}, {'name': 'opencti-l402-funnel', 'x': 1}):
+            with self.assertRaises(ValueError):
+                gateway.get_playbook(arguments)
+
+    def test_missing_file_is_unknown(self):
+        self.assertEqual(gateway.get_playbook({'name': 'opencti-l402-funnel'}),
+                         {'status': 'unknown', 'reason': 'playbook_unavailable'})
+        self.assertIn('playbook_unavailable', gateway.FAILURE_REASONS)
+
+    def test_oversize_and_invalid_utf8_fail_closed(self):
+        path = self.dir / 'opencti-l402-funnel.md'
+        path.write_bytes(b'a' * (gateway.PLAYBOOK_MAX_BYTES + 1))
+        self.assertEqual(gateway.get_playbook({'name': 'opencti-l402-funnel'})['reason'], 'playbook_unavailable')
+        path.write_bytes(b'\xff\xfe')
+        self.assertEqual(gateway.get_playbook({'name': 'opencti-l402-funnel'})['reason'], 'playbook_unavailable')
+
+    def test_schema_enum_matches_playbooks(self):
+        self.assertEqual(gateway.PLAYBOOK_TOOL['inputSchema']['properties']['name']['enum'], list(gateway.PLAYBOOKS))
+
+    def test_playbooks_exist_and_match_readme_table(self):
+        listed = re.findall(r'^\| \[([a-z0-9-]+)\]\(', (REPO / 'docs/playbooks/README.md').read_text(), re.M)
+        self.assertEqual(sorted(listed), sorted(gateway.PLAYBOOKS))
+        for name in gateway.PLAYBOOKS:
+            self.assertTrue((REPO / 'docs/playbooks' / f'{name}.md').is_file(), name)
+
+    def test_deploy_agent_ships_exactly_these_playbooks_with_revision(self):
+        deploy = (REPO / 'ops/deploy-agent').read_text()
+        block = deploy.split('paid-scan-playbooks', 1)[1].split('"--dry-run=client"', 1)[0]
+        self.assertEqual(sorted(re.findall(r'docs/playbooks/([a-z0-9-]+)\.md', block)), sorted(gateway.PLAYBOOKS))
+        self.assertIn('--from-literal=revision=', block)
+        self.assertIn('rev-parse', deploy)
+        self.assertIn('"status", "--porcelain", "--", "docs/playbooks"', deploy)
 
 
 if __name__ == '__main__':
