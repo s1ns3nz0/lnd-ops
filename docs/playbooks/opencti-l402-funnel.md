@@ -4,7 +4,7 @@
 |---|---|
 | Owner | Repository owner (sole operator) |
 | Last reviewed | 2026-09-29 (v0) |
-| Alert | None yet. Candidate: `diagnose_l402_funnel` verdict `incident` |
+| Alerts | `OpenCTIL402InvoiceIssuanceFailing`, `OpenCTIL402SecretStoreFailing`, `OpenCTIL402RequestsWithoutInvoice` (critical); `OpenCTIL402MetricsAbsent` (warning), in `charts/monitoring-rules.yaml`. Same thresholds as the tool. Delivery: Alertmanager UI only (no external receiver yet). They use 15-minute windows, so an alert **stays firing up to 15 minutes after the fix**: verify with new activity, not with the alert clearing |
 | Agent | `paid-scan-diagnosis`: `diagnose_l402_funnel`, `get_opencti_workload_status` |
 | Scope | **L402 only.** MPP (`authscheme` `mpp`/`l402+mpp`) and x402 are not measured. An OpenCTI test fails if MPP is enabled before MPP metrics exist |
 | Related | [Stuck paid order](opencti-paid-order-stuck.md) |
@@ -167,7 +167,7 @@ this signal alone. **During an outage, note it and come back after recovery.**
 
 ## 10. Known gaps
 
-- No alert wired to the `incident` verdict.
+- Alerts reach only the Alertmanager UI. No notification channel has been chosen yet.
 - No security-event collection.
 - No MPP metrics.
 - No pricer metric.
