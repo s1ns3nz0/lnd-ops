@@ -473,37 +473,79 @@ helm template lnd-ops-agent charts/agent -n lndops-agent \
   -f "$RUN/agent-live-values.yaml" -f charts/agent/paid-scan-wsl-e2e.values.yaml > "$RUN/agent-new.yaml"
 "${ka[@]}" get configmap runbook-gateway-source -o json > "$RUN/cm-source.json"
 "${ka[@]}" get configmap runbook-agent-runbooks -o json > "$RUN/cm-runbooks.json"
+git show 6603fb3~1:agent/runbook_gateway.py > "$RUN/gateway-pre-router.py"   # the committed version before the Router change
 python3 - "$RUN" <<'PY'
-import json, sys, yaml
+import copy, difflib, json, sys, yaml
 from pathlib import Path
 run = Path(sys.argv[1])
 def objs(p):
     return {(d["kind"], d["metadata"].get("namespace", "lndops-agent"), d["metadata"]["name"]): d
             for d in yaml.safe_load_all(p.read_text()) if d}
 live, new = objs(run / "agent-live.yaml"), objs(run / "agent-new.yaml")
-changed = sorted(k for k in live if k in new and live[k] != new[k])
+AGENT, GW = ("Agent", "lndops-kagent", "lnd-ops-runbook-agent"), ("Deployment", "lndops-agent", "runbook-gateway")
+def tools(o):
+    return o["spec"]["declarative"]["tools"][0]["mcpServer"]["toolNames"]
+router_live = "diagnose_testnet_router" in tools(live[AGENT])
+changed = {k for k in live if k in new and live[k] != new[k]}
 removed = sorted(k for k in live if k not in new)
 added = sorted(set(new) - set(live))
-paid = lambda k: "paid-scan" in k[2]
-print("added:", added); print("changed:", changed); print("removed:", removed)
-assert not changed and not removed, "chart would change or remove existing objects"
-assert added and all(paid(k) for k in added), "unexpected non-paid-scan additions"
-src = json.loads((run / "cm-source.json").read_text())["data"]
-assert src.get("runbook_gateway.py") == Path("agent/runbook_gateway.py").read_text(), "live runbook_gateway.py differs from this branch"
+print("Router live:", router_live); print("added:", added); print("changed:", sorted(changed)); print("removed:", removed)
+assert not removed, "chart would remove objects"
+assert added and all("paid-scan" in k[2] for k in added), "unexpected non-paid-scan additions"
+if router_live:
+    assert not changed, "chart would change existing objects"
+else:
+    # This rollout also ships the committed Router change. Allow exactly that delta, nothing else.
+    assert changed <= {AGENT, GW}, f"unexpected changes: {sorted(changed - {AGENT, GW})}"
+    la, na = live[AGENT], new[AGENT]
+    assert set(tools(na)) - set(tools(la)) == {"diagnose_testnet_router"} and set(tools(la)) <= set(tools(na))
+    lm, nm = la["spec"]["declarative"]["systemMessage"], na["spec"]["declarative"]["systemMessage"]
+    assert not [l for l in difflib.ndiff(lm.splitlines(), nm.splitlines()) if l.startswith("- ")], "system message loses lines"
+    def strip(a):
+        a = copy.deepcopy(a); d = a["spec"]["declarative"]
+        d["systemMessage"] = ""; d["tools"][0]["mcpServer"]["toolNames"] = []
+        return a
+    assert strip(la) == strip(na), "LND agent differs beyond the Router tool and prompt lines"
+    def allow(d):
+        env = d["spec"]["template"]["spec"]["containers"][0]["env"]
+        return next(e["value"] for e in env if e["name"] == "RUNBOOK_ALLOWLIST")
+    lv, nv = set(allow(live[GW]).split(",")), set(allow(new[GW]).split(","))
+    assert lv <= nv, "runbook allowlist would lose entries"
+    def unify(d):
+        d = copy.deepcopy(d)
+        for e in d["spec"]["template"]["spec"]["containers"][0]["env"]:
+            if e["name"] == "RUNBOOK_ALLOWLIST":
+                e["value"] = ""
+        return d
+    assert unify(live[GW]) == unify(new[GW]), "runbook-gateway differs beyond RUNBOOK_ALLOWLIST"
+    print("Router delta verified: +diagnose_testnet_router, prompt lines added only, allowlist", sorted(nv - lv))
+src = json.loads((run / "cm-source.json").read_text())["data"]["runbook_gateway.py"]
+known = {"branch (Router)": Path("agent/runbook_gateway.py").read_text(), "pre-Router": (run / "gateway-pre-router.py").read_text()}
+match = [n for n, v in known.items() if v == src]
+assert match == (["branch (Router)"] if router_live else ["pre-Router"]), f"live runbook_gateway.py is an unknown version (matches: {match})"
 books = json.loads((run / "cm-runbooks.json").read_text())["data"]
 for name, text in books.items():
     assert Path("docs/runbooks", name).read_text() == text, f"live runbook differs: {name}"
-assert set(books) == {"channel-inactive.md", "pod-not-ready.md", "falco-runtime-event.md"}, f"live runbooks: {sorted(books)}"
-print(f"GATE OK: {len(added)} paid-scan objects added; nothing existing changes")
+print(f"GATE OK: {len(added)} paid-scan objects added; live gateway code is the {match[0]} version; runbooks live: {sorted(books)}")
 PY
 STEP
 ```
 
-**Success:** `GATE OK`. `changed` and `removed` are empty, and every added
-object is a paid-scan one: the tool pod and its RBAC, the eval fixture, both
-Agents and both RemoteMCPServers. **STOP** otherwise. The usual cause is live
-Router work (`runbook_gateway.py`, `kagent.yaml` or extra runbooks) that this
-branch doesn't have; commit it onto the branch first.
+**Success:** `GATE OK`.
+
+- `removed` is empty, and every added object is a paid-scan one: the tool pod
+  and its RBAC, the eval fixture, both Agents and both RemoteMCPServers.
+- This branch also contains the committed testnet Router diagnosis
+  (`6603fb3`), so there are two valid cases:
+  - **Router already live:** `changed` is empty.
+  - **Router not live yet:** `changed` is exactly the LND agent and
+    `runbook-gateway`, and the gate proves the only difference is the Router
+    delta: one new tool, prompt lines added (none removed) and more runbooks
+    in the allowlist. The gate also requires the live gateway code to be the
+    exact pre-Router committed version.
+
+**STOP** on anything else. Live objects are then in a state this branch
+doesn't know about.
 
 ### 14. Deploy
 
