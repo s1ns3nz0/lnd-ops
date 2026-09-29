@@ -267,6 +267,16 @@ TOOLS = {
 }
 
 
+def arguments_message(schema):
+    """Fixed, schema-derived hint for the model; never echoes what the caller sent."""
+    props, required = schema.get("properties", {}), schema.get("required", [])
+    if not props:
+        return "Arguments must be an empty object {}"
+    parts = [f"{k}{'' if k in required else '?'}: " + (f"one of {v['enum']}" if "enum" in v else v.get("type", "any"))
+             for k, v in props.items()]
+    return "Arguments must be {" + ", ".join(parts) + "}"
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(redact(fmt % args), flush=True)
@@ -297,10 +307,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"tools": [{"name": name, "description": fn.__doc__ or name, "inputSchema": schema} for name, (fn, schema) in TOOLS.items()]}
             elif method == "tools/call":
                 params = request.get("params", {})
-                if params.get("name") not in TOOLS:
+                if not isinstance(params, dict) or params.get("name") not in TOOLS:
                     raise ValueError("unknown tool")
-                value = TOOLS[params["name"]][0](params.get("arguments", {}))
-                result = {"content": [{"type": "text", "text": json.dumps(value, sort_keys=True)}]}
+                try:
+                    value = TOOLS[params["name"]][0](params.get("arguments", {}))
+                    result = {"content": [{"type": "text", "text": json.dumps(value, sort_keys=True)}]}
+                except ValueError:  # tool execution error: let the model see it and self-correct
+                    err = {"status": "error", "reason": "invalid_arguments", "message": arguments_message(TOOLS[params["name"]][1])}
+                    result = {"content": [{"type": "text", "text": json.dumps(err, sort_keys=True)}], "isError": True}
             else:
                 raise ValueError("unsupported MCP method")
             self.send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})

@@ -1,5 +1,8 @@
 import importlib.util
+import json
 import pathlib
+import threading
+import urllib.request
 import unittest
 from unittest import mock
 
@@ -87,6 +90,30 @@ class RunbookGatewayTests(unittest.TestCase):
         self.assertIn("apis/apps/v1/namespaces/lndops-agent/deployments/runbook-diagnostic-probe", paths)
         self.assertNotIn("statefulsets", " ".join(paths))
         audit.assert_called_once_with("RunbookActionAllowed", "restart_diagnostic_probe", "allowed")
+
+    def test_bad_arguments_are_iserror_results_not_protocol_errors(self):
+        server = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def call(params):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/mcp", data=body,
+                                         headers={"Content-Type": "application/json"})
+            return json.load(urllib.request.urlopen(req, timeout=5))
+
+        bad = call({"name": "get_workload_status", "arguments": {"kind": "evil-kind-123", "namespace": "evil-ns-123"}})
+        self.assertTrue(bad["result"]["isError"])
+        value = json.loads(bad["result"]["content"][0]["text"])
+        self.assertEqual((value["status"], value["reason"]), ("error", "invalid_arguments"))
+        self.assertIn("namespace", value["message"])
+        self.assertNotIn("evil", bad["result"]["content"][0]["text"])
+        for params in ({"name": "nope"}, {"arguments": {}}, "x"):
+            self.assertIn("error", call(params))
+        with mock.patch.object(gateway, "kube_request", return_value={"items": []}):
+            ok = call({"name": "get_workload_status", "arguments": {"kind": "pods", "namespace": "lnd-regtest"}})
+        self.assertNotIn("isError", ok["result"])
 
 
 if __name__ == "__main__":

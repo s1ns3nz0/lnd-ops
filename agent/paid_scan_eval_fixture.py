@@ -82,7 +82,10 @@ class Handler(prod.Handler):
                 params = request.get("params")
                 if not isinstance(params, dict) or params.get("name") not in [t["name"] for t in TOOLS]:
                     raise ValueError()
-                result = {"content": [{"type": "text", "text": json.dumps(call(params["name"], params.get("arguments")))}]}
+                try:
+                    result = {"content": [{"type": "text", "text": json.dumps(call(params["name"], params.get("arguments")))}]}
+                except ValueError:
+                    result = prod.invalid_arguments(next(t for t in TOOLS if t["name"] == params["name"]))
             else:
                 raise ValueError()
             self.reply(200, {"jsonrpc": "2.0", "id": request_id, "result": result})

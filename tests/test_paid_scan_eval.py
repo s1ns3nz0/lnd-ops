@@ -73,6 +73,13 @@ class FixtureServerTests(unittest.TestCase):
         reply = self.rpc("tools/call", {"name": name, "arguments": arguments or {}})
         return json.loads(reply["result"]["content"][0]["text"])
 
+    def assert_invalid_arguments(self, name, arguments):
+        reply = self.rpc("tools/call", {"name": name, "arguments": arguments})["result"]
+        self.assertTrue(reply["isError"])
+        value = json.loads(reply["content"][0]["text"])
+        self.assertEqual((value["status"], value["reason"]), ("error", "invalid_arguments"))
+        self.assertNotIn("evil", reply["content"][0]["text"])
+
     def activate(self, text):
         (self.state / "active").write_text(text)
 
@@ -100,15 +107,15 @@ class FixtureServerTests(unittest.TestCase):
         result = self.tool("get_playbook", {"name": "opencti-l402-funnel"})
         self.assertEqual(result, prod.get_playbook({"name": "opencti-l402-funnel"}))
         self.assertEqual(result["content"], "# funnel playbook\n")
-        self.assertIn("error", self.rpc("tools/call", {"name": "get_playbook", "arguments": {"name": "../x"}}))
+        self.assert_invalid_arguments("get_playbook", {"name": "../x"})
 
     def test_order_arguments_validated_but_ignored(self):
         self.activate("two")
         (self.scen / "two.json").write_text(json.dumps({"tools": {"diagnose_paid_order": {"stage": "canned"}}}))
         self.assertEqual(self.tool("diagnose_paid_order", ORDER_ARGS), {"stage": "canned"})
         for bad in ({}, {"tenant_id": TENANT}, {**ORDER_ARGS, "x": 1}, {"tenant_id": "x", "order_id": ORDER}):
-            self.assertIn("error", self.rpc("tools/call", {"name": "diagnose_paid_order", "arguments": bad}))
-        self.assertIn("error", self.rpc("tools/call", {"name": "diagnose_l402_funnel", "arguments": {"a": 1}}))
+            self.assert_invalid_arguments("diagnose_paid_order", bad)
+        self.assert_invalid_arguments("diagnose_l402_funnel", {"evil-key-123": 1})
         self.assertIn("error", self.rpc("tools/call", {"name": "other", "arguments": {}}))
 
     def test_healthz(self):

@@ -481,6 +481,7 @@ helm template lnd-ops-agent charts/agent -n lndops-agent \
 "${ka[@]}" get configmap runbook-gateway-source -o json > "$RUN/cm-source.json"
 "${ka[@]}" get configmap runbook-agent-runbooks -o json > "$RUN/cm-runbooks.json"
 git show 6603fb3~1:agent/runbook_gateway.py > "$RUN/gateway-pre-router.py"   # the committed version before the Router change
+git show 6603fb3:agent/runbook_gateway.py > "$RUN/gateway-router-commit.py"   # the committed Router version, before the isError fix
 python3 - "$RUN" <<'PY'
 import copy, difflib, json, sys, yaml
 from pathlib import Path
@@ -527,9 +528,10 @@ else:
     assert unify(live[GW]) == unify(new[GW]), "runbook-gateway differs beyond RUNBOOK_ALLOWLIST"
     print("Router delta verified: +diagnose_testnet_router, prompt lines added only, allowlist", sorted(nv - lv))
 src = json.loads((run / "cm-source.json").read_text())["data"]["runbook_gateway.py"]
-known = {"branch (Router)": Path("agent/runbook_gateway.py").read_text(), "pre-Router": (run / "gateway-pre-router.py").read_text()}
+known = {"branch": Path("agent/runbook_gateway.py").read_text(), "Router (6603fb3)": (run / "gateway-router-commit.py").read_text(),
+         "pre-Router": (run / "gateway-pre-router.py").read_text()}
 match = [n for n, v in known.items() if v == src]
-assert match == (["branch (Router)"] if router_live else ["pre-Router"]), f"live runbook_gateway.py is an unknown version (matches: {match})"
+assert len(match) == 1 and (match[0] in ("branch", "Router (6603fb3)") if router_live else match[0] == "pre-Router"), f"live runbook_gateway.py is an unknown version (matches: {match})"
 books = json.loads((run / "cm-runbooks.json").read_text())["data"]
 for name, text in books.items():
     assert Path("docs/runbooks", name).read_text() == text, f"live runbook differs: {name}"
@@ -550,6 +552,10 @@ STEP
     delta: one new tool, prompt lines added (none removed) and more runbooks
     in the allowlist. The gate also requires the live gateway code to be the
     exact pre-Router committed version.
+  - When the Router is live, the live gateway code may be the Router commit
+    (`6603fb3`) or this branch's version. The only gateway change left is then
+    the code update (tool argument errors returned as `isError` results),
+    delivered by the ConfigMap and restart that `deploy-agent` already does.
 
 **STOP** on anything else. Live objects are then in a state this branch
 doesn't know about.

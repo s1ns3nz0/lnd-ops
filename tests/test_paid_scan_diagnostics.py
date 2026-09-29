@@ -223,7 +223,19 @@ class MCPTests(unittest.TestCase):
             result = self.call('tools/call', {'name': 'get_playbook', 'arguments': {'name': 'opencti-paid-order-stuck'}})
             self.assertEqual(json.loads(result['result']['content'][0]['text'])['content'], 'hi')
             bad = self.call('tools/call', {'name': 'get_playbook', 'arguments': {'name': '../x'}})
-            self.assertIn('error', bad)
+            self.assertTrue(bad['result']['isError'])
+
+    def test_bad_arguments_are_iserror_results_without_reflection(self):
+        cases = [('get_playbook', {'name': 'evil-name-123'}), ('diagnose_paid_order', {'tenant_id': 'evil-t-123', 'order_id': 'x'}),
+                 ('diagnose_l402_funnel', {'evil-key-123': 1}), ('get_opencti_workload_status', {'evil-key-123': 1})]
+        for name, args in cases:
+            reply = self.call('tools/call', {'name': name, 'arguments': args})['result']
+            self.assertTrue(reply['isError'], name)
+            value = json.loads(reply['content'][0]['text'])
+            self.assertEqual((value['status'], value['reason']), ('error', 'invalid_arguments'))
+            self.assertNotIn('evil', reply['content'][0]['text'])
+        self.assertIn('one of', value['message'] + json.loads(self.call('tools/call', {'name': 'get_playbook', 'arguments': {}})['result']['content'][0]['text'])['message'])
+        self.assertIn('error', self.call('tools/call', {'name': 'nope', 'arguments': {}}))
 
 
 JOB = 'scan-0123456789abcdef0123'

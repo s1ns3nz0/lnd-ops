@@ -522,6 +522,16 @@ PLAYBOOK_TOOL = {
 }
 
 
+def invalid_arguments(tool):
+    """MCP tool execution error: a normal result the model can read. Fixed text, never echoes input."""
+    schema = tool["inputSchema"]
+    props = schema.get("properties", {})
+    parts = [f"{k}: " + (f"one of {v['enum']}" if "enum" in v else f"{v.get('format', v['type'])} string") for k, v in props.items()]
+    message = "Arguments must be {" + ", ".join(parts) + "}" if props else "Arguments must be an empty object {}"
+    text = json.dumps({"status": "error", "reason": "invalid_arguments", "message": message})
+    return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
 class Handler(BaseHTTPRequestHandler):
     """One-tool MCP surface, kept separate from legacy probe restart tools."""
     def log_message(self, *args):
@@ -571,8 +581,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(params, dict) or params.get("name") not in (TOOL["name"], WORKLOAD_TOOL["name"], FUNNEL_TOOL["name"], PLAYBOOK_TOOL["name"]):
                     raise ValueError()
                 run = {TOOL["name"]: diagnose, WORKLOAD_TOOL["name"]: workload_status, FUNNEL_TOOL["name"]: funnel_status, PLAYBOOK_TOOL["name"]: get_playbook}[params["name"]]
-                value = run(params.get("arguments"))
-                result = {"content": [{"type": "text", "text": json.dumps(value)}]}
+                try:
+                    result = {"content": [{"type": "text", "text": json.dumps(run(params.get("arguments")))}]}
+                except ValueError:
+                    result = invalid_arguments(next(t for t in (TOOL, WORKLOAD_TOOL, FUNNEL_TOOL, PLAYBOOK_TOOL) if t["name"] == params["name"]))
             else:
                 raise ValueError()
             self.reply(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
