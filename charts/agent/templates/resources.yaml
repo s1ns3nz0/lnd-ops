@@ -67,7 +67,7 @@ spec:
           command: [python3, /app/runbook_gateway.py]
           env:
             - {name: ACTION_COOLDOWN_SECONDS, value: {{ .Values.actionCooldownSeconds | quote }}}
-            - {name: RUNBOOK_ALLOWLIST, value: "channel-inactive.md,pod-not-ready.md,falco-runtime-event.md"}
+            - {name: RUNBOOK_ALLOWLIST, value: "channel-inactive.md,pod-not-ready.md,falco-runtime-event.md,router-operations.md,wallet-locked.md,chain-sync-stalled.md,liquidity-low.md,scb-backup-stale.md,lnd-monitoring-unavailable.md"}
           ports: [{name: mcp, containerPort: 8080}]
           readinessProbe: {httpGet: {path: /healthz, port: mcp}, initialDelaySeconds: 2, periodSeconds: 5}
           livenessProbe: {httpGet: {path: /healthz, port: mcp}, initialDelaySeconds: 10, periodSeconds: 10}

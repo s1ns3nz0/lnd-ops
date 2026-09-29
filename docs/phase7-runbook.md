@@ -29,14 +29,15 @@ The kagent Agent Pod uses a token-free ServiceAccount. Only the gateway has a
 Kubernetes token, scoped through namespace Roles. The UI and controller remain
 ClusterIP services and are accessed through local `kubectl port-forward`.
 
-The capability list maps to exactly six MCP tools:
+The capability list maps to seven MCP tools:
 
 | Tool | Scope |
 | --- | --- |
 | `get_workload_status` | Allowlisted Pod, StatefulSet, PVC, and Event reads |
 | `get_redacted_logs` | Final 50 log lines with Lightning secret patterns removed |
 | `diagnose_incident` | One of three fixed Prometheus queries and diagnoses |
-| `get_versioned_runbook` | One of three runbooks packaged from this Git revision |
+| `diagnose_testnet_router` | Fixed testnet wallet, sync, peers, channels, liquidity and SCB observations; no mutations or routing completion claim |
+| `get_versioned_runbook` | Allowlisted runbooks packaged from this Git revision, including Router operations |
 | `verify_health` | Fixed Prometheus and diagnostic-probe checks |
 | `execute_allowlisted_response` | Probe restart, or an audited denial |
 

@@ -51,7 +51,7 @@ class PhaseTests(unittest.TestCase):
         with patch.object(start, 'selection_gate', return_value=None), \
                 patch.object(start, 'inspect', side_effect=state), \
                 patch.object(start, 'applies_to_selected_workspace', return_value=True), \
-                patch.object(start, 'defer_router_for_loop', return_value=False), \
+                patch.object(start, 'defer_router_for_next_phase', return_value=False), \
                 patch.object(start, 'guide_router', return_value='deferred') as router, \
                 patch.object(start, 'guide_loop', return_value='partial') as loop, \
                 contextlib.redirect_stdout(io.StringIO()) as output:
@@ -67,12 +67,12 @@ class PhaseTests(unittest.TestCase):
                     patch.object(start, 'selection_gate', return_value=None), \
                     patch.object(start, 'inspect', side_effect=[('complete', ''), ('complete', ''), (router_state, 'policy required'), ('partial', '')]), \
                     patch.object(start, 'applies_to_selected_workspace', return_value=True), \
-                    patch.object(start, 'defer_router_for_loop', return_value=True) as defer, \
+                    patch.object(start, 'defer_router_for_next_phase', return_value=True) as defer, \
                     patch.object(start, 'guide_router') as router, \
                     patch.object(start, 'guide_loop', return_value='partial') as loop, \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(start.build_through(4, interactive=True), 10)
-                defer.assert_called_once_with('policy required', True)
+                defer.assert_called_once_with('policy required', True, 4)
                 router.assert_not_called()
                 loop.assert_called_once()
 
@@ -86,14 +86,63 @@ class PhaseTests(unittest.TestCase):
             api.lnd.side_effect = [info, {'confirmed_balance': '0'}]
             with patch('loop_api.API', return_value=api), patch.object(start.sys.stdin, 'isatty', return_value=True), \
                     patch('builtins.input', return_value=answer), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(start.defer_router_for_loop('policy required', True), expected)
+                self.assertEqual(start.defer_router_for_next_phase('policy required', True), expected)
             api.loop.assert_not_called()
             api.save.assert_not_called()
 
     def test_noninteractive_cannot_defer(self):
         with patch('loop_api.API') as api:
-            self.assertFalse(start.defer_router_for_loop('pending', False))
+            self.assertFalse(start.defer_router_for_next_phase('pending', False))
             api.assert_not_called()
+
+    def test_phase5_checks_cluster_without_requiring_loop_or_lnd_sync(self):
+        for nodes, answer, expected in (([{}], 'yes', True), ([{}], 'no', False), ([], 'yes', False)):
+            api = Mock()
+            api.command.return_value = {'items': nodes}
+            with patch('loop_api.API', return_value=api), patch.object(start.sys.stdin, 'isatty', return_value=True), \
+                    patch('builtins.input', return_value=answer), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(start.defer_router_for_next_phase('policy required', True, 5), expected)
+            api.command.assert_called_once_with(['kubectl', 'get', 'nodes', '-o', 'json'])
+            api.lnd.assert_not_called()
+            api.loop.assert_not_called()
+            if expected:
+                self.assertIn('Phase 5', out.getvalue())
+
+    def test_phase5_skips_optional_loop_and_reaches_monitoring(self):
+        def state(index):
+            return ('partial', 'policy required') if index == 2 else ('complete', '')
+        with patch.object(start, 'selection_gate', return_value=None), \
+                patch.object(start, 'inspect', side_effect=state) as inspect, \
+                patch.object(start, 'applies_to_selected_workspace', return_value=True), \
+                patch.object(start, 'defer_router_for_next_phase', return_value=True) as defer, \
+                patch.object(start, 'guide_router') as router, patch.object(start, 'guide_loop') as loop, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(start.build_through(5, interactive=True), 0)
+        self.assertEqual([c.args[0] for c in inspect.call_args_list], [0, 1, 2, 4])
+        defer.assert_called_once_with('policy required', True, 5)
+        router.assert_not_called()
+        loop.assert_not_called()
+
+    def test_phase5_builds_monitoring_after_router_deferral(self):
+        with patch.object(start, 'selection_gate', return_value=None), \
+                patch.object(start, 'inspect', side_effect=[('complete', ''), ('complete', ''),
+                    ('partial', 'policy required'), ('missing', 'not installed'), ('complete', '')]), \
+                patch.object(start, 'applies_to_selected_workspace', return_value=True), \
+                patch.object(start, 'defer_router_for_next_phase', return_value=True), \
+                patch.object(start, 'execute', return_value=0) as execute, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(start.build_through(5, interactive=True), 0)
+        self.assertEqual([c.args[0] for c in execute.call_args_list], list(start.PHASES[4]['build']))
+
+    def test_phase5_decline_stops_before_monitoring_build(self):
+        with patch.object(start, 'selection_gate', return_value=None), \
+                patch.object(start, 'inspect', side_effect=[('complete', ''), ('complete', ''), ('partial', 'policy required')]), \
+                patch.object(start, 'applies_to_selected_workspace', return_value=True), \
+                patch.object(start, 'defer_router_for_next_phase', return_value=False), \
+                patch.object(start, 'guide_router', return_value='partial'), \
+                patch.object(start, 'execute') as execute, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(start.build_through(5, interactive=True), 10)
+        execute.assert_not_called()
 
     def test_failed_lnd_probe_cannot_be_skipped(self):
         from loop_api import LoopError
@@ -101,7 +150,7 @@ class PhaseTests(unittest.TestCase):
         api.lnd.side_effect = LoopError('connection failed')
         with patch('loop_api.API', return_value=api), patch.object(start.sys.stdin, 'isatty', return_value=True), \
                 patch('builtins.input') as prompt, contextlib.redirect_stdout(io.StringIO()):
-            self.assertFalse(start.defer_router_for_loop('pending', True))
+            self.assertFalse(start.defer_router_for_next_phase('pending', True))
             prompt.assert_not_called()
 
     def test_shifted_phases_keep_historical_verifiers(self):

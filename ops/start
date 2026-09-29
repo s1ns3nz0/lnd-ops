@@ -1527,29 +1527,38 @@ def print_status():
         print("NEXT: 필수 Phase가 완료되었습니다. 선택 기능은 해당 번호에서 별도로 구성할 수 있습니다.")
 
 
-def defer_router_for_loop(detail, interactive):
-    """Skip Router exercises only for explicit Loop entry, never certify them."""
-    if not interactive or not sys.stdin.isatty():
+def defer_router_for_next_phase(detail, interactive, target=4):
+    """Defer Router exercises for Loop or monitoring without certifying them."""
+    if target not in (4, 5) or not interactive or not sys.stdin.isatty():
         return False
     from loop_api import API, LoopError
     try:
         api = API(runtime_environment())
-        info = api.lnd('getinfo')
-        if info.get('chains') != [{'chain': 'bitcoin', 'network': 'testnet'}]:
-            raise LoopError('testnet LND가 필요합니다.')
-        if not info.get('identity_pubkey') or info.get('synced_to_chain') is not True or info.get('synced_to_graph') is not True:
-            raise LoopError('LND 지갑 unlock·체인·그래프 동기화가 필요합니다.')
-        wallet = api.lnd('walletbalance')
-        if 'confirmed_balance' not in wallet:
-            raise LoopError('LND 지갑 조회를 확인할 수 없습니다.')
+        if target == 5:
+            nodes = api.command(['kubectl', 'get', 'nodes', '-o', 'json'])
+            if not nodes.get('items'):
+                raise LoopError('관측 환경을 설치할 Kubernetes 노드를 확인할 수 없습니다.')
+        else:
+            info = api.lnd('getinfo')
+            if info.get('chains') != [{'chain': 'bitcoin', 'network': 'testnet'}]:
+                raise LoopError('testnet LND가 필요합니다.')
+            if not info.get('identity_pubkey') or info.get('synced_to_chain') is not True or info.get('synced_to_graph') is not True:
+                raise LoopError('LND 지갑 unlock·체인·그래프 동기화가 필요합니다.')
+            wallet = api.lnd('walletbalance')
+            if 'confirmed_balance' not in wallet:
+                raise LoopError('LND 지갑 조회를 확인할 수 없습니다.')
     except (LoopError, ValueError, KeyError, TypeError) as exc:
-        print(f'  Phase 4 필수 조건 미충족: {exc}')
+        print(f'  Phase {target} 필수 조건 미충족: {exc}')
         return False
     print(f'  Phase 3 미완료: {detail}')
-    print('  Phase 4 진입 조건 확인: testnet LND·지갑 조회·체인 및 그래프 동기화')
-    print('  공개 채널 2개·중계 수수료 정책·중계 이력·외부 접속 검증은 Loop 진입 조건이 아닙니다.')
-    print('  Loop 설치 전에도 진입할 수 있습니다. 인증·채널·잔액·견적은 해당 작업에서 별도 검사합니다.')
-    answer = input('  Phase 3을 미완료로 남겨두고 Phase 4로 진행하겠습니까? [yes/No]: ').strip().lower()
+    if target == 4:
+        print('  Phase 4 진입 조건 확인: testnet LND·지갑 조회·체인 및 그래프 동기화')
+        print('  Loop 설치 전에도 진입할 수 있습니다. 인증·채널·잔액·견적은 해당 작업에서 별도 검사합니다.')
+    else:
+        print('  Phase 5 진입 조건 확인: Kubernetes API 연결·노드 조회')
+        print('  Phase 4 Loop는 선택 단계라 건너뜁니다. 관측 설치·수집 인증·지표 검증은 Phase 5에서 수행합니다.')
+    print('  공개 채널 2개·중계 수수료 정책·중계 이력·외부 접속 검증은 이 단계의 진입 조건이 아닙니다.')
+    answer = input(f'  Phase 3을 미완료로 남겨두고 Phase {target}로 진행하겠습니까? [yes/No]: ').strip().lower()
     if answer == 'yes':
         print('  보류: 이번 실행에서만 Phase 3 실습을 건너뜁니다. 완료 기록은 생성하지 않습니다.')
         return True
@@ -1592,9 +1601,9 @@ def build_through(target, dry_run=False, interactive=False):
         if state == "complete":
             print(f"[{number}] SKIP {phase['title']} — already complete")
             continue
-        if (target == 4 and phase['id'] == 'router' and state in ('partial', 'missing')
+        if (target in (4, 5) and phase['id'] == 'router' and state in ('partial', 'missing')
                 and not dry_run and applies_to_selected_workspace(phase)
-                and defer_router_for_loop(detail, interactive)):
+                and defer_router_for_next_phase(detail, interactive, target)):
             pending = True
             continue
         if state == "partial":

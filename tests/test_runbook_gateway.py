@@ -21,9 +21,41 @@ class RunbookGatewayTests(unittest.TestCase):
         self.assertEqual(set(gateway.TOOLS), {
             "get_workload_status", "get_redacted_logs", "diagnose_incident",
             "get_versioned_runbook", "verify_health", "execute_allowlisted_response",
+            "diagnose_testnet_router",
         })
         self.assertFalse(any("shell" in name or "kubectl" in name or "promql" in name for name in gateway.TOOLS))
         self.assertEqual(gateway.SCENARIOS["channel_inactive"]["query"], 'sum(lnd_channels_inactive_total{namespace="lnd-regtest"})')
+
+    @mock.patch.object(gateway, "kube_request")
+    @mock.patch.object(gateway, "prometheus_query")
+    def test_idle_router_operational_signals_do_not_claim_routing_proof(self, query, kube):
+        query.side_effect = [[{"value": minimum}] for _, _, minimum in gateway.ROUTER_SIGNALS.values()]
+        result = gateway.tool_router_diagnose({})
+        self.assertEqual(result["attention"], [])
+        self.assertEqual(result["unknown"], [])
+        self.assertFalse(result["routing_verified"])
+        self.assertFalse(result["automation_eligible"])
+        kube.assert_not_called()
+
+    @mock.patch.object(gateway, "prometheus_query")
+    def test_missing_nan_negative_or_failed_queries_are_unknown(self, query):
+        query.side_effect = [[], [{"value": "NaN"}], [{"value": "-1"}], RuntimeError("offline"),
+                             [{"value": "bad"}], [{"value": "1"}, {"value": "2"}], [{"value": "Inf"}]]
+        result = gateway.tool_router_diagnose({})
+        self.assertEqual(set(result["unknown"]), set(gateway.ROUTER_SIGNALS))
+        self.assertEqual(result["confidence"], "low")
+
+    @mock.patch.object(gateway, "prometheus_query", return_value=[{"value": "0"}])
+    def test_observed_zero_requires_attention_not_unknown(self, query):
+        result = gateway.tool_router_diagnose({})
+        self.assertEqual(set(result["attention"]), set(gateway.ROUTER_SIGNALS))
+        self.assertEqual(result["unknown"], [])
+
+    @mock.patch.object(gateway, "prometheus_query")
+    def test_router_query_override_is_rejected_before_io(self, query):
+        with self.assertRaises(ValueError):
+            gateway.tool_router_diagnose({"query": "up"})
+        query.assert_not_called()
 
     @mock.patch.object(gateway, "audit")
     def test_forbidden_action_is_denied_and_audited(self, audit):

@@ -6,6 +6,7 @@ gateway deliberately has no generic kubectl, shell, PromQL, or LND RPC tool.
 """
 
 import json
+import math
 import os
 import re
 import ssl
@@ -161,6 +162,61 @@ def tool_diagnose(arguments):
     }
 
 
+ROUTER_SIGNALS = {
+    "wallet_active": ('lnd_ops_wallet_state{namespace="lnd-testnet",service="lnd-0",state="SERVER_ACTIVE"}', "lnd-wallet-state", 1),
+    "chain_synced": ('lnd_chain_synced{namespace="lnd-testnet",service="lnd-0"}', "lndmon", 1),
+    "connected_peers": ('lnd_peer_count{namespace="lnd-testnet",service="lnd-0"}', "lndmon", 1),
+    "active_channels_all": ('lnd_channels_active_total{namespace="lnd-testnet",service="lnd-0"}', "lndmon", 2),
+    "outbound_demo_sat": ('lnd_channels_bandwidth_outgoing_sat{namespace="lnd-testnet",service="lnd-0",status="active"}', "lndmon", 10000),
+    "inbound_demo_sat": ('lnd_channels_bandwidth_incoming_sat{namespace="lnd-testnet",service="lnd-0",status="active"}', "lndmon", 10000),
+    "backup_current": ('lnd_ops_scb_backup_current{namespace="lnd-testnet",service="lnd-0"}', "lnd-payments", 1),
+}
+
+
+def router_signal_query(metric, job):
+    # Filter samples before summing. Missing/stale observations stay absent,
+    # rather than turning into a misleading zero or a healthy default.
+    up = f'up{{namespace="lnd-testnet",service="lnd-0",job="{job}"}}'
+    return (f'sum(({metric} and (timestamp({metric}) > time() - 120)) '
+            f'and on (namespace, service) (({up} == 1) and (timestamp({up}) > time() - 120)))')
+
+
+def tool_router_diagnose(arguments):
+    """Read fixed testnet operational signals; never assert full routing readiness."""
+    if arguments:
+        raise ValueError("Router diagnostics take no custom namespace, query, or action")
+    facts = {}
+    for name, (metric, job, minimum) in ROUTER_SIGNALS.items():
+        query = router_signal_query(metric, job)
+        fact = {"state": "unknown", "value": None, "minimum": minimum, "approved_query": query}
+        try:
+            rows = prometheus_query(query)
+            if len(rows) == 1:
+                value = float(rows[0]["value"])
+                if math.isfinite(value) and value >= 0:
+                    fact.update(state="observed" if value >= minimum else "attention", value=value)
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError, urllib.error.URLError):
+            pass  # Keep unavailable evidence unknown; no fallback to cached health.
+        fact["queried_at"] = time.time()
+        facts[name] = fact
+    attention = [name for name, fact in facts.items() if fact["state"] == "attention"]
+    unknown = [name for name, fact in facts.items() if fact["state"] == "unknown"]
+    return {
+        "scope": "lnd-testnet/lnd-0", "observed_facts": facts,
+        "likely_cause": "Some operational signals need attention" if attention else
+                        "Operational evidence is incomplete" if unknown else "The sampled operational thresholds are met",
+        "attention": attention, "unknown": unknown, "confidence": "low" if unknown else "medium",
+        "matching_runbook": "router-operations.md", "recommended_command": "ops/verify-router --json",
+        "automation_eligible": False, "routing_verified": False,
+        "limitations": ["Samples are sequential, not an atomic snapshot",
+                        "Active channel metrics include private channels; two distinct public peers are not proved",
+                        "Aggregate 10000 sat liquidity is a demo threshold, not a constrained route estimate",
+                        "Backup hash agreement does not prove an external copy, seed custody, or recovery",
+                        "External P2P reachability and payer forwarding proof require separate verification",
+                        "No recent traffic is required"],
+    }
+
+
 def tool_runbook(arguments):
     name = arguments.get("name", "")
     if name not in RUNBOOKS or not re.fullmatch(r"[a-z0-9-]+\.md", name):
@@ -204,6 +260,7 @@ TOOLS = {
     "get_workload_status": (tool_status, {"type": "object", "required": ["namespace", "kind"], "properties": {"namespace": {"type": "string", "enum": sorted(NAMESPACES)}, "kind": {"type": "string", "enum": sorted(WORKLOAD_KINDS)}}}),
     "get_redacted_logs": (tool_logs, {"type": "object", "required": ["namespace", "pod"], "properties": {"namespace": {"type": "string", "enum": sorted(NAMESPACES)}, "pod": {"type": "string"}, "container": {"type": "string"}}}),
     "diagnose_incident": (tool_diagnose, {"type": "object", "required": ["scenario"], "properties": {"scenario": {"type": "string", "enum": sorted(SCENARIOS)}}}),
+    "diagnose_testnet_router": (tool_router_diagnose, {"type": "object", "properties": {}, "additionalProperties": False}),
     "get_versioned_runbook": (tool_runbook, {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "enum": sorted(RUNBOOKS)}}}),
     "verify_health": (tool_verify, {"type": "object", "properties": {}}),
     "execute_allowlisted_response": (tool_response, {"type": "object", "required": ["action"], "properties": {"action": {"type": "string"}}}),
