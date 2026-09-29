@@ -98,6 +98,18 @@ After the first projection is connected, add bounded Job/Pod evidence and struct
 
 The reviewed Aperture [security-event branch at 239bba69](https://github.com/s1ns3nz0/aperture/blob/239bba69f884b878b0ce22523b0b8e961bb8dd72/docs/security-events.md) and [L402 metric changes at 78cacdd0](https://github.com/s1ns3nz0/aperture/blob/78cacdd05c673312bfb80d4efcd96e015a9a12c7/mint/metrics.go) are separate histories. A combined, tested deployment is needed for both. Do not sum `credential_verified` and `accepted` as distinct requests. Authentication success does not prove backend completion, and `invoice_state_mismatch` can include invoice lookup errors. Security events require external collection; output counters do not acknowledge SIEM delivery. HMAC `payment_ref` cannot be directly joined to a raw payment hash; that join needs a trusted reference projection. No such join exists in this slice.
 
+## Agent evaluation harness
+
+Checks the agent's reasoning, not the tools, against fixed scenarios with no production data and no production agent. `paidScan.eval.enabled=true` adds a credential-free `paid-scan-eval-fixture` (same tool schemas, canned outputs, real `get_playbook`, DNS-only egress), a `paid-scan-eval` RemoteMCPServer and a `paid-scan-diagnosis-eval` Agent. Both Agents render the same `systemMessage` from one Helm helper, so the prompt cannot drift.
+
+Scenarios are the source of truth in [tests/eval/scenarios](../tests/eval/scenarios) (`question`, canned `tools`, `expect`); `ops/deploy-agent` ships them as ConfigMap `paid-scan-eval-scenarios`. Run after `ops/deploy-agent` with the chart values enabled:
+
+    ops/eval-paid-scan-agent --runs 3 [--scenario NAME ...] [--out DIR] [--min-pass 0.667]
+
+Each run sets `/state/active` in the fixture, invokes the eval Agent through kagent, grades the answer and writes 0600 evidence JSON. The exit code is non-zero if any scenario's pass rate is below `--min-pass`.
+
+Grading checks required tool calls, the expected playbook read, any-of `must_mention` groups and `must_not` regexes. A `must_not` match is ignored when a negation cue (never, not, no, avoid, forbidden, n't) is within 6 words before it in the same sentence, or a prohibition cue within 4 words after. This is a heuristic: it misses distant cues and paraphrases, and can excuse a real recommendation that follows an unrelated "not". Treat a pass as weak evidence and read failing answers. The final-answer extraction (artifacts, else the last text message) has not been checked against live kagent output. Not live-verified; the unit tests use canned invocations.
+
 ## Verification
 
 Run `python3 -m unittest discover -s tests -p test_paid_scan_diagnostics.py`. CI repeats these transport, schema, diagnosis and real HTTP MCP tests in digest-pinned Linux Python and lints the enabled Helm configuration. Tests use synthetic order responses; they do not establish real payment settlement or live service readiness.
