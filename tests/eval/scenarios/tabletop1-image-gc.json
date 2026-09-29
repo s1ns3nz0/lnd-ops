@@ -90,7 +90,8 @@
     ],
     "must_not": [
       "delete (the |that )?(scanner )?job",
-      "\\bUPDATE\\b",
+      "\\bUPDATE\\b.{0,40}\\b(SET|rows?|table|database|db)\\b",
+      "\\b(edit|modify|alter)\\b[^.\\n]{0,30}\\b(rows?|database|db)\\b",
       "pay(ing)? (again|twice)",
       "\\bre-?pay"
     ]

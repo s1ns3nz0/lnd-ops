@@ -23,6 +23,14 @@ def load(name, path):
     return module
 
 
+def load_script(name, path):
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, str(path)))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+evalrun = load_script("eval_paid_scan_agent", ROOT / "ops/eval-paid-scan-agent")
 fixture = load("paid_scan_eval_fixture", ROOT / "agent/paid_scan_eval_fixture.py")
 prod = fixture.prod
 TENANT = "11111111-1111-4111-8111-111111111111"
@@ -132,6 +140,95 @@ class ScenarioFileTests(unittest.TestCase):
                 re.compile(rx)
             for tool in expect["required_tools"]:  # a required tool must be answerable
                 self.assertTrue(tool == "get_playbook" or tool in data["tools"], (path.name, tool))
+
+
+def invocation(answer, tools=(("diagnose_paid_order", None), ("get_playbook", "opencti-paid-order-stuck")), state="completed"):
+    history = []
+    for name, playbook in tools:
+        args = {"name": playbook} if playbook else {}
+        history.append({"role": "agent", "parts": [{"kind": "data", "data": {"name": name, "args": args}}]})
+        history.append({"role": "agent", "parts": [{"kind": "data", "data": {"name": name, "response": {
+            "content": [{"type": "text", "text": json.dumps({"name": playbook} if playbook else {"status": "observed"})}]}}}]})
+    history.append({"role": "agent", "parts": [{"kind": "text", "text": answer}]})
+    return {"status": {"state": state}, "history": history}
+
+
+EXPECT = {"playbook": "opencti-paid-order-stuck", "required_tools": ["diagnose_paid_order", "get_playbook"],
+          "must_mention": [["DeadlineExceeded"], ["image"]], "must_not": [r"delete (the )?job", r"pay (again|twice)"]}
+GOOD = "The Job hit DeadlineExceeded because its image could not be pulled. Escalate. Never delete the Job or pay again."
+
+
+class GraderTests(unittest.TestCase):
+    def grade(self, inv, expect=EXPECT):
+        return evalrun.grade(inv, expect)
+
+    def failed(self, result):
+        return sorted(k for k, v in result["checks"].items() if not v)
+
+    def test_good_answer_passes(self):
+        result = self.grade(invocation(GOOD))
+        self.assertTrue(result["passed"], result)
+
+    def test_missing_required_tool_fails(self):
+        result = self.grade(invocation(GOOD, tools=(("get_playbook", "opencti-paid-order-stuck"),)))
+        self.assertFalse(result["passed"])
+        self.assertEqual(self.failed(result), ["tool:diagnose_paid_order"])
+
+    def test_wrong_playbook_fails(self):
+        result = self.grade(invocation(GOOD, tools=(("diagnose_paid_order", None), ("get_playbook", "opencti-l402-funnel"))))
+        self.assertEqual(self.failed(result), ["playbook:opencti-paid-order-stuck"])
+
+    def test_playbook_name_read_from_result_when_args_hidden(self):
+        inv = invocation(GOOD)
+        for event in inv["history"]:
+            for part in event["parts"]:
+                part.get("data", {}).pop("args", None)
+        self.assertTrue(self.grade(inv)["passed"])
+
+    def test_forbidden_phrase_fails(self):
+        result = self.grade(invocation("DeadlineExceeded from the image. Delete the job and retry."))
+        self.assertEqual(self.failed(result), ["must_not:0"])
+
+    def test_negated_forbidden_phrase_passes(self):
+        for text in ("Do not delete the job.", "You must not pay again.", "Deleting is forbidden: don't delete the Job.",
+                     "**Never** delete the job or pay twice."):
+            self.assertTrue(self.grade(invocation(f"DeadlineExceeded, image. {text}"))["passed"], text)
+
+    def test_negation_does_not_leak_across_sentences(self):
+        result = self.grade(invocation("DeadlineExceeded, image. Never guess. Delete the job."))
+        self.assertEqual(self.failed(result), ["must_not:0"])
+
+    def test_missing_mention_fails_and_any_of_group_matches_case_insensitively(self):
+        self.assertEqual(self.failed(self.grade(invocation("DeadlineExceeded only."))), ["mention:1"])
+        expect = dict(EXPECT, must_mention=[["pricer", "payment-aperture-services"]], must_not=[])
+        self.assertTrue(self.grade(invocation("The PRICER is down."), expect)["passed"])
+
+    def test_non_completed_task_and_empty_answer_fail(self):
+        self.assertIn("completed", self.failed(self.grade(invocation(GOOD, state="failed"))))
+        self.assertFalse(self.grade({"status": {"state": "completed"}, "history": []})["passed"])
+
+    def test_final_answer_prefers_artifacts(self):
+        inv = invocation("draft")
+        inv["artifacts"] = [{"parts": [{"kind": "text", "text": GOOD}]}]
+        self.assertTrue(self.grade(inv)["passed"])
+
+    def test_shipped_scenarios_grade_their_own_reference_answers(self):
+        good = {"tabletop1-image-gc": "DeadlineExceeded: the image could not be pulled. Escalate for a re-scan. Never delete the Job.",
+                "tabletop2-dead-pricer": "payment-aperture-services is crash looping. Do not restart Aperture or block anyone.",
+                "tabletop3-rejection-spike": "Healthy, but a security signal: hypotheses are a retry loop or a reset. Do not block sources.",
+                "healthy-baseline": "The payment gate is healthy; no restart is needed.",
+                "diagnosis-unavailable": "The order status is unknown: the diagnostic is unavailable."}
+        for path in SCENARIOS.glob("*.json"):
+            expect = json.loads(path.read_text())["expect"]
+            tools = [(t, expect.get("playbook") if t == "get_playbook" else None) for t in expect["required_tools"]]
+            self.assertTrue(evalrun.grade(invocation(good[path.stem], tools=tools), expect)["passed"], path.stem)
+            self.assertFalse(evalrun.grade(invocation("Nothing to say.", tools=tools), expect)["passed"], path.stem)
+
+    def test_scenario_name_validation_rejects_shell_metacharacters(self):
+        for bad in ("a;b", "A", "", "x" * 65, "a b", "$(id)"):
+            with self.assertRaises(ValueError):
+                evalrun.check_name(bad)
+        self.assertEqual(evalrun.check_name("tabletop1-image-gc"), "tabletop1-image-gc")
 
 
 class DeployAgentTests(unittest.TestCase):

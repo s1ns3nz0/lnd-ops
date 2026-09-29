@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""Evaluate the paid-scan agent's reasoning against fixed scenarios (canned tool outputs, no production data).
+
+Needs charts/agent deployed with paidScan.eval.enabled=true and ops/deploy-agent run.
+Sets the active scenario in the eval fixture, asks paid-scan-diagnosis-eval, grades the answer.
+"""
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+SCENARIOS = REPO / "tests/eval/scenarios"
+NAME = re.compile(r"[a-z0-9-]{1,64}")
+PORT = 18085
+os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
+
+
+def check_name(name):
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        raise ValueError(f"invalid scenario name: {name!r}")
+    return name
+
+
+# --- grading (pure) -------------------------------------------------------
+# ponytail: heuristic, not an oracle. A must_not match is ignored when a negation cue sits within
+# NEGATION_WINDOW words before it in the same sentence, or a prohibition cue within 4 words after it.
+# It misses cues further away, double negatives and paraphrases; it can also excuse a real
+# recommendation that follows an unrelated "not". Read the evidence for failures and near-passes.
+NEGATION_WINDOW = 6
+BEFORE = re.compile(r"\b(never|not|no|without|avoid|avoids|avoiding|forbidden|prohibited|unnecessary|cannot|"
+                    r"\w+n't|do not|must not|no need)\b", re.I)
+AFTER = re.compile(r"\b(forbidden|prohibited|not allowed|not authorized|not recommended|unsafe)\b", re.I)
+
+
+def parts_of(event):
+    parts = event.get("parts", []) if isinstance(event, dict) else []
+    return [p for p in parts if isinstance(p, dict)]
+
+
+def part_text(part):
+    text = part.get("text", part.get("root", {}).get("text") if isinstance(part.get("root"), dict) else None)
+    return text if isinstance(text, str) else ""
+
+
+def final_text(invocation):
+    """Artifact text if present, else the last history message that has text."""
+    chunks = [part_text(p) for a in invocation.get("artifacts", []) or [] for p in parts_of(a)]
+    if any(chunks):
+        return "\n".join(c for c in chunks if c)
+    for event in reversed(invocation.get("history", [])):
+        text = "\n".join(t for t in (part_text(p) for p in parts_of(event)) if t)
+        if text:
+            return text
+    return ""
+
+
+def tool_events(invocation):
+    """Yield (name, args_or_None, response_or_None) for every function call/response part."""
+    for event in invocation.get("history", []):
+        for part in parts_of(event):
+            data = part.get("data")
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                yield data["name"], data.get("args", data.get("arguments")), data.get("response")
+
+
+def response_json(response):
+    try:
+        content = response.get("content", [])
+        return json.loads(content[0]["text"]) if content and content[0].get("type") == "text" else {}
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return {}
+
+
+def playbook_read(invocation, name):
+    for tool, args, response in tool_events(invocation):
+        if tool != "get_playbook":
+            continue
+        if isinstance(args, dict) and args.get("name") == name:
+            return True
+        if response is not None and response_json(response).get("name") == name:
+            return True
+    return False
+
+
+def forbidden_match(pattern, text):
+    """True when pattern matches somewhere without a nearby negation."""
+    text = text.replace("*", "").replace("`", "")
+    for sentence in re.split(r"[.!?;\n]+", text):
+        for match in re.finditer(pattern, sentence, re.I):
+            before = re.findall(r"\S+", sentence[:match.start()])[-NEGATION_WINDOW:]
+            after = re.findall(r"\S+", sentence[match.end():])[:4]
+            if not (BEFORE.search(" ".join(before)) or AFTER.search(" ".join(after))):
+                return True
+    return False
+
+
+def grade(invocation, expect):
+    text = final_text(invocation)
+    lowered = text.lower()
+    called = {name for name, _, _ in tool_events(invocation)}
+    checks = {"completed": invocation.get("status", {}).get("state") == "completed", "answer": bool(text.strip())}
+    for tool in expect.get("required_tools", []):
+        checks[f"tool:{tool}"] = tool in called
+    if expect.get("playbook"):
+        checks[f"playbook:{expect['playbook']}"] = playbook_read(invocation, expect["playbook"])
+    for i, group in enumerate(expect.get("must_mention", [])):
+        checks[f"mention:{i}"] = any(term.lower() in lowered for term in group)
+    for i, pattern in enumerate(expect.get("must_not", [])):
+        checks[f"must_not:{i}"] = not forbidden_match(pattern, text)
+    return {"passed": all(checks.values()), "checks": checks}
+
+
+# --- runner ---------------------------------------------------------------
+def run(args, check=True, timeout=600, stdout=subprocess.PIPE):
+    result = subprocess.run(args, text=True, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
+    if check and result.returncode:
+        lines = (result.stderr or result.stdout or "").strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"command failed: {args[0]}")
+    return result
+
+
+def wait_port(port, process):
+    for _ in range(100):
+        if process.poll() is not None:
+            raise RuntimeError("kubectl port-forward exited early")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                return
+        except OSError:
+            time.sleep(.1)
+    raise RuntimeError("kubectl port-forward did not become ready")
+
+
+def set_active(name):
+    """Name is validated and passed as a positional argument, never interpolated into the shell text."""
+    check_name(name)
+    run(["kubectl", "-n", "lndops-agent", "exec", "deploy/paid-scan-eval-fixture", "--",
+         "sh", "-c", 'printf %s "$1" > /state/active', "sh", name], timeout=60)
+
+
+def clear_active():
+    run(["kubectl", "-n", "lndops-agent", "exec", "deploy/paid-scan-eval-fixture", "--",
+         "rm", "-f", "/state/active"], check=False, timeout=60)
+
+
+def invoke(question, path):
+    error = None
+    for _ in range(2):  # transport failures only; a bad answer is never retried
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            done = run([str(REPO / "ops/kagent-cli"), "--kagent-url", f"http://127.0.0.1:{PORT}",
+                        "--namespace", "lndops-kagent", "invoke", "--agent", "paid-scan-diagnosis-eval",
+                        "--task", question, "--timeout", "5m"], check=False, timeout=360, stdout=stream)
+        if done.returncode:
+            error = (done.stderr or "kagent invocation failed").strip().splitlines()[-1]
+            continue
+        try:
+            return json.loads(path.read_text(errors="replace"))
+        except json.JSONDecodeError:
+            error = "kagent output was not JSON"
+    raise RuntimeError(error)
+
+
+def write_private(path, payload):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(payload, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+
+
+def summarize(results, runs):
+    lines = [f"{'scenario':32} {'pass':>6}  failing checks"]
+    for name, outcomes in results.items():
+        failing = sorted({c for o in outcomes for c, ok in o["checks"].items() if not ok})
+        lines.append(f"{name:32} {sum(o['passed'] for o in outcomes)}/{runs:<4}  {', '.join(failing) or '-'}")
+    return "\n".join(lines)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--scenario", action="append", help="scenario name (repeatable); default all")
+    parser.add_argument("--out", type=pathlib.Path, default=STATE / "evidence")
+    parser.add_argument("--min-pass", type=float, default=2 / 3, help="minimum pass rate per scenario (default 2/3)")
+    args = parser.parse_args(argv)
+    if args.runs < 1 or not 0 <= args.min_pass <= 1:
+        parser.error("--runs must be >= 1 and --min-pass within 0..1")
+    return args
+
+
+def main(argv):
+    controller = None
+    try:
+        args = parse_args(argv)
+        available = {p.stem: json.loads(p.read_text()) for p in sorted(SCENARIOS.glob("*.json"))}
+        names = [check_name(n) for n in (args.scenario or list(available))]
+        unknown = [n for n in names if n not in available]
+        if unknown:
+            raise ValueError(f"unknown scenario: {', '.join(unknown)}")
+        args.out.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        commit = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
+        controller = subprocess.Popen(
+            ["kubectl", "-n", "lndops-kagent", "port-forward", "service/kagent-controller", f"{PORT}:8083"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        wait_port(PORT, controller)
+        results = {}
+        for name in names:
+            results[name] = []
+            for n in range(1, args.runs + 1):
+                raw = args.out / f"paid-scan-eval-{stamp}-{name}-run{n}.raw.json"
+                try:
+                    set_active(name)
+                    inv = invoke(available[name]["question"], raw)
+                    outcome = grade(inv, available[name]["expect"])
+                    outcome["answer"] = final_text(inv)
+                except (RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                    inv, outcome = None, {"passed": False, "checks": {"invocation": False}, "error": str(exc)}
+                results[name].append(outcome)
+                write_private(args.out / f"paid-scan-eval-{stamp}-{name}-run{n}.json",
+                              dict(outcome, schema="lnd-ops/paid-scan-eval/v1", scenario=name, run=n, git_commit=commit,
+                                   agent="paid-scan-diagnosis-eval", invocation=inv))
+                raw.unlink(missing_ok=True)
+                print(f"{name} run {n}: {'pass' if outcome['passed'] else 'FAIL'}", flush=True)
+        print(summarize(results, args.runs))
+        print(f"Evidence: {args.out}")
+        weak = [n for n, o in results.items() if sum(x["passed"] for x in o) / args.runs < args.min_pass - 1e-9]
+        if weak:
+            print(f"FAIL: below the {args.min_pass:.2f} pass rate: {', '.join(weak)}", file=sys.stderr)
+            return 1
+        return 0
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if controller is not None:
+            try:
+                clear_active()
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if controller.poll() is None:
+                controller.terminate()
+                try: controller.wait(timeout=5)
+                except subprocess.TimeoutExpired: controller.kill()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
