@@ -159,7 +159,7 @@ spec:
             summary: "Aperture failed to mint L402 invoices; paying customers cannot get an invoice"
             playbook: docs/playbooks/opencti-l402-funnel.md
         - alert: OpenCTIL402SecretStoreFailing
-          expr: sum(increase(aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}[15m])) > 0
+          expr: sum(increase(aperture_l402_verify_total{job="aperture",reason="secret_store_error"}[15m])) > 0
           for: 1m
           labels:
             severity: critical
@@ -168,7 +168,7 @@ spec:
             playbook: docs/playbooks/opencti-l402-funnel.md
         - alert: OpenCTIL402RequestsWithoutInvoice
           expr: |
-            (sum(increase(aperture_l402_verify_total{job="aperture",reason="no_credentials"}[15m])) >= 2)
+            (sum(increase(aperture_l402_verify_total{job="aperture",reason="missing_credentials"}[15m])) >= 2)
             and on() (sum(increase(aperture_l402_mint_total{job="aperture",result="ok"}[15m])) == 0)
             unless on() (sum(increase(aperture_l402_mint_total{job="aperture",result!="ok"}[15m])) > 0)
           for: 1m

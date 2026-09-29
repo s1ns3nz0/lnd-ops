@@ -360,15 +360,15 @@ FUNNEL_QUERIES = {
     "MINT_OK": _MINT,
     "MINT_FAILED": 'sum by (result) (increase(aperture_l402_mint_total{job="aperture",result!="ok"}[15m]))',
     "ACCEPTED": f'sum(increase({_V % "=\"accepted\""}[15m]))',
-    "UNSETTLED": f'sum(increase({_V % "=\"invoice_unsettled\""}[15m]))',
-    "NO_CREDENTIALS": f'sum(increase({_V % "=\"no_credentials\""}[15m]))',
-    "LOOKUP_ERROR": f'sum(increase({_V % "=\"secret_lookup_error\""}[15m]))',
-    "REJECTED": "sum by (reason) (increase(" + _V % '=~"bad_preimage|bad_signature|malformed_header|malformed_macaroon|secret_not_found|caveat_unsatisfied"' + "[15m]))",
+    "UNSETTLED": f'sum(increase({_V % "=\"invoice_state_mismatch\""}[15m]))',
+    "NO_CREDENTIALS": f'sum(increase({_V % "=\"missing_credentials\""}[15m]))',
+    "LOOKUP_ERROR": f'sum(increase({_V % "=\"secret_store_error\""}[15m]))',
+    "REJECTED": "sum by (reason) (increase(" + _V % '=~"payment_proof_mismatch|invalid_signature|malformed_credentials|malformed_identifier|unknown_credential|restriction_failure"' + "[15m]))",
 }
 NO_INVOICE_MIN = 2  # one tokenless request may sit at the window edge before its invoice is minted
 MINT_RESULTS = frozenset({"challenge_failed", "identifier_failed", "secret_failed", "macaroon_failed", "caveat_failed"})
-REJECT_REASONS = frozenset({"bad_preimage", "bad_signature", "malformed_header", "malformed_macaroon",
-                            "secret_not_found", "caveat_unsatisfied"})
+REJECT_REASONS = frozenset({"payment_proof_mismatch", "invalid_signature", "malformed_credentials", "malformed_identifier",
+                            "unknown_credential", "restriction_failure"})
 FUNNEL_LIMITATIONS = [
     "L402 scheme only. MPP (authscheme mpp or l402+mpp) and the x402 rail are not counted; no_l402_traffic means no L402 traffic, not no payments.",
     "Counters reset when Aperture restarts; increase() compensates but a restart inside the window can hide or blur events.",
@@ -445,7 +445,7 @@ def funnel_status(arguments, query=None, now=None):
         rejected = _series(raw["REJECTED"], "reason", REJECT_REASONS)
     except Exception:  # fail closed on any query/shape error; never surface raw text
         return {"status": "unknown", "reason": "prometheus_unavailable"}
-    signals = [f"mint_failed:{k}" for k in failed] + (["secret_lookup_error"] if lookup else [])
+    signals = [f"mint_failed:{k}" for k in failed] + (["secret_store_error"] if lookup else [])
     if tokenless >= NO_INVOICE_MIN and not issued and not failed:
         signals.append("requests_without_invoice")
     total_rejected = sum(rejected.values())
@@ -460,7 +460,7 @@ def funnel_status(arguments, query=None, now=None):
     observed = time.gmtime(time.time() if now is None else now)
     return {"status": "observed", "verdict": verdict, "incident_signals": signals,
             "challenges_issued": issued, "requests_without_token": tokenless, "mint_failed": failed, "accepted": accepted,
-            "invoice_unsettled": unsettled, "secret_lookup_error": lookup, "rejected": rejected,
+            "invoice_state_mismatch": unsettled, "secret_store_error": lookup, "rejected": rejected,
             "security_signal": total_rejected > 0, "scope": "l402", "window": "15m", "read_only": True,
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", observed), "limitations": list(FUNNEL_LIMITATIONS)}
 

@@ -37,8 +37,8 @@ class L402AlertRules(unittest.TestCase):
     def test_threshold_matches_diagnostics(self):
         self.assertIn(f">= {diag.NO_INVOICE_MIN}", group())
 
-    def test_no_macaroon_valid(self):
-        self.assertNotIn("macaroon_valid", group())
+    def test_no_credential_verified(self):
+        self.assertNotIn("credential_verified", group())
 
 
 if __name__ == "__main__":

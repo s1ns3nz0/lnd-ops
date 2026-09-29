@@ -22,7 +22,7 @@ through `lnd-merchant`, and admits requests that prove payment.
 | `no_l402_traffic` | None, *unless* customers report errors. Then requests aren't reaching Aperture | Critical if reports exist |
 | `healthy` | None | — |
 
-Customers who already paid are affected too when `secret_lookup_error`
+Customers who already paid are affected too when `secret_store_error`
 appears: Aperture can't check their tokens, so it rejects **paying** customers.
 
 ## 2. Mitigate first (stop the bleeding)
@@ -42,28 +42,30 @@ Call `diagnose_l402_funnel {}` (or ask the agent), then
 `get_opencti_workload_status {}`.
 
 ```text
-request without token          no_credentials                  requests_without_token (normal: starts every payment)
+request without token          missing_credentials             requests_without_token (normal: starts every payment)
    ─► 0. price lookup          not measured; failure stops here → no invoice
    ─► 1. invoice issued        mint_total{result="ok"}         challenges_issued
           └ failed             mint_total{result!="ok"}        mint_failed         ← INCIDENT
 customer pays, retries with the L402 token
    ─► 2. token checked         verify_total{reason=…}
-          ├ not paid yet       invoice_unsettled               (normal)
-          ├ bad token          bad_preimage, bad_signature,    rejected            (security signal)
-          │                    malformed_*, secret_not_found, caveat_unsatisfied
-          └ store failed       secret_lookup_error                                 ← INCIDENT
+          ├ not paid yet       invoice_state_mismatch          (normal)
+          ├ bad token          payment_proof_mismatch, invalid_signature,   rejected   (security signal)
+          │                    malformed_credentials, malformed_identifier,
+          │                    unknown_credential, restriction_failure
+          └ store failed       secret_store_error              ← INCIDENT
    ─► 3. admitted              verify_total{reason="accepted"} accepted
 ```
 
-`macaroon_valid` is a checkpoint *inside* step 3. Adding it to `accepted`
-double-counts, so the tool never reads it.
+`credential_verified` is a checkpoint *inside* step 3. Adding it to `accepted`
+double-counts, so the tool never reads it. Label values match Aperture's
+security-event reasons.
 
 | Field | Meaning |
 |---|---|
 | `status` | `unknown` means no verdict at all (step 7) |
 | `verdict` | `incident`, `inconclusive`, `no_l402_traffic` or `healthy`, over the last 15 minutes |
 | `incident_signals` | Why it's an incident |
-| counts | `requests_without_token`, `challenges_issued`, `accepted`, `invoice_unsettled`, `rejected{reason}` |
+| counts | `requests_without_token`, `challenges_issued`, `accepted`, `invoice_state_mismatch`, `rejected{reason}` |
 | `security_signal` | `true` when any token was rejected. It never changes the verdict (step 8) |
 
 **Counts, not ratios:** E2E traffic is a handful of payments, and one unpaid
@@ -79,7 +81,7 @@ is a hard fault regardless of volume.
 | `mint_failed:secret_failed` | Aperture's SQLite secret store can't save the new token's root key | `l402-aperture` logs; PVC `l402-aperture-db` bound; disk space |
 | `mint_failed:identifier_failed` / `macaroon_failed` | In-memory steps (random ID, macaroon construction). Should essentially never happen; points at the process or host | `l402-aperture` logs and restarts; node health |
 | `mint_failed:caveat_failed` | The service's caveat settings in `aperture.yaml` can't be applied | Recent change to the `l402-aperture-config` ConfigMap |
-| `secret_lookup_error` | Store failing on reads: paid tokens can't be checked | Same as `secret_failed` |
+| `secret_store_error` | Store failing on reads: paid tokens can't be checked | Same as `secret_failed` |
 | `no_l402_traffic` **with** customer reports | Requests never reach Aperture | DNS, the `l402-aperture` Service, the ingress path |
 
 **Reality wins over a tool's verdict.** When customer reports contradict the
@@ -91,7 +93,7 @@ verdict, investigate the contradiction instead of trusting the tool.
 |---|---|
 | `requests_without_invoice` | Fix and restart `payment-aperture-services`. Leave Aperture alone; it only reports the pricer's failure |
 | `challenge_failed` | Restore `lnd-merchant`: restart a crashed pod, or unlock the wallet by the documented procedure. Never put wallet passwords, seeds or macaroons in prompts |
-| `secret_failed`, `secret_lookup_error` | Fix storage (PVC, disk) and restart `l402-aperture`. **Escalate** before touching the database file |
+| `secret_failed`, `secret_store_error` | Fix storage (PVC, disk) and restart `l402-aperture`. **Escalate** before touching the database file |
 | `identifier_failed`, `macaroon_failed` | Restart `l402-aperture` once. If it recurs, escalate |
 | `caveat_failed` | Roll back the last config change; otherwise escalate |
 
@@ -136,17 +138,17 @@ Keep a timestamped incident log. It becomes the postmortem draft.
 
 Rejected tokens are counted, not judged.
 
-- `no_credentials` (a request with no token) is the normal start of every
+- `missing_credentials` (a request with no token) is the normal start of every
   payment and never a rejection.
-- `malformed_header` means a header was present but unparseable. A few are
+- `malformed_credentials` means a header was present but unparseable. A few are
   client bugs or noise.
 
 Look closer when:
 
-- `bad_signature` or `secret_not_found` climb: tokens Aperture never issued
+- `invalid_signature` or `unknown_credential` climb: tokens Aperture never issued
   (forgery or probing);
-- `bad_preimage` climbs: tokens presented with wrong payment proofs;
-- `caveat_unsatisfied`: expired tokens, or tokens reused for another service.
+- `payment_proof_mismatch` climbs: tokens presented with wrong payment proofs;
+- `restriction_failure`: expired tokens, or tokens reused for another service.
 
 The funnel can't tell *who*; that needs Aperture's security events, which
 aren't collected yet. Record the counts and time window, and block nothing on
@@ -200,7 +202,7 @@ this signal alone. **During an outage, note it and come back after recovery.**
 3. **Workload:** `l402-aperture` and `lnd-merchant` are ready.
    `payment-aperture-services` shows `ready_replicas: 0`, `CrashLoopBackOff`
    and `restart_count: 11`.
-4. **Side signal:** `rejected: {"bad_signature": 3}`. Note it and move on;
+4. **Side signal:** `rejected: {"invalid_signature": 3}`. Note it and move on;
    don't chase it mid-outage.
 5. **Fix:** check `kubectl logs deploy/payment-aperture-services --previous`,
    fix the cause and let it restart.

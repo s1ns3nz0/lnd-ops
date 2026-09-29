@@ -7,8 +7,8 @@ tests:
     interval: 1m
     input_series:
       - {series: 'up{job="aperture"}', values: '1x30'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}', values: '0x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="missing_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_store_error"}', values: '0x30'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0x30'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="challenge_failed"}', values: '0x30'}
     alert_rule_test:
@@ -20,7 +20,7 @@ tests:
     interval: 1m
     input_series:
       - {series: 'up{job="aperture"}', values: '1x30'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="missing_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0x30'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="challenge_failed"}', values: '0 0 0 0 0 0 0 0 0 0 2+0x20'}
     alert_rule_test:
@@ -30,8 +30,8 @@ tests:
     interval: 1m
     input_series:
       - {series: 'up{job="aperture"}', values: '1x30'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}', values: '0x30'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="missing_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_store_error"}', values: '0x30'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0 0 0 0 0 0 0 0 0 0 3+0x20'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="challenge_failed"}', values: '0x30'}
     alert_rule_test:
@@ -43,7 +43,7 @@ tests:
     interval: 1m
     input_series:
       - {series: 'up{job="aperture"}', values: '1x30'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="no_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 1+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="missing_credentials"}', values: '0 0 0 0 0 0 0 0 0 0 1+0x20'}
       - {series: 'aperture_l402_mint_total{job="aperture",result="ok"}', values: '0x30'}
     alert_rule_test:
       - {eval_time: 15m, alertname: OpenCTIL402RequestsWithoutInvoice, exp_alerts: []}
@@ -58,6 +58,6 @@ tests:
     interval: 1m
     input_series:
       - {series: 'up{job="aperture"}', values: '1x30'}
-      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_lookup_error"}', values: '0 0 0 0 0 0 0 0 0 0 1+0x20'}
+      - {series: 'aperture_l402_verify_total{job="aperture",reason="secret_store_error"}', values: '0 0 0 0 0 0 0 0 0 0 1+0x20'}
     alert_rule_test:
       - {eval_time: 15m, alertname: OpenCTIL402SecretStoreFailing, exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Aperture cannot read its L402 secret store; token verification is failing", playbook: docs/playbooks/opencti-l402-funnel.md}}]}

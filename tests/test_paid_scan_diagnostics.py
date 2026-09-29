@@ -481,7 +481,7 @@ class FunnelTests(unittest.TestCase):
 
     def test_incident_on_lookup_error(self):
         r = self.run_funnel({'LOOKUP_ERROR': vec(({}, 1))})
-        self.assertEqual((r['verdict'], r['incident_signals']), ('incident', ['secret_lookup_error']))
+        self.assertEqual((r['verdict'], r['incident_signals']), ('incident', ['secret_store_error']))
 
     def test_unknown_when_up_empty_or_zero(self):
         for up in (None, 0):
@@ -513,30 +513,30 @@ class FunnelTests(unittest.TestCase):
     def test_unknown_labels_are_other(self):
         r = self.run_funnel({
             'MINT_FAILED': vec(({'result': 'evil<x>'}, 1), ({'result': 'weird'}, 2), ({'result': 'secret_failed'}, 1)),
-            'REJECTED': vec(({'reason': 'bad_preimage'}, 1), ({'reason': 'zzz'}, 1), ({'reason': 'qqq'}, 1))})
+            'REJECTED': vec(({'reason': 'payment_proof_mismatch'}, 1), ({'reason': 'zzz'}, 1), ({'reason': 'qqq'}, 1))})
         self.assertEqual(r['mint_failed'], {'other': 3, 'secret_failed': 1})
-        self.assertEqual(r['rejected'], {'bad_preimage': 1, 'other': 2})
+        self.assertEqual(r['rejected'], {'payment_proof_mismatch': 1, 'other': 2})
         self.assertEqual(r['incident_signals'], ['mint_failed:other', 'mint_failed:secret_failed'])
 
     def test_rounding_and_negative_clamp(self):
         r = self.run_funnel({'MINT_OK': vec(({}, 2.6)), 'ACCEPTED': vec(({}, -0.4)), 'UNSETTLED': vec(({}, 0.4)),
                              'LOOKUP_ERROR': vec(({}, -3))})
-        self.assertEqual((r['challenges_issued'], r['accepted'], r['invoice_unsettled'], r['secret_lookup_error']),
+        self.assertEqual((r['challenges_issued'], r['accepted'], r['invoice_state_mismatch'], r['secret_store_error']),
                          (3, 0, 0, 0))
         self.assertEqual(r['verdict'], 'healthy')
 
     def test_security_signal_does_not_change_verdict(self):
-        r = self.run_funnel({'MINT_OK': vec(({}, 1)), 'REJECTED': vec(({'reason': 'bad_signature'}, 5))})
+        r = self.run_funnel({'MINT_OK': vec(({}, 1)), 'REJECTED': vec(({'reason': 'invalid_signature'}, 5))})
         self.assertEqual((r['verdict'], r['security_signal']), ('healthy', True))
-        r = self.run_funnel({'REJECTED': vec(({'reason': 'bad_signature'}, 5))})
+        r = self.run_funnel({'REJECTED': vec(({'reason': 'invalid_signature'}, 5))})
         self.assertEqual((r['verdict'], r['security_signal']), ('healthy', True))
 
-    def test_fixed_queries_never_use_macaroon_valid(self):
+    def test_fixed_queries_never_use_credential_verified(self):
         q = prom()
         gateway.funnel_status(None, query=q, now=NOW)
         self.assertEqual(sorted(q.seen), sorted(gateway.FUNNEL_QUERIES.values()))
         self.assertEqual(len(q.seen), 8)
-        self.assertFalse(any('macaroon_valid' in x for x in q.seen))
+        self.assertFalse(any('credential_verified' in x for x in q.seen))
 
     def test_pricer_failure_is_incident(self):
         r = self.run_funnel({'NO_CREDENTIALS': vec(({}, 3))})
