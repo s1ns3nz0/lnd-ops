@@ -535,8 +535,29 @@ class FunnelTests(unittest.TestCase):
         q = prom()
         gateway.funnel_status(None, query=q, now=NOW)
         self.assertEqual(sorted(q.seen), sorted(gateway.FUNNEL_QUERIES.values()))
-        self.assertEqual(len(q.seen), 7)
+        self.assertEqual(len(q.seen), 8)
         self.assertFalse(any('macaroon_valid' in x for x in q.seen))
+
+    def test_pricer_failure_is_incident(self):
+        r = self.run_funnel({'NO_CREDENTIALS': vec(({}, 3))})
+        self.assertEqual((r['verdict'], r['requests_without_token']), ('incident', 3))
+        self.assertEqual(r['incident_signals'], ['requests_without_invoice'])
+
+    def test_single_tokenless_request_is_inconclusive(self):
+        r = self.run_funnel({'NO_CREDENTIALS': vec(({}, 1))})
+        self.assertEqual((r['verdict'], r['incident_signals']), ('inconclusive', []))
+
+    def test_normal_traffic_is_healthy(self):
+        r = self.run_funnel({'NO_CREDENTIALS': vec(({}, 3)), 'MINT_OK': vec(({}, 3))})
+        self.assertEqual((r['verdict'], r['incident_signals']), ('healthy', []))
+
+    def test_zero_traffic_reports_zero_tokenless(self):
+        r = self.run_funnel()
+        self.assertEqual((r['verdict'], r['requests_without_token']), ('no_l402_traffic', 0))
+
+    def test_tokenless_with_mint_failure_has_no_extra_signal(self):
+        r = self.run_funnel({'NO_CREDENTIALS': vec(({}, 3)), 'MINT_FAILED': vec(({'result': 'challenge_failed'}, 3))})
+        self.assertEqual(r['incident_signals'], ['mint_failed:challenge_failed'])
 
     def test_arguments_must_be_empty(self):
         for args in ({'query': 'up'}, [], 'x'):

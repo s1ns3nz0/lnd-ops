@@ -361,9 +361,11 @@ FUNNEL_QUERIES = {
     "MINT_FAILED": 'sum by (result) (increase(aperture_l402_mint_total{job="aperture",result!="ok"}[15m]))',
     "ACCEPTED": f'sum(increase({_V % "=\"accepted\""}[15m]))',
     "UNSETTLED": f'sum(increase({_V % "=\"invoice_unsettled\""}[15m]))',
+    "NO_CREDENTIALS": f'sum(increase({_V % "=\"no_credentials\""}[15m]))',
     "LOOKUP_ERROR": f'sum(increase({_V % "=\"secret_lookup_error\""}[15m]))',
     "REJECTED": "sum by (reason) (increase(" + _V % '=~"bad_preimage|bad_signature|malformed_header|malformed_macaroon|secret_not_found|caveat_unsatisfied"' + "[15m]))",
 }
+NO_INVOICE_MIN = 2  # one tokenless request may sit at the window edge before its invoice is minted
 MINT_RESULTS = frozenset({"challenge_failed", "identifier_failed", "secret_failed", "macaroon_failed", "caveat_failed"})
 REJECT_REASONS = frozenset({"bad_preimage", "bad_signature", "malformed_header", "malformed_macaroon",
                             "secret_not_found", "caveat_unsatisfied"})
@@ -438,21 +440,26 @@ def funnel_status(arguments, query=None, now=None):
         if _series(raw["UP"]) < 1:
             return {"status": "unknown", "reason": "aperture_not_scraped"}
         issued, accepted, unsettled, lookup = (_series(raw[k]) for k in ("MINT_OK", "ACCEPTED", "UNSETTLED", "LOOKUP_ERROR"))
+        tokenless = _series(raw["NO_CREDENTIALS"])
         failed = _series(raw["MINT_FAILED"], "result", MINT_RESULTS)
         rejected = _series(raw["REJECTED"], "reason", REJECT_REASONS)
     except Exception:  # fail closed on any query/shape error; never surface raw text
         return {"status": "unknown", "reason": "prometheus_unavailable"}
     signals = [f"mint_failed:{k}" for k in failed] + (["secret_lookup_error"] if lookup else [])
+    if tokenless >= NO_INVOICE_MIN and not issued and not failed:
+        signals.append("requests_without_invoice")
     total_rejected = sum(rejected.values())
     if signals:
         verdict = "incident"
-    elif not (issued or accepted or unsettled or total_rejected):
+    elif not (issued or accepted or unsettled or total_rejected or tokenless):
         verdict = "no_l402_traffic"
+    elif tokenless == 1 and not (issued or accepted or unsettled or total_rejected):
+        verdict = "inconclusive"
     else:
         verdict = "healthy"
     observed = time.gmtime(time.time() if now is None else now)
     return {"status": "observed", "verdict": verdict, "incident_signals": signals,
-            "challenges_issued": issued, "mint_failed": failed, "accepted": accepted,
+            "challenges_issued": issued, "requests_without_token": tokenless, "mint_failed": failed, "accepted": accepted,
             "invoice_unsettled": unsettled, "secret_lookup_error": lookup, "rejected": rejected,
             "security_signal": total_rejected > 0, "scope": "l402", "window": "15m", "read_only": True,
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", observed), "limitations": list(FUNNEL_LIMITATIONS)}
@@ -473,7 +480,7 @@ WORKLOAD_TOOL = {
 
 FUNNEL_TOOL = {
     "name": "diagnose_l402_funnel",
-    "description": "Read fixed Aperture L402 counters from Prometheus (15m window) to judge challenge issuance and token verification. Counts only; no per-request data.",
+    "description": "Read fixed Aperture L402 counters from Prometheus (15m window) to judge challenge issuance and token verification. Verdict is incident | inconclusive | no_l402_traffic | healthy. Counts only; no per-request data.",
     "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
 }
 
