@@ -121,6 +121,10 @@ source ~/paid-scan-diag.env
 "${k[@]}" get node desktop-tjq5clv
 ls "$OLD_RUN/image-map.json" "$OLD_RUN/addresses.json" "$OLD_RUN/run-id" ~/.local/state/lnd-ops/phase7-ollama.json >/dev/null
 "${kk[@]}" get modelconfig default-model-config >/dev/null
+# The agents need the model server. It has failed silently before (the Mac's DHCP address changed).
+ENDPOINT=$(python3 -c 'import json,os; print(json.load(open(os.path.expanduser("~/.local/state/lnd-ops/phase7-ollama.json")))["endpoint"])')
+curl -sk -m 5 "$ENDPOINT/api/version" | grep -q '"version"' || { echo "Ollama endpoint $ENDPOINT is not reachable from WSL"; exit 1; }
+echo "Ollama reachable: $ENDPOINT"
 "${kn[@]}" get deployments -o json | python3 -c '
 import json, sys
 items = json.load(sys.stdin)["items"]
@@ -141,7 +145,10 @@ echo "STEP 2 OK"
 STEP
 ```
 
-**Success:** `13 deployments; not ready: []`, then `STEP 2 OK`. **STOP** on
+**Success:** `Ollama reachable: …`, `13 deployments; not ready: []`, then
+`STEP 2 OK`. If Ollama isn't reachable, fix the model server first: on the
+Mac, check `ipconfig getifaddr en0` against the LaunchAgent's `OLLAMA_HOST`.
+Without the model server, every agent answer fails. **STOP** on
 anything else. A not-ready Deployment must be fixed first so later failures
 can be attributed. An existing object means an earlier attempt left something
 behind. A NetworkPolicy on postgres or Aperture would block the new traffic.
