@@ -65,7 +65,7 @@ jobs:
           bash -n ops/doctor ops/check-host-encryption ops/bootstrap ops/deploy ops/deploy-monitoring ops/enable-loop ops/verify ops/verify-source ops/install-command ops/windows-drive ops/windows-preflight ops/windows-install-prereqs ops/windows-enable-log-access ops/windows-smoke ops/reset-disposable ops/reset-project-image-cache ops/reset-recovered-regtest ops/backup-scb ops/backup-status ops/prepare-regtest-recovery ops/finish-regtest-recovery
           bash -n ops/build-collector
           bash -n ops/kagent-cli
-          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/start", "ops/wallet-status", "ops/purge-project", "ops/verify-monitoring", "ops/verify-loop", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py", "charts/lnd-ops/files/loop_health.py")]'
+          python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("ops/start", "ops/wallet-status", "ops/purge-project", "ops/verify-monitoring", "ops/verify-loop", "ops/check-images", "ops/redeploy-check", "ops/test-lnd-alerts", "ops/deploy-agent", "ops/provision-paid-scan-diagnostics", "ops/exercise-phase7-agent", "ops/phase7-acceptance", "agent/runbook_gateway.py", "charts/lnd-ops/files/loop_health.py")]'
           python3 -m py_compile ops/exercise-regtest ops/verify-regtest-recovery collector/payment_metrics.py
           python3 -m json.tool ops/images.lock.json >/dev/null
           for dashboard in charts/dashboards/*.json; do python3 -m json.tool "$dashboard" >/dev/null; done
@@ -89,6 +89,11 @@ jobs:
         run: |
           docker build -f observer/Dockerfile.test -t localhost/lnd-ops-router-observer-test observer
           docker run --rm --network none localhost/lnd-ops-router-observer-test
+      - name: Test read-only paid order diagnosis in pinned Linux Python
+        run: |
+          docker run --rm --network none -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
+            python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 \
+            python3 -m unittest discover -s tests -p test_paid_scan_diagnostics.py
       - name: Render both profiles in pinned Linux Helm image
         run: |
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml
@@ -96,6 +101,7 @@ jobs:
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/lnd-ops -f charts/lnd-ops/values-testnet.yaml
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/vendor/kube-prometheus-stack-91.4.1.tgz -f charts/monitoring-values.yaml
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/agent --namespace lnd-agent
+          docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/agent --namespace lndops-agent --set paidScan.enabled=true --set paidScan.origin=https://diagnostics.example:8443
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" lint charts/vendor/kagent-0.9.12.tgz --namespace kagent -f charts/kagent-values.yaml
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops charts/lnd-ops -f charts/lnd-ops/values-regtest.yaml >/dev/null
           docker run --rm -v "$PWD:/work:ro" -w /work "$HELM_IMAGE" template lnd-ops-recovery charts/lnd-ops -f charts/lnd-ops/values-regtest-recovery.yaml >/dev/null

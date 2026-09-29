@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Generate TLS material, token and Secret manifests for paid-scan diagnostics.
+
+Writes JSON Secret manifests only; nothing is applied to any cluster.
+"""
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import pathlib
+import secrets
+import subprocess
+import sys
+import tempfile
+import uuid
+
+
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
+DEFAULT_OUT = STATE / "paid-scan-diagnostics"
+SERVER_NS, CLIENT_NS = "opencti-paid-scan-e2e", "lndops-agent"
+MANIFESTS = ("order-diagnostics-server.secret.json", "paid-scan-diagnostics-client.secret.json")
+SANS = ["order-diagnostics.opencti-paid-scan-e2e.svc", "order-diagnostics.opencti-paid-scan-e2e.svc.cluster.local"]
+
+
+def openssl(*args):
+    result = subprocess.run(["openssl", *args], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError("openssl " + args[0] + " failed: " + ((result.stderr.strip().splitlines() or [""])[-1]))
+
+
+def tenant(value):
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        raise ValueError(f"invalid tenant UUID: {value!r}") from None
+    if len(value) != 36 or str(parsed) != value.lower():
+        raise ValueError(f"tenant must be a canonical UUID: {value!r}")
+    return str(parsed)
+
+
+def secret(namespace, name, data, kind_type=None):
+    doc = {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name, "namespace": namespace}}
+    if kind_type:
+        doc["type"] = kind_type
+    doc["data"] = {k: base64.b64encode(v.encode() if isinstance(v, str) else v).decode() for k, v in data.items()}
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def generate(tmp, tenants):
+    ca_key, ca_crt, key, csr, crt, ext = (str(tmp / n) for n in ("ca.key", "ca.crt", "tls.key", "tls.csr", "tls.crt", "ext.cnf"))
+    openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", ca_key,
+            "-out", ca_crt, "-days", "365", "-subj", "/CN=paid-scan-diagnostics-ca",
+            "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=keyCertSign,cRLSign")
+    openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key,
+            "-out", csr, "-subj", "/CN=" + SANS[0])
+    pathlib.Path(ext).write_text("basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName="
+                                 + ",".join("DNS:" + n for n in SANS) + "\n")
+    openssl("x509", "-req", "-in", csr, "-CA", ca_crt, "-CAkey", ca_key, "-CAcreateserial", "-out", crt,
+            "-days", "365", "-extfile", ext)
+    read = lambda p: pathlib.Path(p).read_bytes()
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    return {
+        "order-diagnostics-server.secret.json": secret(SERVER_NS, "order-diagnostics-server", {
+            "tls.crt": read(crt), "tls.key": read(key), "token.sha256": digest + "\n",
+            "tenants.allowlist": "\n".join(tenants) + "\n"}, "Opaque"),
+        "paid-scan-diagnostics-client.secret.json": secret(CLIENT_NS, "paid-scan-diagnostics-client", {
+            "token": token, "ca.crt": read(ca_crt)}),
+    }
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tenant", action="append", required=True, help="canonical tenant UUID (repeatable)")
+    parser.add_argument("--out", type=pathlib.Path, default=DEFAULT_OUT)
+    parser.add_argument("--force", action="store_true", help="replace an existing output directory")
+    args = parser.parse_args(argv)
+    try:
+        tenants = sorted({tenant(t) for t in args.tenant})
+        out = args.out
+        if out.is_symlink() or (out.exists() and not out.is_dir()):
+            raise ValueError(f"{out} is a symlink or not a directory; refusing")
+        stale = [out / n for n in MANIFESTS if (out / n).exists()] if out.exists() else []
+        if out.exists() and any(out.iterdir()):
+            if not args.force:
+                raise ValueError(f"{out} exists and is not empty; use --force to replace it")
+            if {p.name for p in out.iterdir()} - set(MANIFESTS):
+                raise ValueError(f"{out} contains unrelated files; refusing to touch it")
+        with tempfile.TemporaryDirectory(prefix="paid-scan-") as name:  # mkdtemp is 0700
+            files = generate(pathlib.Path(name), tenants)
+            for old in stale:
+                old.unlink()
+            out.mkdir(parents=True, mode=0o700, exist_ok=True)
+            out.chmod(0o700)
+            for filename, text in files.items():
+                fd = os.open(out / filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as stream:
+                    stream.write(text)
+    except (ValueError, RuntimeError, OSError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    for filename in files:
+        print(out / filename)
+    print("Review, then apply with: kubectl apply -f <file> (not done by this script)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

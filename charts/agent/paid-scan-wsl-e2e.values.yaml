@@ -1,0 +1,7 @@
+paidScan:
+  enabled: true
+  origin: https://order-diagnostics.opencti-paid-scan-e2e.svc.cluster.local:8443
+  namespace: opencti-paid-scan-e2e
+  podLabels: {app: null, app.kubernetes.io/name: order-diagnostics}  # null drops the chart default label (Helm merges maps)
+  port: 8443
+  credentialSecret: paid-scan-diagnostics-client

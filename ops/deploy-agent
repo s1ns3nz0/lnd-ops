@@ -45,6 +45,7 @@ def parse_args(argv):
     parser.add_argument("--model")
     parser.add_argument("--server-cidr")
     parser.add_argument("--allow-insecure-http", action="store_true")
+    parser.add_argument("--agent-values", type=pathlib.Path, help="Additional reviewed gateway/paid-scan Helm values")
     return parser.parse_args(argv)
 
 
@@ -86,6 +87,8 @@ def check_ollama(config):
 def main(argv):
     try:
         args = parse_args(argv)
+        if args.agent_values and not args.agent_values.is_file():
+            raise ValueError("--agent-values must name an existing reviewed values file")
         config = load_config(args)
         check_ollama(config)
         os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
@@ -110,7 +113,8 @@ def main(argv):
              "--set-string", f'providers.ollama.config.host={config["endpoint"]}',
              "--wait", "--timeout", "15m"])
         source = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-gateway-source",
-                      "--from-file", str(REPO / "agent/runbook_gateway.py"), "--dry-run=client", "-o", "yaml"])
+                      "--from-file", str(REPO / "agent/runbook_gateway.py"),
+                      "--from-file", str(REPO / "agent/paid_scan_diagnostics.py"), "--dry-run=client", "-o", "yaml"])
         run(["kubectl", "apply", "-f", "-"], source)
         runbooks = run(["kubectl", "-n", "lndops-agent", "create", "configmap", "runbook-agent-runbooks",
                         "--from-file", str(REPO / "docs/runbooks/channel-inactive.md"),
@@ -137,6 +141,7 @@ def main(argv):
         if len(api_addresses) != 1 or len(api_ports) != 1:
             raise RuntimeError("Phase 7 requires exactly one IPv4 Kubernetes API endpoint")
         run(["helm", "upgrade", "--install", "lnd-ops-agent", str(REPO / "charts/agent"),
+             *(["--values", str(args.agent_values.resolve())] if args.agent_values else []),
              "--namespace", "lndops-agent", "--set-string", f'ollama.serverCIDR={config["server_cidr"]}',
              "--set", f"ollama.port={port}",
              "--set-string", f"kubeApi.serverCIDR={api_addresses[0]}/32",
@@ -150,6 +155,12 @@ def main(argv):
         run(["kubectl", "-n", "lndops-agent", "rollout", "restart", "deployment/runbook-gateway"])
         run(["kubectl", "-n", "lndops-agent", "rollout", "status", "deployment/runbook-gateway", "--timeout=5m"])
         run(["kubectl", "-n", "lndops-agent", "rollout", "status", "deployment/runbook-diagnostic-probe", "--timeout=5m"])
+        if subprocess.run(
+            ["kubectl", "-n", "lndops-agent", "get", "deployment", "paid-scan-diagnostics"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0:
+            run(["kubectl", "-n", "lndops-agent", "rollout", "restart", "deployment/paid-scan-diagnostics"])
+            run(["kubectl", "-n", "lndops-agent", "rollout", "status", "deployment/paid-scan-diagnostics", "--timeout=5m"])
         print(f'OK Phase 7 agent deployed: kagent={KAGENT_VERSION} provider=Ollama model={config["model"]}')
         print("Ollama endpoint configuration is owner-only under the project state directory")
         return 0
