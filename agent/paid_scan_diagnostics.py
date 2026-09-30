@@ -177,7 +177,7 @@ def project(payload, tenant_id, order_id, now):
 
 # Stages whose playbook row requires escalation (step 4), with the reason to give.
 ESCALATION = {"worker_start": "inconsistent_dispatch_state", "scan_terminal_without_result": "customer_remediation",
-              "inconsistent_records": "inconsistent_records"}
+              "inconsistent_records": "inconsistent_records", "payment_records_need_review": "payment_records_review"}
 
 
 def diagnose(arguments, fetch=None, now=None):

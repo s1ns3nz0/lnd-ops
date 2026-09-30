@@ -85,7 +85,8 @@ class DiagnosisTests(unittest.TestCase):
         for change in ({'receipt_commit_state': 'pending'}, {'challenge': {'state': 'pending'}}):
             data = snapshot()
             data['payment'].update(change)
-            self.assertEqual(self.diagnose(data)['stage'], 'payment_records_need_review')
+            result = self.diagnose(data)
+            self.assertEqual((result['stage'], result['escalation']), ('payment_records_need_review', 'payment_records_review'))
 
     def test_registration_does_not_claim_job_creation(self):
         data = snapshot()
