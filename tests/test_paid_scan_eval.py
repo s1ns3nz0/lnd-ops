@@ -291,6 +291,44 @@ class InventionTests(unittest.TestCase):
         self.assertEqual(self.grade("Give it 24-hour baseline, 15m window.")["invented_thresholds"], [])
 
 
+class LabeledGraderTests(unittest.TestCase):
+    def test_grader_matches_labeled_snippets(self):
+        labels = json.loads((ROOT / "tests/eval/grader_labels.json").read_text())
+        expect = dict(FUNNEL, must_not=json.loads((SCENARIOS / "healthy-baseline.json").read_text())["expect"]["must_not"])
+        tp = fp = fn = tn = 0
+        wrong = []
+        for label in labels:
+            flagged = not evalrun.grade(invocation(label["text"], tools=FUNNEL_TOOLS), expect)["passed"]
+            tp, fp, fn, tn = tp + (flagged and label["invention"]), fp + (flagged and not label["invention"]), \
+                fn + (not flagged and label["invention"]), tn + (not flagged and not label["invention"])
+            if flagged != label["invention"]:
+                wrong.append(label["text"])
+        message = (f"TP={tp} FP={fp} FN={fn} TN={tn} precision={tp / max(tp + fp, 1):.2f} "
+                   f"recall={tp / max(tp + fn, 1):.2f}; misclassified: {wrong}")
+        print(message)
+        self.assertGreaterEqual(tp, 4)
+        self.assertGreaterEqual(tn, 5)
+        self.assertEqual(wrong, [], message)
+
+
+class NormalizeTests(unittest.TestCase):
+    def test_unicode_dashes_and_ranges(self):
+        self.assertEqual(evalrun.normalize("a\u2011b\u2010c\u2212d"), "a-b-c-d")
+        self.assertEqual(evalrun.normalize("5\u201310 minutes, up \u2014 now"), "5-10 minutes, up - now")
+        self.assertEqual(evalrun.thresholds("Re-run in 5-10 minutes"), {(5, "minute"), (10, "minute")})
+
+    def test_regrade_reads_saved_runs_without_modifying_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp, "paid-scan-eval-1-diagnosis-unavailable-run1.json")
+            text = json.dumps({"scenario": "diagnosis-unavailable", "run": 1, "passed": False, "checks": {}, "invocation":
+                               invocation("The status is unknown and the diagnostic is unavailable.", tools=(("diagnose_paid_order", None),))})
+            path.write_text(text)
+            with unittest.mock.patch("sys.stdout"):
+                self.assertEqual(evalrun.main(["--regrade", tmp]), 0)
+            self.assertEqual(path.read_text(), text)
+            self.assertEqual(len(list(pathlib.Path(tmp).glob("*-regrade-summary.json"))), 1)
+
+
 class DeployAgentTests(unittest.TestCase):
     def test_deploy_ships_fixture_source_and_scenarios(self):
         text = (ROOT / "ops/deploy-agent").read_text()

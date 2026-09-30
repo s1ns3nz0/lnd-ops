@@ -46,3 +46,15 @@ set-up
 check-in
 head-of-line
 first-line
+# kubectl and similar CLI tokens (flag names without the leading dashes)
+can-i
+dry-run
+port-forward
+set-string
+no-headers
+all-namespaces
+field-selector
+label-selector
+reverse-proxy
+shared-service
+failed-pod

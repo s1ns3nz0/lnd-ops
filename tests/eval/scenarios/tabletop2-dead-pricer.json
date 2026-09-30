@@ -97,7 +97,7 @@
     ],
     "must_not": [
       "restart (the )?(l402-)?aperture\\b",
-      "\\bblock(ing)?\\b",
+      "(?:\\b(?:recommend(?:ed)?|should|need(?:s)? to|must|please|go ahead and|consider|next steps?:?)\\b[^.\\n]{0,50}\\b|^[\\s\\-\\d.)]*|\\b(?:and|then|or)\\s+)block(?:ing)?\\b",
       "payment-pricer-service",
       "card or paypal",
       "> ?30 ?min"

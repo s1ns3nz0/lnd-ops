@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -106,10 +107,35 @@ def forbidden_match(pattern, text):
 
 # --- invented components / options / thresholds ---------------------------
 HYPHENATED = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b")
-THRESHOLD = re.compile(r"\b(\d+)[\s-]?(minutes?|mins?|hours?|h|m)\b", re.I)
+THRESHOLD = re.compile(r"\b(\d+)(?:\s?-\s?(\d+))?[\s-]?(minutes?|mins?|hours?|h|m)\b", re.I)
 FIXED_NAMES = """payment-aperture-services lnd-merchant l402-aperture paid-scan-api paid-scan-internal paid-scan-dispatcher
 scanner-broker postgres order-diagnostics x402-facilitator e2e-fixture anvil bitcoin lnd-payer
 opencti-paid-scan-e2e lndops-agent lndops-kagent lndops-monitoring lnd-regtest lnd-testnet lndops-falco kube-system""".split()
+
+
+DASHES = str.maketrans({c: "-" for c in "\u2010\u2011\u2012\u2212"})
+
+
+def normalize(text):
+    """NFKC, hyphen look-alikes to '-', en/em dash to '-' between digits (ranges) else ' - '."""
+    text = unicodedata.normalize("NFKC", text).translate(DASHES)
+    text = re.sub(r"(?<=\d)\s*[\u2013\u2014]\s*(?=\d)", "-", text)
+    return re.sub(r"[ \t]*[\u2013\u2014][ \t]*", " - ", text)
+
+
+# ponytail: only names that END like infrastructure are component candidates (prose compounds such as
+# "customer-facing" are not); a name that is a contiguous piece of a known name ("payment-aperture") is known.
+# Misses invented names without such a suffix; extend INFRA_SUFFIX if one slips through.
+INFRA_SUFFIX = set("service server worker pod api host client gateway deployment job dispatcher broker proxy "
+                   "namespace daemon operator controller database cluster node".split())
+
+
+def fragments(names):
+    parts = {}
+    for name in names:
+        tokens = name.split("-")
+        parts.update({"-".join(tokens[i:j]): 1 for i in range(len(tokens)) for j in range(i + 2, len(tokens) + 1)})
+    return set(parts)
 
 
 def hyphenated(text):
@@ -139,27 +165,28 @@ GLOBAL_MUST_NOT = json.loads((EVAL_DIR / "global_must_not.json").read_text())
 
 def thresholds(text):
     """{(number, unit family)} for time thresholds such as '15 minutes', '15m', '24-hour'."""
-    return {(int(n), "hour" if u.lower().startswith("h") else "minute") for n, u in THRESHOLD.findall(text)}
+    return {(int(n), "hour" if u.lower().startswith("h") else "minute")
+            for a, b, u in THRESHOLD.findall(text) for n in (a, b) if n}
 
 
 def tool_result_texts(invocation):
-    return [c.get("text", "") for _, _, r in tool_events(invocation) if isinstance(r, dict)
+    return [normalize(c.get("text", "")) for _, _, r in tool_events(invocation) if isinstance(r, dict)
             for c in r.get("content", []) if isinstance(c, dict)]
 
 
 def grounding(invocation, expect, question):
     """Text the answer may legitimately quote: tool results, the playbook (from the run, else the file), the question."""
-    texts = tool_result_texts(invocation) + [question or ""]
+    texts = tool_result_texts(invocation) + [normalize(question or "")]
     playbook = expect.get("playbook")
     if playbook and not any(response_json(r).get("content") for t, _, r in tool_events(invocation)
                             if t == "get_playbook" and r is not None):
         path = REPO / f"docs/playbooks/{playbook}.md"
-        texts.append(path.read_text() if path.is_file() else "")
+        texts.append(normalize(path.read_text()) if path.is_file() else "")
     return "\n".join(texts)
 
 
 def grade(invocation, expect, question=""):
-    text = final_text(invocation)
+    text = normalize(final_text(invocation))
     lowered = text.lower()
     called = {name for name, _, _ in tool_events(invocation)}
     checks = {"completed": invocation.get("status", {}).get("state") == "completed", "answer": bool(text.strip())}
@@ -175,7 +202,8 @@ def grade(invocation, expect, question=""):
         checks[f"invented_option:{i}"] = not forbidden_match(pattern, text)
     source = grounding(invocation, expect, question)
     known = KNOWN_NAMES | COMMON_TERMS | hyphenated(source)
-    unknown = sorted(n for n in hyphenated(text) if n not in known)
+    known |= fragments(known)
+    unknown = sorted(n for n in hyphenated(text) if n not in known and n.rsplit("-", 1)[1] in INFRA_SUFFIX)
     checks["unknown_components"] = not unknown
     invented = sorted(f"{n} {u}" for n, u in thresholds(text) - thresholds(source))
     checks["invented_thresholds"] = not invented
@@ -265,8 +293,30 @@ def summary_json(results, runs, commit):
                               "failed_checks": [failed_checks(o) for o in x]} for n, x in results.items()}}
 
 
+def regrade(directory):
+    """Re-grade saved run JSONs (no cluster, no LLM); originals are untouched."""
+    results, commit = {}, None
+    for path in sorted(directory.glob("paid-scan-eval-*-run*.json")):
+        saved = json.loads(path.read_text())
+        name, commit = saved["scenario"], saved.get("git_commit", commit)
+        scenario = json.loads((SCENARIOS / f"{check_name(name)}.json").read_text())
+        inv = saved.get("invocation")
+        outcome = grade(inv, scenario["expect"], scenario["question"]) if inv else dict(saved)
+        outcome["answer"] = final_text(inv) if inv else ""
+        results.setdefault(name, []).append(outcome)
+        print(f"{name} run {saved.get('run')}: {'pass' if outcome['passed'] else 'FAIL ' + ', '.join(failed_checks(outcome))}")
+    if not results:
+        raise ValueError(f"no saved runs in {directory}")
+    runs = max(len(o) for o in results.values())
+    print(summarize(results, runs))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    write_private(directory / f"{stamp}-regrade-summary.json", summary_json(results, runs, commit))
+    return 0
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--regrade", type=pathlib.Path, metavar="DIR", help="re-grade saved run JSONs offline and exit")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--scenario", action="append", help="scenario name (repeatable); default all")
     parser.add_argument("--out", type=pathlib.Path, default=STATE / "evidence")
@@ -281,6 +331,8 @@ def main(argv):
     controller = None
     try:
         args = parse_args(argv)
+        if args.regrade:
+            return regrade(args.regrade)
         available = {p.stem: json.loads(p.read_text()) for p in sorted(SCENARIOS.glob("*.json"))}
         names = [check_name(n) for n in (args.scenario or list(available))]
         unknown = [n for n in names if n not in available]

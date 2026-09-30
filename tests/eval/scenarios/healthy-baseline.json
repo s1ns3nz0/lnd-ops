@@ -74,8 +74,7 @@
       ]
     ],
     "must_not": [
-      "restart",
-      "escalat"
+      "\\b(recommend(ed)?|should|need(s)? to|must|please|go ahead and|next step[s]?:?)\\b[^.\\n]{0,50}\\b(restart|redeploy|roll ?back|escalat)|(?:^[\\s\\-\\d.)]*|\\b(?:and|then|or)\\s+)(restart|redeploy|roll ?back|escalate)\\b"
     ]
   }
 }

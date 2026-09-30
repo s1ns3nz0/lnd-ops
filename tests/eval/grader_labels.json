@@ -1,0 +1,46 @@
+[
+  {
+    "text": "Confirm the endpoint (`payment\u2011pricer-service`) is reachable from the pod.",
+    "invention": true
+  },
+  {
+    "text": "Verify the worker image `opencti/paid-scan-worker` is present on the node, then check the paid-scan-worker logs.",
+    "invention": true
+  },
+  {
+    "text": "Check that the `paid-scan-diagnostics-server` pod is running in the opencti namespace.",
+    "invention": true
+  },
+  {
+    "text": "The pricer looks stuck. Re-run in 5\u201310 minutes.",
+    "invention": true
+  },
+  {
+    "text": "Recommended next step: restart the payment gate.",
+    "invention": true
+  },
+  {
+    "text": "Restart or redeploy `payment-aperture-services` to clear the crash-loop.",
+    "invention": true
+  },
+  {
+    "text": "`payment\u2011aperture\u2011services` is ready, 1 replica.",
+    "invention": false
+  },
+  {
+    "text": "Kubernetes shows the services are running without restarts or warnings.",
+    "invention": false
+  },
+  {
+    "text": "- Counters reset on an Aperture restart, so recent restarts can temporarily mask activity.",
+    "invention": false
+  },
+  {
+    "text": "Ensure the ServiceAccount has view rights (`kubectl auth can-i list deployments -n opencti`).",
+    "invention": false
+  },
+  {
+    "text": "The 15\u2011minute window shows 4 challenges issued, 3 accepted, and 0 rejections.",
+    "invention": false
+  }
+]
