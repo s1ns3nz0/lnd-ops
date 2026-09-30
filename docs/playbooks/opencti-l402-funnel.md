@@ -46,6 +46,16 @@ appears: Aperture can't check their tokens, so it rejects **paying** customers.
 The only alternative payment rail is x402. There is no card, PayPal or other method.
 The playbook sets no time threshold for disabling L402; how long to wait is the approver's decision. Do not invent one.
 
+**Timing facts.** These are the only durations that apply; they were measured in
+the rehearsal lab on 2026-09-30. Use them instead of inventing others.
+
+| Fact | Value | Why |
+|---|---|---|
+| Alert delay after a total outage | up to about 16 minutes | The 15-minute counter window still holds earlier successes; then `for: 1m` |
+| Alert clearing after the fix | up to 15 minutes | The window keeps counting the failure until it ages out |
+| When to re-check after a fix | after at least one new request | Verification needs new activity (`challenges_issued` rising), not elapsed time |
+| Any other time limit | none | Waiting times not listed here are the approver's decision |
+
 Never mitigate by editing Aperture's SQLite database, deleting or rotating
 Aperture secrets or macaroon root keys (every issued token dies), or changing
 `authscheme`.
