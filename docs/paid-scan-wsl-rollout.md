@@ -421,15 +421,19 @@ removed = [j["job_name"] for j in jobs(live) if j not in jobs(new)]
 strip = lambda v: {**v, "prometheus": {**v["prometheus"], "prometheusSpec": {k: x for k, x in v["prometheus"]["prometheusSpec"].items() if k != "additionalScrapeConfigs"}}}
 same_rest = strip(live) == strip(new)
 print("added jobs:", added, "| removed jobs:", removed, "| other values identical:", same_rest)
-assert added == ["aperture"] and not removed and same_rest, "monitoring values differ beyond the aperture job"
+assert added == ["aperture", "l402-probe"] and not removed and same_rest, "monitoring values differ beyond the aperture and l402-probe jobs"
 PY
+"${k[@]}" diff -f charts/blackbox-exporter.yaml | tee "$RUN/evidence/blackbox-exporter.diff" || true
 "${k[@]}" diff -f charts/monitoring-rules.yaml | tee "$RUN/evidence/monitoring-rules.diff" || true
 echo "STEP 11 GATE OK (review the rules diff)"
 STEP
 ```
 
-**Success:** `added jobs: ['aperture'] | removed jobs: [] | other values
-identical: True`. The rules diff adds only the `opencti-l402` group (4 alerts).
+**Success:** `added jobs: ['aperture', 'l402-probe'] | removed jobs: [] | other
+values identical: True`. The blackbox diff creates only the `l402-blackbox-exporter`
+ConfigMap, Deployment and Service in `lndops-monitoring`. The rules diff adds only
+the `opencti-l402` group (4 alerts) and the `opencti-l402-slo` group (5 recording
+rules, 3 alerts).
 **STOP** otherwise. The live monitoring release differs from this branch, and
 an upgrade would change more than intended.
 
@@ -441,6 +445,8 @@ source ~/paid-scan-diag.env
 cd "$WORK/lnd-ops"
 helm --kube-context "$CTX" upgrade lnd-ops-monitoring charts/vendor/kube-prometheus-stack-91.4.1.tgz \
   --namespace lndops-monitoring --values charts/monitoring-values.yaml --wait --timeout 15m
+"${k[@]}" apply -f charts/blackbox-exporter.yaml
+"${km[@]}" rollout status deployment/l402-blackbox-exporter --timeout=3m
 "${k[@]}" apply -f charts/monitoring-rules.yaml
 "${km[@]}" port-forward svc/lnd-ops-monitoring-kube-pr-prometheus 19090:9090 >/dev/null 2>&1 &
 trap 'kill $! 2>/dev/null' EXIT
@@ -454,12 +460,26 @@ curl -s http://127.0.0.1:19090/api/v1/rules | python3 -c '
 import json, sys
 g = [g for g in json.load(sys.stdin)["data"]["groups"] if g["name"] == "opencti-l402"]
 print("opencti-l402 rules:", [r["name"] for r in g[0]["rules"]] if g else "missing"); assert g and len(g[0]["rules"]) == 4'
-echo "STEP 12 OK: Aperture scraped (up=1) and 4 L402 alerts loaded"
+curl -s http://127.0.0.1:19090/api/v1/rules | python3 -c '
+import json, sys
+g = [g for g in json.load(sys.stdin)["data"]["groups"] if g["name"] == "opencti-l402-slo"]
+print("opencti-l402-slo rules:", [r["name"] for r in g[0]["rules"]] if g else "missing"); assert g and len(g[0]["rules"]) == 8'
+for i in $(seq 90); do
+  up=$(curl -s --get http://127.0.0.1:19090/api/v1/query --data-urlencode 'query=l402_probe:up' |
+       python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else "")')
+  [ "$up" = "1" ] && break; sleep 2
+done
+test "$up" = "1"
+echo "STEP 12 OK: Aperture scraped (up=1), 4 L402 alerts and the probe SLO group loaded, l402_probe:up == 1"
 STEP
 ```
 
-It can take up to about a minute for Prometheus to reload its config and
-scrape the new target.
+It can take up to about two minutes for Prometheus to reload its config and for
+the first `l402-probe` results (60 s interval) to be recorded. If `l402_probe:up`
+stays 0 or absent, list the failing component with
+`probe_success{job="l402-probe"} == 0` (`component` is `pricer`, `lnd_merchant` or
+`aperture`); no NetworkPolicy in the OpenCTI namespace selects these pods, so look
+at the workload itself first.
 
 ## Part D: the agent
 
