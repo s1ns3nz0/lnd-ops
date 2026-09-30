@@ -205,6 +205,27 @@ class GraderTests(unittest.TestCase):
         result = self.grade(invocation("DeadlineExceeded, image. Never guess. Delete the job."))
         self.assertEqual(self.failed(result), ["must_not:0"])
 
+    def test_sentence_and_list_scoped_negations(self):
+        fm = evalrun.forbidden_match
+        healthy = r"\b(is|looks|appears) healthy\b"
+        rows = r"\b(edit|modify|alter)\b[^.\n]{0,30}\b(rows?|database|db)\b"
+        for pattern, text in (
+                (healthy, "| **A** | **Verify that `order-diagnostics` is healthy**: kubectl get pods | No |"),
+                (healthy, "*Confirm that the `order-diagnostics` pod is running and that the\n   Postgres instance it connects to is healthy.*"),
+                (r"pay(ing)? (again|twice)", "Do not edit database rows, delete the job, or ask the customer to pay again. These are forbidden by the playbook."),
+                (r"delete (the |that )?(scanner )?job", "Do not edit database rows, delete the job, or ask the customer to pay again."),
+                (rows, "Do not edit database rows, delete the job, or ask the customer to pay again."),
+                (r"pay(ing)? (again|twice)", "Ask the customer to pay again or issue a new order \u2013 prohibited."),
+                (rows, "Edit database rows or delete the job/pod \u2013 this would violate the allowed actions list."),
+                (rows, "What we cannot do (per the playbook and the tool constraints)\n\n- Edit database rows or delete the job/pod\n- Ask the customer to pay again"),
+                (r"pay(ing)? (again|twice)", "What we cannot do (per the playbook)\n\n- Edit database rows or delete the job/pod\n- Ask the customer to pay again")):
+            self.assertFalse(fm(pattern, text), text)
+        for pattern, text in ((healthy, "The pricer is healthy."), (healthy, "Postgres looks healthy."),
+                              ("restart", "Restart or redeploy `payment-aperture-services` to clear the crash-loop."),
+                              (r"\brestart\b", "- Never restart the pricer\n- Restart payment-aperture-services"),
+                              (r"pay(ing)? (again|twice)", "Ask the customer to pay again.")):
+            self.assertTrue(fm(pattern, text), text)
+
     def test_missing_mention_fails_and_any_of_group_matches_case_insensitively(self):
         self.assertEqual(self.failed(self.grade(invocation("DeadlineExceeded only."))), ["mention:1"])
         expect = dict(EXPECT, must_mention=[["pricer", "payment-aperture-services"]], must_not=[])

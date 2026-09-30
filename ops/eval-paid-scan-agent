@@ -33,14 +33,20 @@ def check_name(name):
 
 
 # --- grading (pure) -------------------------------------------------------
-# ponytail: heuristic, not an oracle. A must_not match is ignored when a negation cue sits within
-# NEGATION_WINDOW words before it in the same sentence, or a prohibition cue within 4 words after it.
-# It misses cues further away, double negatives and paraphrases; it can also excuse a real
-# recommendation that follows an unrelated "not". Read the evidence for failures and near-passes.
+# ponytail: heuristic, not an oracle. Text is split into blocks (blank line, list item, heading/table row; a soft
+# wrap is not a boundary) and blocks into sentences on [.!?;|]. A must_not match is excused when a negation cue sits
+# within NEGATION_WINDOW words before it, an AFTER cue (forbidden, violates...) appears anywhere later in the sentence,
+# the sentence opens with a negation or verification cue (never, do not, confirm, verify, check, if...), or it is a
+# list item whose nearest preceding non-list line (the lead-in) holds a negation cue. It misses double negatives and
+# paraphrases; it can excuse a real recommendation after an unrelated "not" or under a mixed lead-in.
+# Read the evidence for failures and near-passes.
 NEGATION_WINDOW = 6
 BEFORE = re.compile(r"\b(never|not|no|without|avoid|avoids|avoiding|forbidden|prohibited|unnecessary|cannot|"
                     r"\w+n't|do not|must not|no need)\b", re.I)
-AFTER = re.compile(r"\b(forbidden|prohibited|not allowed|not authorized|not recommended|unsafe)\b", re.I)
+AFTER = re.compile(r"\b(forbidden|prohibited|not allowed|not authorized|not recommended|unsafe|violat\w*)\b", re.I)
+START = re.compile(r"\b(never|not|no|do not|don't|must not|avoid|confirm|verify|check|ensure|make sure|whether|if)\b", re.I)
+BLOCK = re.compile(r"\n\s*\n|\n(?=\s*(?:[-*+\u2022]|\d+[.)])\s|\s*[#|])")
+LISTITEM = re.compile(r"\s*(?:[-*+\u2022]|\d+[.)])\s")
 
 
 def parts_of(event):
@@ -94,13 +100,19 @@ def playbook_read(invocation, name):
 
 
 def forbidden_match(pattern, text):
-    """True when pattern matches somewhere without a nearby negation."""
-    text = text.replace("*", "").replace("`", "")
-    for sentence in re.split(r"[.!?;\n]+", text):
-        for match in re.finditer(pattern, sentence, re.I):
-            before = re.findall(r"\S+", sentence[:match.start()])[-NEGATION_WINDOW:]
-            after = re.findall(r"\S+", sentence[match.end():])[:4]
-            if not (BEFORE.search(" ".join(before)) or AFTER.search(" ".join(after))):
+    """True when pattern matches somewhere without a nearby negation (see the heuristic above)."""
+    lead = ""
+    for block in BLOCK.split(text):
+        item = bool(LISTITEM.match(block))
+        if not item:
+            lead = block
+        for sentence in re.split(r"[.!?;|]+", block):
+            sentence = sentence.replace("*", "").replace("`", "")
+            for match in re.finditer(pattern, sentence, re.I):
+                before = re.findall(r"\S+", sentence[:match.start()])[-NEGATION_WINDOW:]
+                if (BEFORE.search(" ".join(before)) or AFTER.search(sentence[match.end():])
+                        or START.search(" ".join(re.findall(r"\S+", sentence)[:3])) or (item and BEFORE.search(lead))):
+                    continue
                 return True
     return False
 
