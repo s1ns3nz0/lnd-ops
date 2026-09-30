@@ -113,7 +113,7 @@ is a hard fault regardless of volume.
 | `mint_failed:identifier_failed` / `macaroon_failed` | In-memory steps (random ID, macaroon construction). Should essentially never happen; points at the process or host | `l402-aperture` logs and restarts; node health |
 | `mint_failed:caveat_failed` | The service's caveat settings in `aperture.yaml` can't be applied | Recent change to the `l402-aperture-config` ConfigMap |
 | `probe_fast_burn` | The component health probe has failed long enough to burn the SLO budget fast, even if counters still look healthy. Name the failing component from `probe_components` | Rows `probe_down:<component>` below; `probe_components`, `slo_burn_rate_1h` |
-| `probe_down:pricer` | `payment-aperture-services` `/health` fails (same as `requests_without_invoice`) | `payment-aperture-services` readiness and restarts; `kubectl logs deploy/payment-aperture-services --previous` |
+| `probe_down:pricer` | `payment-aperture-services` `/health` fails (same as `requests_without_invoice`). That health check also calls Aperture's proxy port, so **if `probe_down:aperture` is present too, suspect Aperture first** | `payment-aperture-services` readiness and restarts; `kubectl logs deploy/payment-aperture-services --previous` |
 | `probe_down:lnd_merchant` | `lnd-merchant` is not `SERVER_ACTIVE`: down, locked or not synced (same as `challenge_failed`) | `lnd-merchant` and `l402-aperture` readiness and restarts; `kubectl logs deploy/l402-aperture` |
 | `probe_down:aperture` | `l402-aperture` is not accepting connections | `l402-aperture` readiness, restarts and Service |
 | `secret_store_error` | Store failing on reads: paid tokens can't be checked | Same as `secret_failed` |
