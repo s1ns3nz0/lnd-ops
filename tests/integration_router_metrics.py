@@ -2,6 +2,7 @@
 """Evaluate the actual Router diagnostic PromQL using the pinned Prometheus image."""
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -34,7 +35,7 @@ def main():
     image = lock["tag"].rsplit(":", 1)[0] + "@" + lock["digest"]
     with tempfile.TemporaryDirectory() as directory:
         pathlib.Path(directory, "cases.json").write_text(json.dumps({"rule_files": [], "evaluation_interval": "1m", "tests": tests}))
-        subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "/bin/promtool",
+        subprocess.run(["docker", "run", "--rm", "--network", "none", "--user", f"{os.getuid()}:{os.getgid()}", "--entrypoint", "/bin/promtool",
                         "-v", directory + ":/cases:ro", image, "test", "rules", "/cases/cases.json"], check=True)
     print(f"PASS: {len(tests)} Router diagnostic PromQL cases against pinned Prometheus")
 

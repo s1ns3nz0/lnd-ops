@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run promtool rule tests for the opencti-l402 alert group in the pinned Prometheus image."""
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -25,7 +26,7 @@ def main():
             d = pathlib.Path(directory)
             (d / "rules.yaml").write_text("groups:\n" + group_text(group))  # group indent 4 is valid YAML under a top-level key
             (d / "cases.yaml").write_text((REPO / "tests/fixtures" / fixture).read_text())
-            subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "/bin/promtool",
+            subprocess.run(["docker", "run", "--rm", "--network", "none", "--user", f"{os.getuid()}:{os.getgid()}", "--entrypoint", "/bin/promtool",
                             "-v", f"{directory}:/cases:ro", image, "test", "rules", "/cases/cases.yaml"], check=True)
         print(f"PASS: {group} alert rules against pinned promtool")
     detect = re.search(r"# detect_at: (\d+)m", (REPO / "tests/fixtures/l402-probe-slo.test.yaml").read_text()).group(1)
