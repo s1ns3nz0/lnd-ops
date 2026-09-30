@@ -534,7 +534,7 @@ class FunnelTests(unittest.TestCase):
         self.assertEqual((r['challenges_issued'], r['accepted']), (4, 3))
         self.assertEqual(r['incident_signals'], [])
         self.assertEqual((r['window'], r['read_only'], r['observed_at']), ('15m', True, '2026-09-27T10:00:00Z'))
-        self.assertEqual(len(r['limitations']), 6)
+        self.assertEqual(len(r['limitations']), 7)
         self.assertTrue(r['limitations'][0].startswith('L402 scheme only. MPP'))
         self.assertEqual(r['scope'], 'l402')
 
@@ -642,8 +642,63 @@ class FunnelTests(unittest.TestCase):
         q = prom()
         gateway.funnel_status(None, query=q, now=NOW)
         self.assertEqual(sorted(q.seen), sorted(gateway.FUNNEL_QUERIES.values()))
-        self.assertEqual(len(q.seen), 9)
+        self.assertEqual(len(q.seen), 12)
         self.assertFalse(any('credential_verified' in x for x in q.seen))
+
+    def probe(self, comps=(('pricer', 1), ('lnd_merchant', 1), ('aperture', 1)), e1=0.0, e5=0.0, extra=None):
+        o = {'PROBE_COMPONENTS': vec(*[({'component': c}, v) for c, v in comps]),
+             'PROBE_ERR_1H': vec(({}, e1)), 'PROBE_ERR_5M': vec(({}, e5))}
+        o.update(extra or {})
+        return self.run_funnel(o)
+
+    def test_probe_healthy(self):
+        r = self.probe()
+        self.assertEqual(r['probe_components'], {'pricer': 'up', 'lnd_merchant': 'up', 'aperture': 'up'})
+        self.assertEqual((r['probe_status'], r['probe_success_1h'], r['slo_burn_rate_1h'], r['slo_burn_rate_5m']), ('observed', 1.0, 0.0, 0.0))
+        self.assertEqual(r['slo'], {'target': 0.995, 'window': '30d'})
+        self.assertEqual(r['verdict'], 'no_l402_traffic')
+
+    def test_probe_missing_does_not_fail_tool(self):
+        r = self.run_funnel({'MINT_OK': vec(({}, 2))})
+        self.assertEqual(r['status'], 'observed')
+        self.assertEqual(r['probe_components'], {'pricer': 'missing', 'lnd_merchant': 'missing', 'aperture': 'missing'})
+        self.assertEqual((r['probe_status'], r['probe_success_1h'], r['slo_burn_rate_1h'], r['slo_burn_rate_5m']), ('missing', None, None, None))
+        self.assertEqual(r['verdict'], 'healthy')
+
+    def test_probe_query_error_is_missing_not_unknown(self):
+        def q(x):
+            if x in (gateway.FUNNEL_QUERIES[k] for k in ('PROBE_COMPONENTS', 'PROBE_ERR_1H', 'PROBE_ERR_5M')):
+                raise gateway.Unavailable('prometheus_unavailable')
+            return vec(({}, 1)) if x == gateway.FUNNEL_QUERIES['UP'] else []
+        r = gateway.funnel_status(None, query=q, now=NOW)
+        self.assertEqual((r['status'], r['probe_status']), ('observed', 'missing'))
+
+    def test_burn_threshold(self):
+        slow = self.probe(e1=0.0715, e5=0.0715)  # 14.3
+        self.assertEqual((slow['slo_burn_rate_1h'], slow['incident_signals']), (14.3, []))
+        fast = self.probe(e1=0.072, e5=0.072)  # 14.4
+        self.assertEqual((fast['slo_burn_rate_1h'], fast['verdict']), (14.4, 'incident'))
+        self.assertEqual(fast['incident_signals'], ['probe_fast_burn'])
+        self.assertEqual(fast['probe_success_1h'], 0.928)
+
+    def test_fast_burn_needs_both_windows(self):
+        self.assertEqual(self.probe(e1=0.5, e5=0.0)['incident_signals'], [])
+        self.assertEqual(self.probe(e1=0.0, e5=1.0)['incident_signals'], [])
+
+    def test_probe_down_only_with_fast_burn(self):
+        down = (('pricer', 0), ('lnd_merchant', 1), ('aperture', 1))
+        r = self.probe(down)
+        self.assertEqual((r['probe_components']['pricer'], r['incident_signals'], r['verdict']), ('down', [], 'no_l402_traffic'))
+        r = self.probe(down, e1=1.0, e5=1.0)
+        self.assertEqual(r['incident_signals'], ['probe_fast_burn', 'probe_down:pricer'])
+
+    def test_unknown_component_ignored(self):
+        r = self.probe((('pricer', 1), ('evil', 0), ('lnd_merchant', 1), ('aperture', 1)), e1=1.0, e5=1.0)
+        self.assertNotIn('evil', r['probe_components'])
+        self.assertEqual(r['incident_signals'], ['probe_fast_burn'])
+
+    def test_probe_limitation(self):
+        self.assertIn('The probe checks component health, not end-to-end invoice issuance; all components can be up while invoices still fail (counters cover that, more slowly).', self.probe()['limitations'])
 
     def test_pricer_failure_is_incident(self):
         r = self.run_funnel({'NO_CREDENTIALS': vec(({}, 3))})

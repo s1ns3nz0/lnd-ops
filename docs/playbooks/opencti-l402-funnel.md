@@ -4,10 +4,10 @@
 |---|---|
 | Owner | Repository owner (sole operator) |
 | Last reviewed | 2026-09-29 (v0) |
-| Alerts | `OpenCTIL402InvoiceIssuanceFailing`, `OpenCTIL402SecretStoreFailing`, `OpenCTIL402RequestsWithoutInvoice` (critical); `OpenCTIL402MetricsAbsent` (warning), in `charts/monitoring-rules.yaml`. Same thresholds as the tool. Delivery: Alertmanager UI only (no external receiver yet). They use 15-minute windows, so an alert **stays firing up to 15 minutes after the fix**: verify with new activity, not with the alert clearing |
+| Alerts | `OpenCTIL402InvoiceIssuanceFailing`, `OpenCTIL402SecretStoreFailing`, `OpenCTIL402RequestsWithoutInvoice` (critical); `OpenCTIL402ProbeFastBurn` (critical); `OpenCTIL402ProbeSlowBurn` (warning); `OpenCTIL402ProbeAbsent` (warning); `OpenCTIL402MetricsAbsent` (warning), in `charts/monitoring-rules.yaml`. Same thresholds as the tool. Delivery: Alertmanager UI only (no external receiver yet). They use 15-minute windows, so an alert **stays firing up to 15 minutes after the fix**: verify with new activity, not with the alert clearing |
 | Agent | `paid-scan-diagnosis`: `diagnose_l402_funnel`, `get_opencti_workload_status` |
 | Scope | **L402 only.** MPP (`authscheme` `mpp`/`l402+mpp`) and x402 are not measured. An OpenCTI test fails if MPP is enabled before MPP metrics exist |
-| Related | [Stuck paid order](opencti-paid-order-stuck.md) |
+| Related | [Stuck paid order](opencti-paid-order-stuck.md); [SLO and burn-rate design](../slo-l402.md) |
 
 Aperture is the L402 reverse proxy in front of the paid OpenCTI API. It asks
 the pricer (`payment-aperture-services`) for a price, issues Lightning invoices
@@ -51,7 +51,8 @@ the rehearsal lab on 2026-09-30. Use them instead of inventing others.
 
 | Fact | Value | Why |
 |---|---|---|
-| Alert delay after a total outage | up to about 16 minutes | The 15-minute counter window still holds earlier successes; then `for: 1m` |
+| Probe fast-burn alert after a total outage | about 5–6 minutes (expected, to be re-measured in rehearsal) | Probe every 60 s, 1 h + 5 m burn windows ([SLO design](../slo-l402.md)) |
+| Counter alert delay after a total outage | up to about 16 minutes | The 15-minute counter window still holds earlier successes; then `for: 1m` |
 | Alert clearing after the fix | up to 15 minutes | The window keeps counting the failure until it ages out |
 | When to re-check after a fix | after at least one new request | Verification needs new activity (`challenges_issued` rising), not elapsed time |
 | Any other time limit | none | Waiting times not listed here are the approver's decision |
@@ -92,6 +93,10 @@ security-event reasons.
 | `incident_signals` | Why it's an incident |
 | counts | `requests_without_token`, `challenges_issued`, `accepted`, `invoice_state_mismatch`, `rejected{reason}` |
 | `rejected_total`, `rejected_baseline_per_15m` | Rejections in the window, and the per-15-minute average of the previous 24 hours (excluding the window) |
+| `probe_status` | `observed` or `missing`: whether the component health probe (job `l402-probe`) is scraped. Missing never changes the counter verdict |
+| `probe_components` | Last probe result per component: `pricer`, `lnd_merchant`, `aperture`, each `up`, `down` or `missing` |
+| `probe_success_1h` | 1 minus the 1-hour probe error ratio; `null` if missing |
+| `slo_burn_rate_1h`, `slo_burn_rate_5m` | Probe error ratio divided by the 0.005 budget (SLO 99.5% over 30 days); `null` if missing. 14.4 or more on both windows is `probe_fast_burn` |
 | `security_signal` | `none` (no rejections), `present` (rejections, not unusual) or `elevated` (at least 20 and 10x the baseline, or any 20+ when the baseline is 0). It never changes the verdict (step 8) |
 
 **Counts, not ratios:** E2E traffic is a handful of payments, and one unpaid
@@ -107,6 +112,10 @@ is a hard fault regardless of volume.
 | `mint_failed:secret_failed` | Aperture's SQLite secret store can't save the new token's root key | `l402-aperture` logs; PVC `l402-aperture-db` bound; disk space |
 | `mint_failed:identifier_failed` / `macaroon_failed` | In-memory steps (random ID, macaroon construction). Should essentially never happen; points at the process or host | `l402-aperture` logs and restarts; node health |
 | `mint_failed:caveat_failed` | The service's caveat settings in `aperture.yaml` can't be applied | Recent change to the `l402-aperture-config` ConfigMap |
+| `probe_fast_burn` | The component health probe has failed long enough to burn the SLO budget fast, even if counters still look healthy. Name the failing component from `probe_components` | Rows `probe_down:<component>` below; `probe_components`, `slo_burn_rate_1h` |
+| `probe_down:pricer` | `payment-aperture-services` `/health` fails (same as `requests_without_invoice`) | `payment-aperture-services` readiness and restarts; `kubectl logs deploy/payment-aperture-services --previous` |
+| `probe_down:lnd_merchant` | `lnd-merchant` is not `SERVER_ACTIVE`: down, locked or not synced (same as `challenge_failed`) | `lnd-merchant` and `l402-aperture` readiness and restarts; `kubectl logs deploy/l402-aperture` |
+| `probe_down:aperture` | `l402-aperture` is not accepting connections | `l402-aperture` readiness, restarts and Service |
 | `secret_store_error` | Store failing on reads: paid tokens can't be checked | Same as `secret_failed` |
 | `no_l402_traffic` **with** customer reports | Requests never reach Aperture | DNS, the `l402-aperture` Service, the ingress path |
 
@@ -205,6 +214,7 @@ are the intended way to get this detail.
 ## 9. What the tools can't see
 
 - **MPP and x402.**
+- **Invoice issuance end to end.** The probe checks component health only; all components can be up while invoices still fail. Counters cover that, more slowly.
 - **The pricer itself.** It's seen only indirectly, as `requests_without_invoice`.
   A single such request is only `inconclusive`.
 - **Individual requests.** Counts only: no client, token or amount.

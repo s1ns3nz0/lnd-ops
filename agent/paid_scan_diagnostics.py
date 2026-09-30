@@ -397,7 +397,13 @@ FUNNEL_QUERIES = {
     "REJECTED": "sum by (reason) (increase(" + _V % _REJ + "[15m]))",
     # 24h average per 15m window, excluding the current window
     "REJECTED_BASELINE": "sum(increase(" + _V % _REJ + "[1d] offset 15m)) / 96",
+    "PROBE_COMPONENTS": 'probe_success{job="l402-probe"}',
+    "PROBE_ERR_1H": "l402_probe:error_ratio_1h",
+    "PROBE_ERR_5M": "l402_probe:error_ratio_5m",
 }
+PROBE_QUERIES = ("PROBE_COMPONENTS", "PROBE_ERR_1H", "PROBE_ERR_5M")
+PROBE_COMPONENT_NAMES = ("pricer", "lnd_merchant", "aperture")
+SLO_TARGET, SLO_BUDGET, FAST_BURN = 0.995, 0.005, 14.4
 SECURITY_MIN, SECURITY_FACTOR = 20, 10  # elevated: at least 20 rejections AND 10x the 24h per-15m baseline (or baseline 0)
 NO_INVOICE_MIN = 2  # one tokenless request may sit at the window edge before its invoice is minted
 MINT_RESULTS = frozenset({"challenge_failed", "identifier_failed", "secret_failed", "macaroon_failed", "caveat_failed"})
@@ -409,6 +415,7 @@ FUNNEL_LIMITATIONS = [
     "One Aperture instance in opencti-paid-scan-e2e only.",
     "Low E2E traffic: counts, not ratios, drive the verdict.",
     "Rejected tokens are a security signal, not proof of attack.",
+    "The probe checks component health, not end-to-end invoice issuance; all components can be up while invoices still fail (counters cover that, more slowly).",
     "The rejection baseline is the average of the previous 24 hours; after a restart or on a new deployment it may be low or zero.",
 ]
 
@@ -471,7 +478,7 @@ def funnel_status(arguments, query=None, now=None):
         raise ValueError("no arguments are accepted")
     query = query or prom_query
     try:
-        raw = {name: query(q) for name, q in FUNNEL_QUERIES.items()}
+        raw = {name: query(q) for name, q in FUNNEL_QUERIES.items() if name not in PROBE_QUERIES}
         if not raw["UP"]:
             return {"status": "unknown", "reason": "aperture_not_scraped"}
         if _series(raw["UP"]) < 1:
@@ -483,7 +490,34 @@ def funnel_status(arguments, query=None, now=None):
         baseline = round(_series(raw["REJECTED_BASELINE"], whole=False), 2)
     except Exception:  # fail closed on any query/shape error; never surface raw text
         return {"status": "unknown", "reason": "prometheus_unavailable"}
+    probe = {}
+    for name in PROBE_QUERIES:  # missing probe data must not hide the counters
+        try:
+            probe[name] = query(FUNNEL_QUERIES[name])
+        except Exception:
+            probe[name] = []
+    components = dict.fromkeys(PROBE_COMPONENT_NAMES, "missing")
+    try:
+        for row in probe["PROBE_COMPONENTS"]:
+            name, number = row["metric"].get("component"), float(row["value"][1])
+            if name in components and math.isfinite(number):
+                components[name] = "up" if number >= 1 else "down"
+    except Exception:
+        components = dict.fromkeys(PROBE_COMPONENT_NAMES, "missing")
+
+    def ratio(name):
+        try:
+            number = float(probe[name][0]["value"][1])
+            return number if math.isfinite(number) else None
+        except Exception:
+            return None
+    err_1h, err_5m = ratio("PROBE_ERR_1H"), ratio("PROBE_ERR_5M")
+    burn_1h = None if err_1h is None else round(err_1h / SLO_BUDGET, 2)
+    burn_5m = None if err_5m is None else round(err_5m / SLO_BUDGET, 2)
     signals = [f"mint_failed:{k}" for k in failed] + (["secret_store_error"] if lookup else [])
+    if burn_1h is not None and burn_5m is not None and burn_1h >= FAST_BURN and burn_5m >= FAST_BURN:
+        signals.append("probe_fast_burn")
+        signals += [f"probe_down:{k}" for k, v in components.items() if v == "down"]
     if tokenless >= NO_INVOICE_MIN and not issued and not failed:
         signals.append("requests_without_invoice")
     total_rejected = sum(rejected.values())
@@ -504,6 +538,9 @@ def funnel_status(arguments, query=None, now=None):
     observed = time.gmtime(time.time() if now is None else now)
     return {"status": "observed", "verdict": verdict, "incident_signals": signals,
             "challenges_issued": issued, "requests_without_token": tokenless, "mint_failed": failed, "accepted": accepted,
+            "probe_status": "missing" if err_1h is None and err_5m is None and set(components.values()) == {"missing"} else "observed",
+            "probe_components": components, "probe_success_1h": None if err_1h is None else round(1 - err_1h, 4),
+            "slo_burn_rate_1h": burn_1h, "slo_burn_rate_5m": burn_5m, "slo": {"target": SLO_TARGET, "window": "30d"},
             "invoice_state_mismatch": unsettled, "secret_store_error": lookup, "rejected": rejected,
             "rejected_total": total_rejected, "rejected_baseline_per_15m": baseline, "security_signal": security, "scope": "l402", "window": "15m", "read_only": True,
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", observed), "limitations": list(FUNNEL_LIMITATIONS)}

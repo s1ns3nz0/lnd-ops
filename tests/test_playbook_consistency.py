@@ -63,6 +63,16 @@ class Consistency(unittest.TestCase):
         for result in gw.MINT_RESULTS:
             self.assertIn(result, FUNNEL_DOC)
 
+    def test_probe_signals_and_fields_are_in_funnel_playbook(self):
+        for word in ('probe_fast_burn', 'probe_down:pricer', 'probe_down:lnd_merchant', 'probe_down:aperture', 'probe_components',
+                     'probe_success_1h', 'slo_burn_rate_1h', 'slo_burn_rate_5m', 'probe_status',
+                     'OpenCTIL402ProbeFastBurn', 'OpenCTIL402ProbeSlowBurn', 'OpenCTIL402ProbeAbsent'):
+            self.assertIn(f'`{word}`', FUNNEL_DOC)
+        self.assertIn('slo-l402.md', FUNNEL_DOC)
+        self.assertIn('to be re-measured in rehearsal', FUNNEL_DOC)
+        tpl = (REPO / 'charts/agent/templates/_helpers.tpl').read_text()
+        self.assertIn('probe_fast_burn means the component health probe has failed long enough', tpl)
+
     def test_every_failure_reason_is_in_a_playbook(self):
         for reason in gw.FAILURE_REASONS:
             self.assertTrue(f'`{reason}`' in ORDER_DOC or f'`{reason}`' in FUNNEL_DOC, reason)
