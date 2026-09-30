@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 REPO = pathlib.Path(__file__).resolve().parent.parent
 STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "lnd-ops"
 SCENARIOS = REPO / "tests/eval/scenarios"
+EVAL_DIR = REPO / "tests/eval"
 NAME = re.compile(r"[a-z0-9-]{1,64}")
 PORT = 18085
 os.environ.setdefault("KUBECONFIG", str(STATE / "kubeconfig"))
@@ -103,7 +104,61 @@ def forbidden_match(pattern, text):
     return False
 
 
-def grade(invocation, expect):
+# --- invented components / options / thresholds ---------------------------
+HYPHENATED = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b")
+THRESHOLD = re.compile(r"\b(\d+)[\s-]?(minutes?|mins?|hours?|h|m)\b", re.I)
+FIXED_NAMES = """payment-aperture-services lnd-merchant l402-aperture paid-scan-api paid-scan-internal paid-scan-dispatcher
+scanner-broker postgres order-diagnostics x402-facilitator e2e-fixture anvil bitcoin lnd-payer
+opencti-paid-scan-e2e lndops-agent lndops-kagent lndops-monitoring lnd-regtest lnd-testnet lndops-falco kube-system""".split()
+
+
+def hyphenated(text):
+    return set(HYPHENATED.findall(text))
+
+
+def read_lines(path):
+    return [l.strip() for l in path.read_text().splitlines() if l.strip() and not l.lstrip().startswith("#")]
+
+
+def build_known_names():
+    """Names from the chart templates, the diagnostics module, playbooks and alert rules, read at import time."""
+    names = set(FIXED_NAMES)
+    for path in (REPO / "charts/agent/templates").glob("*"):
+        text = path.read_text()
+        names |= set(re.findall(r"\bname: ([a-z][a-z0-9-]*)\s*$", text, re.M)) | set(re.findall(r"\{name: ([a-z][a-z0-9-]*)", text))
+    names |= hyphenated("\n".join(re.findall(r'"([a-z0-9-]+)"', (REPO / "agent/paid_scan_diagnostics.py").read_text())))
+    names |= {p.stem for p in (REPO / "docs/playbooks").glob("*.md")}
+    names |= {a.lower() for a in re.findall(r"alert: (\w+)", (REPO / "charts/monitoring-rules.yaml").read_text())}
+    return {n for n in names if "-" in n or n in FIXED_NAMES}
+
+
+KNOWN_NAMES = build_known_names()
+COMMON_TERMS = set(read_lines(EVAL_DIR / "common_terms.txt"))
+GLOBAL_MUST_NOT = json.loads((EVAL_DIR / "global_must_not.json").read_text())
+
+
+def thresholds(text):
+    """{(number, unit family)} for time thresholds such as '15 minutes', '15m', '24-hour'."""
+    return {(int(n), "hour" if u.lower().startswith("h") else "minute") for n, u in THRESHOLD.findall(text)}
+
+
+def tool_result_texts(invocation):
+    return [c.get("text", "") for _, _, r in tool_events(invocation) if isinstance(r, dict)
+            for c in r.get("content", []) if isinstance(c, dict)]
+
+
+def grounding(invocation, expect, question):
+    """Text the answer may legitimately quote: tool results, the playbook (from the run, else the file), the question."""
+    texts = tool_result_texts(invocation) + [question or ""]
+    playbook = expect.get("playbook")
+    if playbook and not any(response_json(r).get("content") for t, _, r in tool_events(invocation)
+                            if t == "get_playbook" and r is not None):
+        path = REPO / f"docs/playbooks/{playbook}.md"
+        texts.append(path.read_text() if path.is_file() else "")
+    return "\n".join(texts)
+
+
+def grade(invocation, expect, question=""):
     text = final_text(invocation)
     lowered = text.lower()
     called = {name for name, _, _ in tool_events(invocation)}
@@ -116,7 +171,16 @@ def grade(invocation, expect):
         checks[f"mention:{i}"] = any(term.lower() in lowered for term in group)
     for i, pattern in enumerate(expect.get("must_not", [])):
         checks[f"must_not:{i}"] = not forbidden_match(pattern, text)
-    return {"passed": all(checks.values()), "checks": checks}
+    for i, pattern in enumerate(GLOBAL_MUST_NOT):
+        checks[f"invented_option:{i}"] = not forbidden_match(pattern, text)
+    source = grounding(invocation, expect, question)
+    known = KNOWN_NAMES | COMMON_TERMS | hyphenated(source)
+    unknown = sorted(n for n in hyphenated(text) if n not in known)
+    checks["unknown_components"] = not unknown
+    invented = sorted(f"{n} {u}" for n, u in thresholds(text) - thresholds(source))
+    checks["invented_thresholds"] = not invented
+    return {"passed": all(checks.values()), "checks": checks,
+            "unknown_components": unknown, "invented_thresholds": invented}
 
 
 # --- runner ---------------------------------------------------------------
@@ -177,12 +241,28 @@ def write_private(path, payload):
         stream.write("\n")
 
 
+def failed_checks(outcome):
+    extra = outcome.get("unknown_components", []) + outcome.get("invented_thresholds", [])
+    return sorted(c for c, ok in outcome["checks"].items() if not ok) + ([f"({', '.join(extra)})"] if extra else [])
+
+
 def summarize(results, runs):
     lines = [f"{'scenario':32} {'pass':>6}  failing checks"]
     for name, outcomes in results.items():
-        failing = sorted({c for o in outcomes for c, ok in o["checks"].items() if not ok})
+        failing = sorted({c for o in outcomes for c in failed_checks(o)})
         lines.append(f"{name:32} {sum(o['passed'] for o in outcomes)}/{runs:<4}  {', '.join(failing) or '-'}")
+    total = sum(o["passed"] for outcomes in results.values() for o in outcomes)
+    count = sum(len(outcomes) for outcomes in results.values())
+    lines.append(f"{'OVERALL':32} {total}/{count:<4}  {total / count:.0%}" if count else "OVERALL 0/0")
     return "\n".join(lines)
+
+
+def summary_json(results, runs, commit):
+    return {"schema": "lnd-ops/paid-scan-eval-summary/v1", "git_commit": commit, "runs": runs,
+            "passed": sum(o["passed"] for x in results.values() for o in x),
+            "total": sum(len(x) for x in results.values()),
+            "scenarios": {n: {"passed": sum(o["passed"] for o in x), "runs": len(x),
+                              "failed_checks": [failed_checks(o) for o in x]} for n, x in results.items()}}
 
 
 def parse_args(argv):
@@ -221,7 +301,7 @@ def main(argv):
                 try:
                     set_active(name)
                     inv = invoke(available[name]["question"], raw)
-                    outcome = grade(inv, available[name]["expect"])
+                    outcome = grade(inv, available[name]["expect"], available[name]["question"])
                     outcome["answer"] = final_text(inv)
                 except (RuntimeError, ValueError, subprocess.SubprocessError) as exc:
                     inv, outcome = None, {"passed": False, "checks": {"invocation": False}, "error": str(exc)}
@@ -230,8 +310,9 @@ def main(argv):
                               dict(outcome, schema="lnd-ops/paid-scan-eval/v1", scenario=name, run=n, git_commit=commit,
                                    agent="paid-scan-diagnosis-eval", invocation=inv))
                 raw.unlink(missing_ok=True)
-                print(f"{name} run {n}: {'pass' if outcome['passed'] else 'FAIL'}", flush=True)
+                print(f"{name} run {n}: {'pass' if outcome['passed'] else 'FAIL ' + ', '.join(failed_checks(outcome))}", flush=True)
         print(summarize(results, args.runs))
+        write_private(args.out / f"paid-scan-eval-{stamp}-summary.json", summary_json(results, args.runs, commit))
         print(f"Evidence: {args.out}")
         weak = [n for n, o in results.items() if sum(x["passed"] for x in o) / args.runs < args.min_pass - 1e-9]
         if weak:

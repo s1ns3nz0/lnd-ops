@@ -1,0 +1,5 @@
+[
+  "\\bpaypal\\b",
+  "\\bcredit card\\b|\\bcard payment\\b|\\bcards?\\b(?= or paypal)",
+  "\\bstripe\\b"
+]

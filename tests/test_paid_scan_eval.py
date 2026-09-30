@@ -237,6 +237,59 @@ class GraderTests(unittest.TestCase):
                 evalrun.check_name(bad)
         self.assertEqual(evalrun.check_name("tabletop1-image-gc"), "tabletop1-image-gc")
 
+FUNNEL = {"playbook": "opencti-l402-funnel", "required_tools": ["get_playbook"], "must_mention": [], "must_not": []}
+FUNNEL_TOOLS = (("get_playbook", "opencti-l402-funnel"),)
+LIVE = ("The pricer is down: check payment-pricer-service. Customers can pay by card or PayPal instead. "
+        "Escalate if it stays down > 30 min.")
+
+
+class InventionTests(unittest.TestCase):
+    def grade(self, answer, expect=FUNNEL, question=""):
+        return evalrun.grade(invocation(answer, tools=FUNNEL_TOOLS), expect, question)
+
+    def failed(self, result):
+        return sorted(k for k, v in result["checks"].items() if not v)
+
+    def test_known_names(self):
+        for name in ("payment-aperture-services", "l402-aperture", "lnd-merchant", "opencti-paid-scan-e2e",
+                     "paid-scan-diagnosis", "opencti-l402-funnel", "paid-scan-diagnostics"):
+            self.assertIn(name, evalrun.KNOWN_NAMES)
+        self.assertNotIn("payment-pricer-service", evalrun.KNOWN_NAMES)
+
+    def test_live_answer_fails_all_three_checks(self):
+        result = self.grade(LIVE)
+        self.assertEqual(result["unknown_components"], ["payment-pricer-service"])
+        self.assertEqual(result["invented_thresholds"], ["30 minute"])
+        self.assertEqual(self.failed(result), ["invented_option:0", "invented_option:1", "invented_thresholds", "unknown_components"])
+
+    def test_dead_pricer_scenario_catches_the_three_phrases(self):
+        expect = json.loads((SCENARIOS / "tabletop2-dead-pricer.json").read_text())["expect"]
+        for phrase in ("payment-pricer-service is down", "card or PayPal", "wait > 30 min"):
+            failed = [c for c, ok in evalrun.grade(invocation(phrase), expect)["checks"].items() if c.startswith("must_not") and not ok]
+            self.assertTrue(failed, phrase)
+
+    def test_clean_answer_passes(self):
+        answer = "payment-aperture-services is crash-looping in opencti-paid-scan-e2e. This is read-only; re-check in 15 minutes."
+        self.assertTrue(self.grade(answer)["passed"])  # 15 minutes is in the playbook
+
+    def test_negated_invented_option_passes(self):
+        self.assertTrue(self.grade("There is no PayPal option; x402 is the only rail.")["passed"])
+        self.assertFalse(self.grade("Offer Stripe as a fallback.")["passed"])
+
+    def test_common_terms_do_not_trigger(self):
+        self.assertEqual(self.grade("A read-only, low-severity follow-up: re-run the end-to-end check.")["unknown_components"], [])
+
+    def test_threshold_from_tool_results_or_question_is_allowed(self):
+        self.assertEqual(self.grade("Wait 7 minutes.")["invented_thresholds"], ["7 minute"])
+        self.assertEqual(self.grade("Wait 7 minutes.", question="Since 7 min ago, diagnose.")["invented_thresholds"], [])
+        inv = invocation("The window is 45 minutes.", tools=FUNNEL_TOOLS)
+        inv["history"][1]["parts"][0]["data"]["response"]["content"][0]["text"] = json.dumps({"content": "window 45m"})
+        self.assertEqual(evalrun.grade(inv, FUNNEL)["invented_thresholds"], [])
+
+    def test_units_are_families(self):
+        self.assertEqual(self.grade("Give it 15 hours.")["invented_thresholds"], ["15 hour"])
+        self.assertEqual(self.grade("Give it 24-hour baseline, 15m window.")["invented_thresholds"], [])
+
 
 class DeployAgentTests(unittest.TestCase):
     def test_deploy_ships_fixture_source_and_scenarios(self):

@@ -97,7 +97,10 @@
     ],
     "must_not": [
       "restart (the )?(l402-)?aperture\\b",
-      "\\bblock(ing)?\\b"
+      "\\bblock(ing)?\\b",
+      "payment-pricer-service",
+      "card or paypal",
+      "> ?30 ?min"
     ]
   }
 }
