@@ -185,3 +185,42 @@ spec:
           annotations:
             summary: "Aperture metrics are absent; the L402 payment gate is unobserved (no data is not healthy)"
             runbook_url: docs/playbooks/opencti-l402-funnel.md
+    - name: opencti-l402-slo
+      # SLO: 99.5% component-health probe availability over 30d (error budget 0.005). Design: docs/slo-l402.md.
+      rules:
+        - record: l402_probe:up
+          expr: min(probe_success{job="l402-probe"})
+        - record: l402_probe:error_ratio_5m
+          expr: 1 - avg_over_time(l402_probe:up[5m])
+        - record: l402_probe:error_ratio_30m
+          expr: 1 - avg_over_time(l402_probe:up[30m])
+        - record: l402_probe:error_ratio_1h
+          expr: 1 - avg_over_time(l402_probe:up[1h])
+        - record: l402_probe:error_ratio_6h
+          expr: 1 - avg_over_time(l402_probe:up[6h])
+        # No `for`: the 1h and 5m windows together already need about 5 failed probes, so one blip cannot page.
+        - alert: OpenCTIL402ProbeFastBurn
+          expr: l402_probe:error_ratio_1h > (14.4 * 0.005) and l402_probe:error_ratio_5m > (14.4 * 0.005)
+          labels:
+            severity: critical
+          annotations:
+            summary: "L402 payment gate probe is burning the 99.5% error budget 14.4x too fast"
+            description: 'A component of the L402 funnel is failing its health probe. Find it with probe_success{job="l402-probe"} == 0 (component = pricer, lnd_merchant or aperture).'
+            runbook_url: docs/playbooks/opencti-l402-funnel.md
+        - alert: OpenCTIL402ProbeSlowBurn
+          expr: l402_probe:error_ratio_6h > (6 * 0.005) and l402_probe:error_ratio_30m > (6 * 0.005)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "L402 payment gate probe is burning the 99.5% error budget 6x too fast"
+            description: 'A component of the L402 funnel is failing part of its health probes. Find it with probe_success{job="l402-probe"} == 0 (component = pricer, lnd_merchant or aperture).'
+            runbook_url: docs/playbooks/opencti-l402-funnel.md
+        - alert: OpenCTIL402ProbeAbsent
+          expr: absent(l402_probe:up)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "L402 probe data is absent; the payment gate is unobserved (no data is not healthy)"
+            runbook_url: docs/playbooks/opencti-l402-funnel.md
