@@ -11,6 +11,24 @@
 A playbook supports judgment during an incident. Procedures with fixed steps,
 such as deploys and certificate rotation, belong in runbooks.
 
+Components (namespace `opencti-paid-scan-e2e`):
+
+- `paid-scan-api`: the customer API (domains, quotes, orders, payment, results).
+- `paid-scan-internal`: internal callbacks (evidence ingestion, scan completion, L402 payment lookup).
+- `paid-scan-dispatcher`: turns paid orders into scanner Jobs through the dispatch outbox.
+- `scanner-broker`: the only path from a scanner to a target; enforces scope, budget and deadline.
+- Scanner Jobs: named `scan-<20 hex characters>` (the `dispatch_job_name`); their pods carry the label `app.kubernetes.io/name: scanner-worker`.
+- `order-diagnostics`: the read-only endpoint behind `diagnose_paid_order`.
+- `postgres`: the control database and the per-tenant databases.
+- Payment: `l402-aperture`, `payment-aperture-services` and `lnd-merchant` for L402; `x402-facilitator` and `anvil` for x402.
+
+These are the only components on the scan path. Name nothing else.
+
+Timing facts: the stage thresholds in step 4 (1 minute, 5 minutes, and the
+profile deadline + 5 minutes; Basic deadline 300 s) are the only durations for
+this playbook. The L402 payment-gate timings belong to the
+[L402 playbook](opencti-l402-funnel.md) and don't apply to stuck orders.
+
 ## 1. Impact
 
 A customer paid and hasn't received a result. Money has been taken and the
