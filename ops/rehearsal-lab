@@ -910,6 +910,7 @@ def parse_args(argv):
 
 
 def main(argv):
+    sys.stdout.reconfigure(line_buffering=True)  # progress lines reach a log file immediately
     args = parse_args(argv)
     os.umask(0o077)
     try:
