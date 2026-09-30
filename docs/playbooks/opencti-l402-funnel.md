@@ -6,6 +6,7 @@
 | Last reviewed | 2026-09-29 (v0) |
 | Alerts | `OpenCTIL402InvoiceIssuanceFailing`, `OpenCTIL402SecretStoreFailing`, `OpenCTIL402RequestsWithoutInvoice` (critical); `OpenCTIL402ProbeFastBurn` (critical); `OpenCTIL402ProbeSlowBurn` (warning); `OpenCTIL402ProbeAbsent` (warning); `OpenCTIL402MetricsAbsent` (warning), in `charts/monitoring-rules.yaml`. Same thresholds as the tool. Delivery: Alertmanager UI only (no external receiver yet). They use 15-minute windows, so an alert **stays firing up to 15 minutes after the fix**: verify with new activity, not with the alert clearing |
 | Agent | `paid-scan-diagnosis`: `diagnose_l402_funnel`, `get_opencti_workload_status` |
+| Dashboard | Grafana `OpenCTI / L402 Payment Gate` (uid `opencti-l402`): same queries as the tool |
 | Scope | **L402 only.** MPP (`authscheme` `mpp`/`l402+mpp`) and x402 are not measured. An OpenCTI test fails if MPP is enabled before MPP metrics exist |
 | Related | [Stuck paid order](opencti-paid-order-stuck.md); [SLO and burn-rate design](../slo-l402.md) |
 

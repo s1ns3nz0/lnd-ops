@@ -12,6 +12,7 @@ const required = new Set([
   'kubernetes.json',
   'lnd-ops-security.json',
   'lnd-ops-backup-recovery.json',
+  'opencti-l402.json',
 ]);
 
 test('Phase 3 dashboards have unique identities and PromQL for every panel', async () => {
@@ -25,7 +26,7 @@ test('Phase 3 dashboards have unique identities and PromQL for every panel', asy
     uids.add(dashboard.uid);
     const ids = dashboard.panels.map((panel) => panel.id);
     assert.equal(ids.length, new Set(ids).size, `duplicate panel ID in ${name}`);
-    for (const panel of dashboard.panels) {
+    for (const panel of dashboard.panels.filter((panel) => panel.type !== 'row')) {
       assert.ok(panel.targets?.some((target) => target.expr), `${name}: ${panel.title} has no PromQL`);
       const serialized = JSON.stringify(panel.targets);
       assert.doesNotMatch(serialized, /payment_hash|payment_request|preimage|macaroon|peer_pubkey/i);

@@ -24,6 +24,8 @@ ops/rehearsal-lab status    # all pods Ready, scenario "healthy", no alerts firi
 ops/rehearsal-lab ui        # kagent UI, Alertmanager :9093, Prometheus :9090
 ```
 
+Grafana dashboard `OpenCTI / L402 Payment Gate` (uid `opencti-l402`) shows the same numbers the agent and alerts use.
+
 ## How the agents fit together
 
 ```text
