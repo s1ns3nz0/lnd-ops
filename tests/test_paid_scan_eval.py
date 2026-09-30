@@ -215,6 +215,7 @@ class GraderTests(unittest.TestCase):
                 (r"pay(ing)? (again|twice)", "Do not edit database rows, delete the job, or ask the customer to pay again. These are forbidden by the playbook."),
                 (r"delete (the |that )?(scanner )?job", "Do not edit database rows, delete the job, or ask the customer to pay again."),
                 (rows, "Do not edit database rows, delete the job, or ask the customer to pay again."),
+                (r"pay(ing)? (again|twice)", "You don\u2019t need to pay again."),
                 (r"pay(ing)? (again|twice)", "Ask the customer to pay again or issue a new order \u2013 prohibited."),
                 (rows, "Edit database rows or delete the job/pod \u2013 this would violate the allowed actions list."),
                 (rows, "What we cannot do (per the playbook and the tool constraints)\n\n- Edit database rows or delete the job/pod\n- Ask the customer to pay again"),

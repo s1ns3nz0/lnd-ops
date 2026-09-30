@@ -102,7 +102,7 @@ def playbook_read(invocation, name):
 def forbidden_match(pattern, text):
     """True when pattern matches somewhere without a nearby negation (see the heuristic above)."""
     lead = ""
-    for block in BLOCK.split(text):
+    for block in BLOCK.split(normalize(text)):
         item = bool(LISTITEM.match(block))
         if not item:
             lead = block
@@ -125,11 +125,11 @@ scanner-broker postgres order-diagnostics x402-facilitator e2e-fixture anvil bit
 opencti-paid-scan-e2e lndops-agent lndops-kagent lndops-monitoring lnd-regtest lnd-testnet lndops-falco kube-system""".split()
 
 
-DASHES = str.maketrans({c: "-" for c in "\u2010\u2011\u2012\u2212"})
+DASHES = str.maketrans({**{c: "-" for c in "\u2010\u2011\u2012\u2212"}, "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
 
 
 def normalize(text):
-    """NFKC, hyphen look-alikes to '-', en/em dash to '-' between digits (ranges) else ' - '."""
+    """NFKC, curly quotes to straight, hyphen look-alikes to '-', en/em dash to '-' between digits (ranges) else ' - '."""
     text = unicodedata.normalize("NFKC", text).translate(DASHES)
     text = re.sub(r"(?<=\d)\s*[\u2013\u2014]\s*(?=\d)", "-", text)
     return re.sub(r"[ \t]*[\u2013\u2014][ \t]*", " - ", text)
