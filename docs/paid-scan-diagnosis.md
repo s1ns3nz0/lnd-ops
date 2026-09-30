@@ -108,6 +108,26 @@ Scenarios are the source of truth in [tests/eval/scenarios](../tests/eval/scenar
 
 Each run sets `/state/active` in the fixture, invokes the eval Agent through kagent, grades the answer and writes 0600 evidence JSON. The exit code is non-zero if any scenario's pass rate is below `--min-pass`.
 
+### Eval results
+
+Rehearsal lab, `gpt-oss:20b`, 5 scenarios. Scores use the grader as of each
+row; "re-graded" rows re-score saved answers after a grader fix.
+
+| Commit | Change under test | Runs | Pass rate |
+|---|---|---|---|
+| before `7cdba51` | Baseline prompt | 3 per scenario | 7/15 (47%) |
+| `30ba748` | Playbook-first prompt, workload tool rule | 3 | 9/15 (60%) |
+| `d3c41a4` | Components list, x402-only, timing facts in the funnel playbook | 5 | 17/25 (68%) |
+| `15898d1` | Scan-path components in the order playbook | 5 | 19/25 (76%); re-graded 20/25 (80%) |
+| `44e3745` | Prompt rule: name workloads exactly | 5 | 17/25 (68%); re-graded 18/25 (72%). Reverted |
+| `b5c4d0a` | Tool output carries `components_to_check` and `escalation` | 5 | 18/25 (72%) |
+
+The L402 scenarios pass reliably. The order scenarios still fail mostly on
+invented component names (`postgres-pod`, `scan-worker`) when evidence is
+missing, so a human reviews every answer. Prompt rules had no measurable
+effect at this model size; facts in tool output helped (escalation mentions
+went from failing to passing).
+
 Grading checks required tool calls, the expected playbook read, any-of `must_mention` groups and `must_not` regexes. A `must_not` match is ignored when a negation cue (never, not, no, avoid, forbidden, n't) is within 6 words before it in the same sentence, or a prohibition cue within 4 words after. This is a heuristic: it misses distant cues and paraphrases, and can excuse a real recommendation that follows an unrelated "not". Treat a pass as weak evidence and read failing answers. The final-answer extraction (artifacts, else the last text message) has not been checked against live kagent output. Not live-verified; the unit tests use canned invocations.
 
 ## Verification

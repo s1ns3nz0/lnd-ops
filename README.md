@@ -28,7 +28,7 @@ Korean learning wiki: <https://s1ns3nz0.github.io/lnd-ops/>
 - LND testnet/regtest nodes from one Helm chart on both hosts; wallet-preserving redeploys; encrypted SCB backups; seed-plus-SCB recovery.
 - Observability: Prometheus, Grafana dashboards, Alertmanager rules, each alert linked to a runbook or playbook.
 - Security baseline: Kyverno admission, Falco runtime detection, NetworkPolicy isolation, token-free RBAC, digest-pinned images.
-- AI diagnosis with kagent: read-only MCP tools, allowlisted queries, human approval for every action.
+- AI diagnosis with kagent: read-only MCP tools and allowlisted queries; the only write is one allowlisted, audited probe restart with a cooldown. Every other action needs a human.
 - L402 payment-gate SRE (Aperture): 99.5% probe SLO with multiwindow burn-rate alerts, Google-SRE-style playbooks, a rehearsal lab with fault injection, and an automated agent eval.
 
 ## Architecture
@@ -62,7 +62,7 @@ flowchart LR
 | kagent (LND) | gpt-oss:20b diagnosed a real peer-isolation fault; audited restart, cooldown and forbidden-action denial | [phase7](docs/evidence/windows-phase7-kagent-2026-09-24.md) |
 | L402 detection (lab) | Probe burn-rate alert paged in 5 min 14 s vs 16 min 22 s for the counter alert (pricer outage) | [SLO](docs/slo-l402.md) |
 | L402 drill (lab) | Invoice-failure drill: paged in 2 min 21 s; recovery verified by new invoices 1 min 42 s after the fix, 28 min before the last alert cleared | [drill 2](docs/evidence/drill2-invoice-failure-2026-09-30.md) |
-| AI diagnosis eval (lab) | 47% to 72-80% pass rate (5 scenarios x 5 runs, gpt-oss:20b). Known limit: invents component names when evidence is missing, so a human reviews every answer. Lesson: facts in tool output beat prompt rules | [eval](docs/paid-scan-diagnosis.md) |
+| AI diagnosis eval (lab) | 47% to 72-80% pass rate (5 scenarios x 5 runs, gpt-oss:20b). Known limit: invents component names when evidence is missing, so a human reviews every answer. Lesson: facts in tool output beat prompt rules | [eval results](docs/paid-scan-diagnosis.md#eval-results) |
 
 Lab = local kind rehearsal cluster with synthetic Aperture metrics; production rollout pending.
 
@@ -100,6 +100,6 @@ Run `./lndops` for the interactive setup shell. Windows WSL 2, wallets, and acce
 
 ## Safety
 
-Agents are read-only. Wallets, funding, secrets, recovery, and fault injection are explicit manual gates.
+Agents are read-only except one allowlisted, audited probe restart. Wallets, funding, secrets, recovery, and fault injection are explicit manual gates.
 No public Kubernetes or LND endpoint is configured.
 Publishing, merging, deployment, and secret changes require explicit authorization.
