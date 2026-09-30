@@ -16,7 +16,7 @@ synthetic probing for this case, with burn-rate alerting on the probe SLI.
 
 | SLI | Source | Used for |
 |---|---|---|
-| **Component health probe** | Prometheus blackbox exporter, job `l402-probe`, every 60 s, three targets labelled `component`: `pricer` = `GET http://payment-aperture-services:8091/health` expects 200; `lnd_merchant` = `GET https://lnd-merchant:8080/v1/state` (unauthenticated) expects body `SERVER_ACTIVE`; `aperture` = TCP connect to `l402-aperture:8081`. The SLI is **all three succeed** (`min`) | **Alerting** (fast, traffic-independent) |
+| **Component health probe** | Prometheus blackbox exporter, job `l402-probe`, every 60 s, three targets labelled `component`: `pricer` = `GET http://payment-aperture-services:8090/health` expects 200; `lnd_merchant` = `GET https://lnd-merchant:8080/v1/state` (unauthenticated) expects body `SERVER_ACTIVE`; `aperture` = TCP connect to `l402-aperture:8081`. The SLI is **all three succeed** (`min`) | **Alerting** (fast, traffic-independent) |
 | Real-traffic invoice success | `aperture_l402_mint_total{result="ok"}` / `aperture_l402_verify_total{reason="missing_credentials"}` | **SLO reporting** only (too noisy to alert on at low traffic) |
 
 **Why not an end-to-end invoice probe:** the pricer only prices real orders.

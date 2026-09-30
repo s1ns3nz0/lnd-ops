@@ -41,6 +41,8 @@ helm upgrade --install lnd-ops-monitoring "$chart" \
   --namespace "$namespace" \
   --values "$repo_dir/charts/monitoring-values.yaml" \
   --wait --timeout 15m
+kubectl apply -f "$repo_dir/charts/blackbox-exporter.yaml" >/dev/null
+kubectl -n "$namespace" rollout status deployment/l402-blackbox-exporter --timeout=3m >/dev/null
 kubectl apply -f "$repo_dir/charts/monitoring-rules.yaml" >/dev/null
 
 # Helm's --wait does not wait for operator-managed Prometheus and Alertmanager

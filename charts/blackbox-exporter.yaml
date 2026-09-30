@@ -1,0 +1,85 @@
+# Blackbox exporter for the L402 component health probe (docs/slo-l402.md). Apply before charts/monitoring-rules.yaml;
+# The lndops-monitoring namespace must already exist (ops/deploy-monitoring and ops/rehearsal-lab create it).
+# The `l402-probe` scrape job in charts/monitoring-values.yaml sends its probes through this Service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: l402-blackbox-exporter
+  namespace: lndops-monitoring
+data:
+  blackbox.yml: |
+    modules:
+      http_2xx_health:
+        prober: http
+        timeout: 10s
+        http:
+          method: GET
+          valid_status_codes: [200]
+          preferred_ip_protocol: ip4
+      lnd_state:
+        prober: http
+        timeout: 10s
+        http:
+          method: GET
+          preferred_ip_protocol: ip4
+          # The lab/E2E LND serves a self-signed certificate that is not in this Pod's trust store, and
+          # /v1/state is unauthenticated and read-only, so skipping verification exposes nothing.
+          tls_config:
+            insecure_skip_verify: true
+          fail_if_body_not_matches_regexp: ["SERVER_ACTIVE"]
+      tcp_connect:
+        prober: tcp
+        timeout: 5s
+        tcp:
+          preferred_ip_protocol: ip4
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: l402-blackbox-exporter
+  namespace: lndops-monitoring
+  labels: {app.kubernetes.io/name: l402-blackbox-exporter}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: l402-blackbox-exporter}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: l402-blackbox-exporter}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: blackbox-exporter
+          # v0.28.0 (latest stable when pinned) multi-arch index digest
+          image: prom/blackbox-exporter:v0.28.0@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc
+          args: ["--config.file=/config/blackbox.yml"]
+          ports: [{name: http, containerPort: 9115}]
+          readinessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 64Mi}
+          volumeMounts: [{name: config, mountPath: /config, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: l402-blackbox-exporter}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: l402-blackbox-exporter
+  namespace: lndops-monitoring
+  labels: {app.kubernetes.io/name: l402-blackbox-exporter}
+spec:
+  selector: {app.kubernetes.io/name: l402-blackbox-exporter}
+  ports: [{name: http, port: 9115, targetPort: http}]

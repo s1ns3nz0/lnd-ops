@@ -73,6 +73,24 @@ prometheus:
             target_label: namespace
           - source_labels: [__meta_kubernetes_service_name]
             target_label: service
+      # L402 component health probe (docs/slo-l402.md): blackbox exporter checks each component every 60s.
+      - job_name: l402-probe
+        scrape_interval: 60s
+        metrics_path: /probe
+        static_configs:
+          - targets: [http://payment-aperture-services.opencti-paid-scan-e2e.svc:8090/health]
+            labels: {component: pricer, __param_module: http_2xx_health}
+          - targets: [https://lnd-merchant.opencti-paid-scan-e2e.svc:8080/v1/state]
+            labels: {component: lnd_merchant, __param_module: lnd_state}
+          - targets: [l402-aperture.opencti-paid-scan-e2e.svc:8081]
+            labels: {component: aperture, __param_module: tcp_connect}
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: l402-blackbox-exporter.lndops-monitoring.svc:9115
       - job_name: lnd-grpc
         kubernetes_sd_configs:
           - role: endpoints
