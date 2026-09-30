@@ -10,6 +10,7 @@ Missing/invalid file or value means rate 0. Counters only ever increase, whateve
 import json
 import math
 import os
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,7 +78,18 @@ def make_handler(exporter):
     return Handler
 
 
+def listen_tcp(port):
+    """Accept-and-close TCP listener standing in for Aperture's proxy port so the blackbox tcp_connect probe can pass."""
+    server = socket.create_server(("0.0.0.0", port))
+    def loop():
+        while True:
+            server.accept()[0].close()
+    threading.Thread(target=loop, daemon=True).start()
+    return server.getsockname()[1]
+
+
 def main():
+    listen_tcp(int(os.environ.get("PROXY_PORT", "8081")))
     exporter = Exporter(os.environ.get("RATES_FILE", "/state/rates.json"))
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "9000"))), make_handler(exporter)).serve_forever()
 

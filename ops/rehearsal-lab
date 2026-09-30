@@ -58,6 +58,11 @@ NAMESPACES = {  # name -> labels (pod-security levels copied from ops/deploy-age
 DUMMIES = ("payment-aperture-services", "lnd-merchant", "paid-scan-api", "paid-scan-internal",
            "paid-scan-dispatcher", "scanner-broker", "postgres")
 HEALTHY_CMD = ["sh", "-c", "while true; do sleep 3600; done"]
+DUMMY_HTTP = ["python3", "/app/dummy_http.py"]
+HEALTHY_SERVERS = {  # dummies that answer the l402-probe: name -> (port, path, body, TLS?)
+    "payment-aperture-services": (8090, "/health", '{"ok":true}', False),
+    "lnd-merchant": (8080, "/v1/state", '{"state":"SERVER_ACTIVE"}', True),
+}
 BROKEN_CMD = ["sh", "-c", "echo rehearsal fault injected; exit 1"]
 APERTURE = "l402-aperture"
 AGENTS = ("paid-scan-diagnosis", "lnd-ops-runbook-agent")
@@ -365,15 +370,17 @@ def step_monitoring():
     write_private(override, json.dumps(monitoring_override(), indent=2) + "\n")
     helm("upgrade", "--install", "lnd-ops-monitoring", chart, "--namespace", "lndops-monitoring",
          "--values", REPO / "charts/monitoring-values.yaml", "--values", override, "--wait", "--timeout", "15m")
+    kubectl("apply", "-f", REPO / "charts/blackbox-exporter.yaml")
+    kubectl("-n", "lndops-monitoring", "rollout", "status", "deployment/l402-blackbox-exporter", "--timeout=3m", timeout=210)
     kubectl("apply", "-f", REPO / "charts/monitoring-rules.yaml")
 
     def rules_loaded():
         with port_forward("lndops-monitoring", f"service/{PROM_SVC}", 9090) as port:
             groups = http_json(f"http://127.0.0.1:{port}/api/v1/rules")["data"]["groups"]
-        return any(g["name"] == "opencti-l402" for g in groups)
-    wait_for("Prometheus to load the opencti-l402 rule group", rules_loaded, 300, 5)
+        return {"opencti-l402", "opencti-l402-slo"} <= {g["name"] for g in groups}
+    wait_for("Prometheus to load the opencti-l402 and opencti-l402-slo rule groups", rules_loaded, 300, 5)
     kubectl("-n", "lndops-monitoring", "rollout", "status", f"statefulset/alertmanager-{AM_SVC}", "--timeout=5m")
-    print("ok: monitoring installed, opencti-l402 rules loaded in Prometheus")
+    print("ok: monitoring and the L402 probe exporter installed, L402 rules loaded in Prometheus")
 
 
 # --- step 6: synthetic Aperture + dummy workloads -----------------------------------------------------------
@@ -388,25 +395,65 @@ def deployment(name, command, extra_pod=None, extra_container=None, replicas=1):
                      "template": {"metadata": {"labels": labels}, "spec": {"containers": [container], **(extra_pod or {})}}}}
 
 
+def healthy_command(name):
+    if name not in HEALTHY_SERVERS:
+        return HEALTHY_CMD
+    port, path, body, tls = HEALTHY_SERVERS[name]
+    return [*DUMMY_HTTP, str(port), path, body, *(["/tls/tls.crt", "/tls/tls.key"] if tls else [])]
+
+
+def dummy_deployment(name):
+    if name not in HEALTHY_SERVERS:
+        return deployment(name, HEALTHY_CMD)
+    port, _, _, tls = HEALTHY_SERVERS[name]
+    volumes = [{"name": "app", "configMap": {"name": "dummy-http"}}]
+    mounts = [{"name": "app", "mountPath": "/app", "readOnly": True}]
+    if tls:
+        volumes.append({"name": "tls", "secret": {"secretName": "lnd-merchant-tls"}})
+        mounts.append({"name": "tls", "mountPath": "/tls", "readOnly": True})
+    return deployment(name, healthy_command(name), extra_pod={"volumes": volumes}, extra_container={
+        "ports": [{"name": "probe", "containerPort": port}], "volumeMounts": mounts,
+        "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5}})
+
+
+def service(name, ports):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "namespace": APP_NS, "labels": {"app.kubernetes.io/name": name}},
+            "spec": {"selector": {"app.kubernetes.io/name": name},
+                     "ports": [{"name": n, "port": p, "targetPort": p} for n, p in ports]}}
+
+
 def workload_objects():
-    objects = [deployment(name, HEALTHY_CMD) for name in DUMMIES]
+    objects = [dummy_deployment(name) for name in DUMMIES]
     aperture = deployment(
         APERTURE, ["python3", "/app/aperture_exporter.py"],
         extra_pod={"volumes": [{"name": "app", "configMap": {"name": "aperture-exporter"}},
                                {"name": "state", "emptyDir": {}}]},
-        extra_container={"ports": [{"name": "metrics", "containerPort": 9000}],
+        extra_container={"ports": [{"name": "metrics", "containerPort": 9000}, {"name": "proxy", "containerPort": 8081}],
                          "readinessProbe": {"httpGet": {"path": "/metrics", "port": 9000}, "periodSeconds": 5},
                          "volumeMounts": [{"name": "app", "mountPath": "/app", "readOnly": True},
                                           {"name": "state", "mountPath": "/state"}]})
-    service = {"apiVersion": "v1", "kind": "Service",
-               "metadata": {"name": APERTURE, "namespace": APP_NS, "labels": {"app.kubernetes.io/name": APERTURE}},
-               "spec": {"selector": {"app.kubernetes.io/name": APERTURE},
-                        "ports": [{"name": "metrics", "port": 9000, "targetPort": "metrics"}]}}
-    return objects + [aperture, service]
+    return objects + [aperture, service(APERTURE, [("metrics", 9000), ("proxy", 8081)]),
+                      service("payment-aperture-services", [("health", 8090)]), service("lnd-merchant", [("rest", 8080)])]
+
+
+def ensure_merchant_tls():
+    """Self-signed cert for the dummy merchant LND, generated once in the lab state dir (the probe skips verification)."""
+    key, crt = STATE / "lnd-merchant.key", STATE / "lnd-merchant.crt"
+    if not (key.is_file() and crt.is_file()):
+        run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+             "-keyout", key, "-out", crt, "-subj", "/CN=lnd-merchant", "-days", "30",
+             "-addext", f"subjectAltName=DNS:lnd-merchant,DNS:lnd-merchant.{APP_NS}.svc"], timeout=60)
+        os.chmod(key, 0o600)
+    kubectl("apply", "-f", "-", input_text=kubectl(
+        "-n", APP_NS, "create", "secret", "tls", "lnd-merchant-tls", f"--cert={crt}", f"--key={key}",
+        "--dry-run=client", "-o", "yaml"))
 
 
 def step_workloads():
     apply_configmap(APP_NS, "aperture-exporter", REPO / "lab/rehearsal/aperture_exporter.py")
+    apply_configmap(APP_NS, "dummy-http", REPO / "lab/rehearsal/dummy_http.py")
+    ensure_merchant_tls()
     for obj in workload_objects():
         apply(obj)
     for name in (*DUMMIES, APERTURE):
@@ -513,7 +560,7 @@ def command_patch(command):
 
 def restore_workloads():
     for name in DUMMIES:
-        kubectl("-n", APP_NS, "patch", f"deployment/{name}", "-p", command_patch(HEALTHY_CMD))
+        kubectl("-n", APP_NS, "patch", f"deployment/{name}", "-p", command_patch(healthy_command(name)))
     kubectl("-n", APP_NS, "scale", f"deployment/{APERTURE}", "--replicas=1")
     for name in DUMMIES:
         kubectl("-n", APP_NS, "rollout", "status", f"deployment/{name}", "--timeout=120s", timeout=150)

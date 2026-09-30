@@ -18,6 +18,7 @@ def load(name, path):
 
 
 exporter = load("aperture_exporter", "lab/rehearsal/aperture_exporter.py")
+dummy = load("dummy_http", "lab/rehearsal/dummy_http.py")
 lab = load("rehearsal_lab", "ops/rehearsal-lab")
 diag = load("paid_scan_diagnostics", "agent/paid_scan_diagnostics.py")
 RULES = (ROOT / "charts/monitoring-rules.yaml").read_text()
@@ -137,9 +138,64 @@ class ScenarioTest(unittest.TestCase):
         objects = lab.workload_objects()
         names = [o["metadata"]["name"] for o in objects if o["kind"] == "Deployment"]
         self.assertEqual(set(names), {*lab.DUMMIES, lab.APERTURE})
-        service = next(o for o in objects if o["kind"] == "Service")
-        self.assertEqual(service["spec"]["ports"][0]["name"], "metrics")
-        self.assertEqual(service["spec"]["ports"][0]["port"], 9000)
+        services = {o["metadata"]["name"]: {p["name"]: p["port"] for p in o["spec"]["ports"]}
+                    for o in objects if o["kind"] == "Service"}
+        self.assertEqual(services, {lab.APERTURE: {"metrics": 9000, "proxy": 8081},
+                                    "payment-aperture-services": {"health": 8090}, "lnd-merchant": {"rest": 8080}})
+        aperture = next(o for o in objects if o["kind"] == "Deployment" and o["metadata"]["name"] == lab.APERTURE)
+        ports = aperture["spec"]["template"]["spec"]["containers"][0]["ports"]
+        self.assertIn(8081, [p["containerPort"] for p in ports])
+
+    def test_probe_targets_are_served_by_dummies_and_fail_when_crashing(self):
+        by_name = {o["metadata"]["name"]: o for o in lab.workload_objects() if o["kind"] == "Deployment"}
+        pricer = by_name["payment-aperture-services"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(pricer["command"], lab.healthy_command("payment-aperture-services"))
+        self.assertEqual(pricer["command"][1:4], ["/app/dummy_http.py", "8090", "/health"])
+        merchant = by_name["lnd-merchant"]["spec"]["template"]["spec"]
+        self.assertIn("SERVER_ACTIVE", " ".join(merchant["containers"][0]["command"]))
+        self.assertEqual(merchant["containers"][0]["command"][-2:], ["/tls/tls.crt", "/tls/tls.key"])
+        self.assertEqual([v["secret"]["secretName"] for v in merchant["volumes"] if "secret" in v], ["lnd-merchant-tls"])
+        self.assertEqual(lab.healthy_command("postgres"), lab.HEALTHY_CMD)
+        # a crash-looping command listens on nothing, so the blackbox probe is refused
+        self.assertNotIn("dummy_http", " ".join(lab.BROKEN_CMD))
+
+    def test_step_monitoring_applies_blackbox_before_rules_and_waits(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(lab, "STATE", pathlib.Path(tmp)), \
+                mock.patch.object(lab, "kubectl") as kubectl, mock.patch.object(lab, "helm"), \
+                mock.patch.object(lab, "apply_configmap"), mock.patch.object(lab, "wait_for"), mock.patch("builtins.print"):
+            lab.step_monitoring()
+        calls = [[str(a) for a in c.args] for c in kubectl.call_args_list]
+        applied = [c[-1] for c in calls if c[0] == "apply"]
+        self.assertEqual([pathlib.Path(a).name for a in applied], ["blackbox-exporter.yaml", "monitoring-rules.yaml"])
+        self.assertTrue(any("rollout" in c and "deployment/l402-blackbox-exporter" in c for c in calls))
+
+    def test_merchant_cert_generated_once_then_secret_applied(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(lab, "STATE", pathlib.Path(tmp)), \
+                mock.patch.object(lab, "kubectl") as kubectl, mock.patch.object(lab, "run") as run:
+            run.side_effect = lambda a, **k: [pathlib.Path(tmp, n).write_text("x") for n in ("lnd-merchant.key", "lnd-merchant.crt")]
+            lab.ensure_merchant_tls()
+            lab.ensure_merchant_tls()
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(kubectl.call_count, 4)  # create --dry-run | apply, twice
+
+    def test_dummy_http_serves_path_only(self):
+        import http.client, threading
+        server = dummy.ThreadingHTTPServer(("127.0.0.1", 0), dummy.make_handler("/v1/state", '{"state":"SERVER_ACTIVE"}'))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        for path, status in (("/v1/state", 200), ("/other", 404)):
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            conn.request("GET", path)
+            response = conn.getresponse()
+            self.assertEqual(response.status, status)
+            if status == 200:
+                self.assertIn("SERVER_ACTIVE", response.read().decode())
+            conn.close()
+
+    def test_exporter_also_listens_on_tcp_for_the_probe(self):
+        import socket
+        port = exporter.listen_tcp(0)
+        socket.create_connection(("127.0.0.1", port), timeout=2).close()
 
     def test_parse_host_address(self):
         self.assertEqual(lab.parse_host_address("192.168.65.254 STREAM host.docker.internal\n"), "192.168.65.254")
