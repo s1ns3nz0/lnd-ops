@@ -115,11 +115,11 @@ row; "re-graded" rows re-score saved answers after a grader fix.
 
 | Commit | Change under test | Runs | Pass rate |
 |---|---|---|---|
-| before `7cdba51` | Baseline prompt | 3 per scenario | 7/15 (47%) |
-| `30ba748` | Playbook-first prompt, workload tool rule | 3 | 9/15 (60%) |
-| `d3c41a4` | Components list, x402-only, timing facts in the funnel playbook | 5 | 17/25 (68%) |
+| `7cdba51` | Baseline prompt; grader starts checking invented components, options and thresholds | 3 per scenario | 7/15 (47%), re-graded |
+| `30ba748` | Components, payment rails and thresholds pinned to evidence | 3 | 9/15 (60%), re-graded |
+| `d3c41a4` | "What changed" first with rollback (`57a718d`); measured timing facts in the funnel playbook | 5 | 17/25 (68%) |
 | `15898d1` | Scan-path components in the order playbook | 5 | 19/25 (76%); re-graded 20/25 (80%) |
-| `44e3745` | Prompt rule: name workloads exactly | 5 | 17/25 (68%); re-graded 18/25 (72%). Reverted |
+| `44e3745` | Prompt rule: name workloads exactly (`c2e9438`) | 5 | 17/25 (68%); re-graded 18/25 (72%). Reverted |
 | `b5c4d0a` | Tool output carries `components_to_check` and `escalation` | 5 | 18/25 (72%) |
 
 The L402 scenarios pass reliably. The order scenarios still fail mostly on
