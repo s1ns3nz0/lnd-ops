@@ -40,6 +40,7 @@ appears: Aperture can't check their tokens, so it rejects **paying** customers.
 | Situation | Mitigation | Approval |
 |---|---|---|
 | Any `incident` | Tell customers: "L402 (Lightning) payment is temporarily unavailable; please use the other payment method or try later. You won't be charged twice." (template in step 6) | No |
+| A Deployment changed shortly before the incident (`recent_changes`) | Roll it back: `kubectl rollout undo deploy/<name>`, then `kubectl rollout status deploy/<name>`. Rollback does not undo ConfigMap or Secret changes. Verify with new activity afterwards | **Yes**: changes a running service |
 | `incident` lasting longer than you can fix quickly | Stop offering L402 to **new** orders: remove `l402` from each profile's `payment_methods` in `SERVICE_PROFILES_JSON` (x402 stays), which restarts the API. **Before doing it, escalate to confirm that L402 orders already in flight can still finish** | **Yes**: changes a running service |
 
 The only alternative payment rail is x402. There is no card, PayPal or other method.
@@ -75,6 +76,7 @@ security-event reasons.
 
 | Field | Meaning |
 |---|---|
+| **What changed recently?** workload `recent_changes` | Read this first. Deployment rollouts in the last 6 hours (`name`, `revision`, `last_change`, `images`), newest first. A rollout shortly before the symptom started is the leading hypothesis. It does not show ConfigMap/Secret edits or image-tag reuse. For a human: `kubectl rollout history deploy/<name>` |
 | `status` | `unknown` means no verdict at all (step 7) |
 | `verdict` | `incident`, `inconclusive`, `no_l402_traffic` or `healthy`, over the last 15 minutes |
 | `incident_signals` | Why it's an incident |
@@ -109,6 +111,7 @@ verdict, investigate the contradiction instead of trusting the tool.
 | `challenge_failed` | Restore `lnd-merchant`: restart a crashed pod, or unlock the wallet by the documented procedure. Never put wallet passwords, seeds or macaroons in prompts |
 | `secret_failed`, `secret_store_error` | Fix storage (PVC, disk) and restart `l402-aperture`. **Escalate** before touching the database file |
 | `identifier_failed`, `macaroon_failed` | Restart `l402-aperture` once. If it recurs, escalate |
+| Any signal, with a matching entry in `recent_changes` | Roll back that Deployment: `kubectl rollout undo deploy/<name>`, then `kubectl rollout status deploy/<name>`. **Approval required.** Does not undo ConfigMap or Secret changes |
 | `caveat_failed` | Roll back the last config change; otherwise escalate |
 
 Follow the three steps:

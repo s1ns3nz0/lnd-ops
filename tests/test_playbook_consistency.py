@@ -81,6 +81,18 @@ class Consistency(unittest.TestCase):
         tpl = (REPO / 'charts/agent/templates/_helpers.tpl').read_text()
         self.assertIn('Name only components, services, payment methods and numbers (thresholds, durations) that appear in tool output or the playbook; if something is not there, say it is unknown instead of guessing.', tpl)
 
+    def test_change_fields_and_rollback_are_in_playbooks(self):
+        for field in ('recent_changes', 'revision', 'last_change', 'images'):
+            self.assertTrue(f'`{field}`' in ORDER_DOC or f'`{field}`' in FUNNEL_DOC, field)
+        for doc in (ORDER_DOC, FUNNEL_DOC):
+            mitigate = doc.split('## 2. Mitigate first')[1].split('## 3.')[0]
+            self.assertIn('kubectl rollout undo deploy/<name>', mitigate)
+            self.assertIn('`recent_changes`', mitigate)
+            self.assertIn('kubectl rollout history', doc.split('## 3. Triage')[1].split('## 4.')[0])
+            self.assertIn('rollout undo', doc.split('## 5. Fix and verify')[1].split('## 6.')[0])
+        tpl = (REPO / 'charts/agent/templates/_helpers.tpl').read_text()
+        self.assertIn('Check recent_changes first; a rollout shortly before the symptom is the leading hypothesis', tpl)
+
 
 if __name__ == '__main__':
     unittest.main()

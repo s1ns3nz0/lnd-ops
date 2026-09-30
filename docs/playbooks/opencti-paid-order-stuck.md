@@ -33,6 +33,7 @@ Reduce customer impact before looking for the root cause.
 
 | Situation | Mitigation | Approval |
 |---|---|---|
+| A Deployment changed shortly before the incident (`recent_changes`) | Roll it back: `kubectl rollout undo deploy/<name>`, then `kubectl rollout status deploy/<name>`. Rollback does not undo ConfigMap or Secret changes. Verify with new activity afterwards | **Yes**: changes a running service |
 | Any stuck paid order | Tell the customer: "Your payment is recorded and the scan is delayed. We're working on it; you won't need to pay again." (template in step 6) | No |
 | A shared service is down (Critical) | Paid orders are **not lost**. Outbox rows stay `pending` and resume when the service returns. Tell affected customers the same, and hold any promotion or announcement that would bring more orders | No |
 | The payment stage itself is broken for one rail | Stop offering that rail to new orders: remove it from the profile's `payment_methods` in `SERVICE_PROFILES_JSON`, which restarts the API. See the [L402 playbook](opencti-l402-funnel.md) | **Yes**: changes a running service |
@@ -53,6 +54,7 @@ Read these fields in order:
 
 | Field | Meaning |
 |---|---|
+| **What changed recently?** workload `recent_changes` | Deployment rollouts in the last 6 hours (`name`, `revision`, `last_change`, `images`), newest first. A rollout shortly before the symptom started is the leading hypothesis. Also on each Deployment: `revision`, `last_change`, `images`. It does not show ConfigMap/Secret edits or image-tag reuse. For a human: `kubectl rollout history deploy/<name>` |
 | `status` | `observed`: fresh facts. `unknown`: no diagnosis (step 7); its `next_check` is `restore_diagnostic_evidence` |
 | `stage` | Where the order stopped (step 4) |
 | `observed_facts.order_state` | Order state: `awaiting_payment`, `payment_pending`, `paid`, `expired`, `payment_failed` |
@@ -99,6 +101,7 @@ The agent is read-only. People act, and only at the infrastructure level:
 
 | Allowed | Example |
 |---|---|
+| Roll back a Deployment listed in `recent_changes` | `kubectl rollout undo deploy/<name>`, then `kubectl rollout status deploy/<name>`. **Approval required.** Does not undo ConfigMap or Secret changes |
 | Fix a Deployment that isn't ready | Image, resources or Secret mount; then `kubectl rollout restart deploy/<name>` if needed |
 | Restore a missing image | Re-import the offline image archive (`k3s ctr images import`) |
 | Wait for automatic reconciliation | The dispatcher reconciles finished Jobs and cancellations; the broker recovers old reservations |

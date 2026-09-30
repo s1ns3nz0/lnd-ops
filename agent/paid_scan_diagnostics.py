@@ -220,6 +220,8 @@ KUBE_CA_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 KUBE_MAX_BYTES = 1 << 20
 NAME = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 WORD = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}")
+IMAGE = re.compile(r"[a-z0-9][a-z0-9._/:@-]{0,254}")
+RECENT_SECONDS, RECENT_MAX = 6 * 3600, 10
 TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z")
 
 
@@ -282,6 +284,13 @@ def sub(obj, key):
     return value if isinstance(value, dict) else {}
 
 
+def _epoch(value):
+    try:
+        return timestamp(value)
+    except Unavailable:
+        return None
+
+
 def workload_status(arguments, get=None, now=None):
     if arguments not in (None, {}):
         raise ValueError("no arguments are accepted")
@@ -299,11 +308,23 @@ def workload_status(arguments, get=None, now=None):
         for item in deployments:
             meta, status = sub(item, "metadata"), sub(item, "status")
             if name_of(meta.get("name")):
+                annotations = sub(meta, "annotations")
+                revision = annotations.get("deployment.kubernetes.io/revision")
+                revision = revision if isinstance(revision, str) and revision.isascii() and revision.isdigit() else None
+                containers = sub(sub(sub(item, "spec"), "template"), "spec").get("containers")
+                images = [c["image"] for c in containers or [] if isinstance(c, dict)
+                          and isinstance(c.get("image"), str) and IMAGE.fullmatch(c["image"])]
+                stamps = [when(c.get("lastUpdateTime")) for c in status.get("conditions") or []
+                          if isinstance(c, dict) and c.get("type") in {"Progressing", "Available"}]
+                last_change = max((t for t in stamps if t), default=None, key=lambda t: _epoch(t) or 0)
                 available = any(isinstance(c, dict) and c.get("type") == "Available" and c.get("status") == "True"
                                 for c in status.get("conditions") or [])
                 out["deployments"].append({
                     "name": meta["name"], "replicas": count(sub(item, "spec").get("replicas")),
-                    "ready_replicas": count(status.get("readyReplicas")), "available": available})
+                    "ready_replicas": count(status.get("readyReplicas")), "available": available,
+                    "revision": revision, "generation": count(meta.get("generation")),
+                    "observed_generation": count(status.get("observedGeneration")),
+                    "images": images, "last_change": last_change})
         newest = lambda seq, key: sorted(seq, key=lambda x: str(key(x) or ""), reverse=True)
         for item in newest(jobs, lambda x: sub(x, "metadata").get("creationTimestamp")):
             meta, status = sub(item, "metadata"), sub(item, "status")
@@ -346,11 +367,18 @@ def workload_status(arguments, get=None, now=None):
     except (Unavailable, TypeError, ValueError, AttributeError, IndexError) as exc:
         reason = str(exc) if isinstance(exc, Unavailable) and str(exc) in FAILURE_REASONS else "invalid_response"
         return {"status": "unknown", "reason": reason}
-    observed = time.gmtime(time.time() if now is None else now)
+    at = time.time() if now is None else now
+    observed = time.gmtime(at)
+    recent = sorted(((_epoch(d["last_change"]), d) for d in out["deployments"] if d["last_change"]),
+                    key=lambda x: x[0] or 0, reverse=True)
+    out["recent_changes"] = [
+        {"name": d["name"], "revision": d["revision"], "last_change": d["last_change"], "images": d["images"]}
+        for t, d in recent if t is not None and at - RECENT_SECONDS <= t <= at][:RECENT_MAX]
     return dict(out, status="observed", namespace=namespace, read_only=True,
                 observed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", observed),
                 limitations=["Kubernetes object state only; no logs.",
-                             "Warning events expire (default 1h) and may be absent."])
+                             "Warning events expire (default 1h) and may be absent.",
+                             "recent_changes covers Deployment rollouts only; ConfigMap/Secret edits and image-tag reuse are not visible."])
 
 
 PROM_DEFAULT = "http://lnd-ops-monitoring-kube-pr-prometheus.lndops-monitoring.svc:9090"

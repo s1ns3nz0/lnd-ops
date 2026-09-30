@@ -315,6 +315,56 @@ def fake_get(overrides=None, calls=None):
     return get
 
 
+def rollout(name, stamp, **extra):
+    item = {'metadata': {'name': name, 'generation': 4, 'annotations': {'deployment.kubernetes.io/revision': '7'}},
+            'spec': {'replicas': 1, 'template': {'spec': {'containers': [{'image': 'reg.io/app:1.2@sha256:ab'}]}}},
+            'status': {'observedGeneration': 4, 'conditions': [
+                {'type': 'Progressing', 'status': 'True', 'lastUpdateTime': stamp},
+                {'type': 'Available', 'status': 'True', 'lastUpdateTime': '2020-01-01T00:00:00Z'},
+                {'type': 'ReplicaFailure', 'status': 'True', 'lastUpdateTime': '2030-01-01T00:00:00Z'}]}}
+    for key, value in extra.items():
+        item['metadata' if key in ('generation', 'annotations') else 'status' if key in ('observedGeneration',) else 'spec'][key] = value
+    return item
+
+
+class RecentChangeTests(unittest.TestCase):
+    def run_tool(self, *deployments, calls=None):
+        with mock.patch.dict(os.environ, {'OPENCTI_NAMESPACE': 'opencti-paid-scan-e2e'}):
+            return gateway.workload_status({}, get=fake_get({'deployments': k_list(*deployments)}, calls), now=NOW)
+
+    def test_change_fields_are_present_and_validated(self):
+        d = self.run_tool(rollout('a', '2026-09-27T09:00:00Z'))['deployments'][0]
+        self.assertEqual((d['revision'], d['generation'], d['observed_generation'], d['images'], d['last_change']),
+                         ('7', 4, 4, ['reg.io/app:1.2@sha256:ab'], '2026-09-27T09:00:00Z'))
+
+    def test_bad_values_are_dropped(self):
+        item = rollout('a', 'not a time', annotations={'deployment.kubernetes.io/revision': '7; rm'},
+                       generation='4', observedGeneration=-1)
+        item['spec']['template']['spec']['containers'] = [{'image': 'Bad Image'}, {'image': 5}, {'image': 'ok/img:1'}]
+        item['status']['conditions'][1]['lastUpdateTime'] = 5
+        d = self.run_tool(item)['deployments'][0]
+        self.assertEqual((d['revision'], d['generation'], d['observed_generation'], d['images'], d['last_change']),
+                         (None, 0, 0, ['ok/img:1'], None))
+
+    def test_recent_changes_window_order_and_cap(self):
+        deps = [rollout('old', '2026-09-27T03:59:59Z'), rollout('future-safe', '2026-09-27T09:59:00Z'),
+                rollout('mid', '2026-09-27T08:00:00Z'), rollout('edge', '2026-09-27T04:00:00Z')]
+        got = self.run_tool(*deps)['recent_changes']
+        self.assertEqual([c['name'] for c in got], ['future-safe', 'mid', 'edge'])
+        self.assertEqual(got[0], {'name': 'future-safe', 'revision': '7', 'last_change': '2026-09-27T09:59:00Z',
+                                  'images': ['reg.io/app:1.2@sha256:ab']})
+        many = [rollout(f'd{i:02d}', f'2026-09-27T09:{i:02d}:00Z') for i in range(12)]
+        got = self.run_tool(*many)['recent_changes']
+        self.assertEqual([c['name'] for c in got], [f'd{i:02d}' for i in range(11, 1, -1)])
+
+    def test_no_new_api_paths(self):
+        calls = []
+        self.run_tool(rollout('a', '2026-09-27T09:00:00Z'), calls=calls)
+        self.assertEqual(len(calls), 4)
+        for path in calls:
+            self.assertRegex(path, r'/(deployments|jobs|pods|events)(\?|$)')
+
+
 class WorkloadStatusTests(unittest.TestCase):
     def run_tool(self, overrides=None, calls=None, args=None):
         with mock.patch.dict(os.environ, {'OPENCTI_NAMESPACE': 'opencti-paid-scan-e2e'}):
@@ -327,9 +377,12 @@ class WorkloadStatusTests(unittest.TestCase):
         self.assertEqual(result['namespace'], 'opencti-paid-scan-e2e')
         self.assertEqual(result['observed_at'], '2026-09-27T10:00:00Z')
         self.assertEqual(result['limitations'], ['Kubernetes object state only; no logs.',
-                                                 'Warning events expire (default 1h) and may be absent.'])
+                                                 'Warning events expire (default 1h) and may be absent.',
+                                                 'recent_changes covers Deployment rollouts only; ConfigMap/Secret edits and image-tag reuse are not visible.'])
         self.assertEqual(result['deployments'], [{'name': 'opencti-api', 'replicas': 2, 'ready_replicas': 1,
-                                                  'available': False}])
+                                                  'available': False, 'revision': None, 'generation': 0,
+                                                  'observed_generation': 0, 'images': [], 'last_change': None}])
+        self.assertEqual(result['recent_changes'], [])
         self.assertEqual(result['jobs'], [{'name': JOB, 'active': 0, 'succeeded': 0, 'failed': 1,
                                            'condition': 'Failed', 'condition_reason': 'BackoffLimitExceeded',
                                            'start_time': '2026-09-27T09:00:01Z', 'completion_time': None}])
