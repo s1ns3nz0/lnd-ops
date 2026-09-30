@@ -67,6 +67,20 @@ class Consistency(unittest.TestCase):
         for reason in gw.FAILURE_REASONS:
             self.assertTrue(f'`{reason}`' in ORDER_DOC or f'`{reason}`' in FUNNEL_DOC, reason)
 
+    def test_funnel_playbook_pins_components_rails_and_thresholds(self):
+        for name in ('l402-aperture', 'payment-aperture-services', 'lnd-merchant', 'paid-scan-api', 'x402-facilitator'):
+            self.assertIn(f'- `{name}`:', FUNNEL_DOC)
+        for text in ('These are the only components on the L402 path.',
+                     'The only alternative payment rail is x402. There is no card, PayPal or other method.',
+                     'The playbook sets no time threshold for disabling L402',
+                     'do not look for a separate pricer service'):
+            self.assertIn(text, FUNNEL_DOC)
+        self.assertIn('payment rails are exactly l402 and x402', ORDER_DOC)
+
+    def test_system_message_forbids_unsourced_names_and_numbers(self):
+        tpl = (REPO / 'charts/agent/templates/_helpers.tpl').read_text()
+        self.assertIn('Name only components, services, payment methods and numbers (thresholds, durations) that appear in tool output or the playbook; if something is not there, say it is unknown instead of guessing.', tpl)
+
 
 if __name__ == '__main__':
     unittest.main()

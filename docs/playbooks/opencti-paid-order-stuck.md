@@ -56,7 +56,7 @@ Read these fields in order:
 | `status` | `observed`: fresh facts. `unknown`: no diagnosis (step 7); its `next_check` is `restore_diagnostic_evidence` |
 | `stage` | Where the order stopped (step 4) |
 | `observed_facts.order_state` | Order state: `awaiting_payment`, `payment_pending`, `paid`, `expired`, `payment_failed` |
-| `observed_facts.payment_rail` | `l402` or `x402`; decides which payment backend to check |
+| `observed_facts.payment_rail` | `l402` or `x402` (payment rails are exactly l402 and x402); decides which payment backend to check |
 | `observed_facts.observed_at` | Database snapshot time; the tool rejects anything older than 30 seconds |
 | `observed_facts.dispatch_state_age_seconds` | How long dispatch has been in its current state |
 | `observed_facts.scan_failure_reason`, `dispatch_reason` | Allowlisted codes; `other` means not a known code |

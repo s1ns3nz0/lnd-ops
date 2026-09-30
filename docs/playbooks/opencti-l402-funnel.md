@@ -13,6 +13,16 @@ Aperture is the L402 reverse proxy in front of the paid OpenCTI API. It asks
 the pricer (`payment-aperture-services`) for a price, issues Lightning invoices
 through `lnd-merchant`, and admits requests that prove payment.
 
+Components:
+
+- `l402-aperture`: Aperture, the L402 proxy.
+- `payment-aperture-services`: the pricer AND the receipt service; there is no separate pricer service.
+- `lnd-merchant`: the LND node that creates invoices.
+- `paid-scan-api`: the API behind Aperture.
+- `x402-facilitator`: the other payment rail's verifier.
+
+These are the only components on the L402 path.
+
 ## 1. Impact
 
 | Verdict | Customer impact | Severity |
@@ -31,6 +41,9 @@ appears: Aperture can't check their tokens, so it rejects **paying** customers.
 |---|---|---|
 | Any `incident` | Tell customers: "L402 (Lightning) payment is temporarily unavailable; please use the other payment method or try later. You won't be charged twice." (template in step 6) | No |
 | `incident` lasting longer than you can fix quickly | Stop offering L402 to **new** orders: remove `l402` from each profile's `payment_methods` in `SERVICE_PROFILES_JSON` (x402 stays), which restarts the API. **Before doing it, escalate to confirm that L402 orders already in flight can still finish** | **Yes**: changes a running service |
+
+The only alternative payment rail is x402. There is no card, PayPal or other method.
+The playbook sets no time threshold for disabling L402; how long to wait is the approver's decision. Do not invent one.
 
 Never mitigate by editing Aperture's SQLite database, deleting or rotating
 Aperture secrets or macaroon root keys (every issued token dies), or changing
@@ -77,7 +90,7 @@ is a hard fault regardless of volume.
 
 | Signal | Likely cause | Confirm with |
 |---|---|---|
-| `requests_without_invoice` | Requests arrive (≥ 2 without a token) but no invoice and no mint failure: a step **before** minting fails, almost always the pricer | `payment-aperture-services` readiness and restarts; `kubectl logs deploy/payment-aperture-services --previous` |
+| `requests_without_invoice` | Requests arrive (≥ 2 without a token) but no invoice and no mint failure: a step **before** minting fails, almost always the pricer. `payment-aperture-services` is the pricer itself; do not look for a separate pricer service | `payment-aperture-services` readiness and restarts; `kubectl logs deploy/payment-aperture-services --previous` |
 | `mint_failed:challenge_failed` | Aperture can't create invoices on `lnd-merchant`: LND down, wallet locked, not synced, or a TLS/macaroon mismatch | `lnd-merchant` and `l402-aperture` readiness and restarts; `kubectl logs deploy/l402-aperture` |
 | `mint_failed:secret_failed` | Aperture's SQLite secret store can't save the new token's root key | `l402-aperture` logs; PVC `l402-aperture-db` bound; disk space |
 | `mint_failed:identifier_failed` / `macaroon_failed` | In-memory steps (random ID, macaroon construction). Should essentially never happen; points at the process or host | `l402-aperture` logs and restarts; node health |
