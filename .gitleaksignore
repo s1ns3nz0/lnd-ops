@@ -1,0 +1,9 @@
+# Reviewed false positives (generic-api-key): image tag opencti-paid-scan-e2e-api:diagnostics-20260929
+# and a tuple of component names. No secrets. Add entries only after review.
+30ba74862632a17b86db55fc206b43e38afea6b5:tests/test_playbook_consistency.py:generic-api-key:71
+5aa00e926ebb3358a9c934db9418f4b4083e1e10:docs/paid-scan-wsl-rollout.md:generic-api-key:60
+5aa00e926ebb3358a9c934db9418f4b4083e1e10:docs/paid-scan-wsl-rollout.md:generic-api-key:85
+fcd57376c4865bf3c6b4f8548f50f36d408cf7a7:docs/paid-scan-wsl-rollout.md:generic-api-key:60
+fcd57376c4865bf3c6b4f8548f50f36d408cf7a7:docs/paid-scan-wsl-rollout.md:generic-api-key:84
+fcd57376c4865bf3c6b4f8548f50f36d408cf7a7:docs/paid-scan-wsl-rollout.md:generic-api-key:251
+fcd57376c4865bf3c6b4f8548f50f36d408cf7a7:docs/paid-scan-wsl-rollout.md:generic-api-key:511
