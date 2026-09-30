@@ -74,7 +74,9 @@ Read these fields in order:
 |---|---|
 | **What changed recently?** workload `recent_changes` | Deployment rollouts in the last 6 hours (`name`, `revision`, `last_change`, `images`), newest first. A rollout shortly before the symptom started is the leading hypothesis. Also on each Deployment: `revision`, `last_change`, `images`. It does not show ConfigMap/Secret edits or image-tag reuse. For a human: `kubectl rollout history deploy/<name>` |
 | `status` | `observed`: fresh facts. `unknown`: no diagnosis (step 7); its `next_check` is `restore_diagnostic_evidence` |
+| `components_to_check` | Only when `status` is `unknown`: `order-diagnostics` and `postgres`, the components to check (step 7) |
 | `stage` | Where the order stopped (step 4) |
+| `escalation` | Only when `observed`. Non-null means the stage requires escalation (step 6): `inconsistent_dispatch_state` (`worker_start`), `customer_remediation` (`scan_terminal_without_result`), `inconsistent_records` (`inconsistent_records`). `null` for other stages |
 | `observed_facts.order_state` | Order state: `awaiting_payment`, `payment_pending`, `paid`, `expired`, `payment_failed` |
 | `observed_facts.payment_rail` | `l402` or `x402` (payment rails are exactly l402 and x402); decides which payment backend to check |
 | `observed_facts.observed_at` | Database snapshot time; the tool rejects anything older than 30 seconds |

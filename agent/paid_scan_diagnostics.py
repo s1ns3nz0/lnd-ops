@@ -175,6 +175,11 @@ def project(payload, tenant_id, order_id, now):
     return facts
 
 
+# Stages whose playbook row requires escalation (step 4), with the reason to give.
+ESCALATION = {"worker_start": "inconsistent_dispatch_state", "scan_terminal_without_result": "customer_remediation",
+              "inconsistent_records": "inconsistent_records"}
+
+
 def diagnose(arguments, fetch=None, now=None):
     if not isinstance(arguments, dict) or set(arguments) != {"tenant_id", "order_id"}:
         raise ValueError("exactly tenant_id and order_id are required")
@@ -188,7 +193,8 @@ def diagnose(arguments, fetch=None, now=None):
     except (Unavailable, TypeError, ValueError) as exc:
         # Type failures are schema failures, never raw exceptions or upstream content.
         reason = str(exc) if isinstance(exc, Unavailable) and str(exc) in FAILURE_REASONS else "invalid_response"
-        return dict(result, status="unknown", reason=reason, observed_facts={}, next_check="restore_diagnostic_evidence")
+        return dict(result, status="unknown", reason=reason, observed_facts={}, next_check="restore_diagnostic_evidence",
+                           components_to_check=["order-diagnostics", "postgres"])
     order, scan, dispatch = facts["order_state"], facts["scan_state"], facts["dispatch_state"]
     if (order == "paid" and not facts["payment_event_recorded"]) or (facts["result_recorded"] and scan != "completed"):
         stage, check = "inconsistent_records", "inspect_backend_reconciliation"
@@ -212,7 +218,8 @@ def diagnose(arguments, fetch=None, now=None):
         stage, check = "dispatch", "inspect_dispatcher_and_outbox"
     if stage in {"worker_start", "scan_running", "scan_terminal_without_result"} and facts["dispatch_job_name"]:
         check += f"; get_opencti_workload_status can confirm Job {facts['dispatch_job_name']}"
-    return dict(result, status="observed", stage=stage, next_check=check, observed_facts=facts)
+    return dict(result, status="observed", stage=stage, next_check=check, observed_facts=facts,
+                escalation=ESCALATION.get(stage))
 
 
 KUBE_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"

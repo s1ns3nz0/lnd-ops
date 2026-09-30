@@ -1,6 +1,7 @@
 """Every value the diagnostics code can emit must be explained in the playbooks."""
 import copy
 import importlib.util
+import json
 import pathlib
 import unittest
 
@@ -54,6 +55,23 @@ class Consistency(unittest.TestCase):
             self.assertIn(f'`{stage}`', ORDER_DOC)
         for check in {r['next_check'].split(';')[0] for r in out}:
             self.assertIn(check, ORDER_DOC)
+
+    def test_new_fields_and_values_are_in_order_playbook(self):
+        out = self.outcomes()
+        for name in ('components_to_check', 'escalation'):
+            self.assertIn(f'`{name}`', ORDER_DOC)
+        for r in out:
+            for value in r.get('components_to_check', []) + [r.get('escalation')]:
+                if value:
+                    self.assertIn(f'`{value}`', ORDER_DOC)
+        self.assertGreaterEqual(len({r['escalation'] for r in out if r['status'] == 'observed'}), 4)
+
+    def test_scenario_fixtures_have_the_real_tools_keys(self):
+        real = {r['status']: set(r) for r in self.outcomes()}
+        for path in (REPO / 'tests/eval/scenarios').glob('*.json'):
+            tool = json.loads(path.read_text())['tools'].get('diagnose_paid_order')
+            if tool:
+                self.assertEqual(set(tool), real[tool['status']], path.name)
 
     def test_funnel_verdicts_and_signals_are_in_funnel_playbook(self):
         for word in ('incident', 'inconclusive', 'no_l402_traffic', 'healthy', 'requests_without_invoice', 'secret_store_error'):

@@ -14,7 +14,11 @@
       "status": "unknown",
       "reason": "upstream_unavailable",
       "observed_facts": {},
-      "next_check": "restore_diagnostic_evidence"
+      "next_check": "restore_diagnostic_evidence",
+      "components_to_check": [
+        "order-diagnostics",
+        "postgres"
+      ]
     }
   },
   "expect": {

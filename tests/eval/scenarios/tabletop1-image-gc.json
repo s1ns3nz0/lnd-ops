@@ -29,7 +29,8 @@
         "dispatch_reason": null,
         "dispatch_job_name": "scan-7c1e09a4d2b35f6e8a10",
         "dispatch_state_age_seconds": 900
-      }
+      },
+      "escalation": "customer_remediation"
     },
     "get_opencti_workload_status": {
       "deployments": [

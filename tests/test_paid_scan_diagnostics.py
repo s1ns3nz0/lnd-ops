@@ -52,6 +52,18 @@ class DiagnosisTests(unittest.TestCase):
                 data[field]['state'] = state
                 self.assertEqual(self.diagnose(data)['stage'], stage)
 
+    def test_unknown_names_components_and_escalation_follows_stage(self):
+        self.assertEqual(gateway.diagnose(ARGS, fetch=lambda *a: {}, now=NOW)['components_to_check'], ['order-diagnostics', 'postgres'])
+        for field, state, escalation in [('dispatch', 'dispatched', 'inconsistent_dispatch_state'),
+                                         ('scan', 'failed', 'customer_remediation'), ('scan', 'running', None)]:
+            with self.subTest(state=state):
+                data = snapshot()
+                data[field] = dict(data[field], state=state)
+                self.assertEqual(self.diagnose(data)['escalation'], escalation)
+        data = snapshot()
+        data['payment']['event_recorded'] = False
+        self.assertEqual(self.diagnose(data)['escalation'], 'inconsistent_records')
+
     def test_result_record_is_not_end_to_end_success(self):
         data = snapshot()
         data['scan'] = {'state': 'completed', 'result_available_at': '2026-09-27T09:59:00Z'}
