@@ -795,7 +795,7 @@
       },
       "targets": [
         {
-          "expr": "up{job=\"aperture\"}",
+          "expr": "max(up{job=\"aperture\"})",
           "refId": "A"
         }
       ],

@@ -25,8 +25,7 @@ def alert_burn(name):
 
 class L402DashboardTest(unittest.TestCase):
     def test_funnel_queries_verbatim(self):
-        # UP: the panel uses the alert's plain up{job="aperture"}; the probe queries are covered by their own panels
-        skip = {'UP', 'PROBE_ERR_1H', 'PROBE_ERR_5M', 'PROBE_COMPONENTS'}
+        skip = {'PROBE_ERR_1H', 'PROBE_ERR_5M', 'PROBE_COMPONENTS'}
         for name, query in psd.FUNNEL_QUERIES.items():
             if name not in skip:
                 self.assertIn(query, EXPRS, name)
