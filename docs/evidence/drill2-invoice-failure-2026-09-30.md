@@ -11,7 +11,7 @@ agent (ConfigMap `paid-scan-playbooks`, revision `b5c4d0a`). Drill guide:
 | Format | Blind: the operator was not told the fault |
 | Roles | Game master: Claude (injected the fault, recorded the timeline). On-call: repository owner |
 | Fault | `ops/rehearsal-lab inject invoice-failure`: `lnd-merchant` crash-looping; Aperture's mint attempts fail with `challenge_failed` |
-| Status | Detection and diagnosis done. **Recovery half not run yet** |
+| Status | Detection, diagnosis and recovery done. The agent was not asked to verify the recovery |
 
 ## Summary
 
@@ -34,6 +34,29 @@ drill also found **three gaps in the playbook itself**.
 | 12:05:58 | 7 min 12 s | Session B: game master asks the agent (reference answer) |
 | 12:07:29 | 8 min 43 s | Session A: operator asks the agent: "Why is challenge failure soaring and also probe burning?" |
 | 12:07:42 | 8 min 56 s | Session A answer: `lnd-merchant` down |
+
+## Recovery (UTC)
+
+Playbook step 5: pre-check, one change, verify with new activity.
+
+| Time | After the fix | Event |
+|---|---|---|
+| 12:25:01 | — | **Pre-check:** `challenges_issued` 0, `challenge_failed` 30 (15 m), probe `lnd_merchant` 0 (pricer and aperture 1), burn rate 108 (1 h) / 200 (5 m), `lnd-merchant` 0/1 ready |
+| 12:25:07 | 0 | **One change:** `lnd-merchant` restored (`ops/rehearsal-lab reset`) |
+| 12:25:47 | 40 s | Probe `lnd_merchant` back to 1; **first new invoice** (`challenges_issued` rising) |
+| 12:26:49 | 1 min 42 s | No new `challenge_failed` in the last 2 minutes: **recovery verified by new activity** |
+| 12:30:41 | 5 min 34 s | `ProbeFastBurn` cleared (the 5 m window is clean) |
+| 12:39:43 | 14 min 36 s | `InvoiceIssuanceFailing` cleared (old failures aged out of the 15 m window) |
+| 12:55:11 | **30 min 4 s** | `ProbeSlowBurn` cleared (the 30 m window is clean) |
+
+Customer impact lasted **27 min 1 s** (11:58:46 to 12:25:47). Against the
+99.5% / 30-day SLO (216 minutes of budget), that is **12.5% of the monthly
+error budget**.
+
+The service was verifiably healthy **28 minutes before** the last alert
+cleared. Anyone who waits for the alerts to clear before declaring recovery
+waits 30 minutes for nothing; this is why the playbook says to verify with new
+activity.
 
 ## Detection
 
@@ -107,7 +130,9 @@ Not run: drill 2's second question to `lnd-ops-runbook-agent`
 | P3 | Invented `kubectl -l app=lnd-merchant`, `lnd listchaintxsummary` | Model / playbook | "Confirm with" gives exact commands (`kubectl -n opencti-paid-scan-e2e get deploy lnd-merchant`, `kubectl -n opencti-paid-scan-e2e logs deploy/lnd-merchant --previous`) | Medium |
 | E1 | No eval scenario for invoice failure | Eval | Add `tabletop4-invoice-failure`; `required_tools` includes `get_opencti_workload_status`; `must_not` covers invented thresholds | Medium |
 | W1 | No worked example for `lnd-merchant` down with measured times | Playbook | Add "Worked example: merchant LND down (drill 2)" with this timeline | Low |
-| R1 | Recovery half not run | Drill | Restore `lnd-merchant`; operator verifies with new invoices, not the alert clearing; record the clearing time | Next |
+| P4 | Timing fact "Alert clearing after the fix: up to 15 minutes" is wrong for `ProbeSlowBurn`, which took 30 min 4 s | Playbook | Split the row: `ProbeFastBurn` about 5 min, counter alerts up to 15 min, `ProbeSlowBurn` up to about 30 min | Medium |
+| R1 | Recovery half | Drill | Done: verified by new invoices 1 min 42 s after the fix | Done |
+| R2 | The agent was not asked to verify recovery | Drill | Next drill: ask "I restored lnd-merchant. Has the L402 payment gate recovered?" while alerts are still firing | Next drill |
 
 ## Evidence
 
