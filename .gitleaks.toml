@@ -1,0 +1,12 @@
+# Default gitleaks rules plus reviewed false positives (generic-api-key).
+# Match exact line content, not fingerprints: CI scans a shallow checkout, where commit IDs differ.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed non-secrets"
+regexTarget = "line"
+regexes = [
+  'opencti-paid-scan-e2e-api:diagnostics-\d{8}',  # Docker image tag
+  "'paid-scan-api', 'x402-facilitator'",          # tuple of component names in a test
+]
