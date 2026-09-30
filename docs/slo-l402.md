@@ -1,6 +1,6 @@
 # L402 payment gate: SLO and burn-rate alerting (design)
 
-Status: design agreed 2026-09-30; not implemented yet.
+Status: implemented and measured in the rehearsal lab on 2026-09-30.
 
 ## Why
 
@@ -67,8 +67,19 @@ The dummy `payment-aperture-services` serves `/health`, the dummy `lnd-merchant`
 serves `/v1/state` over TLS, and the synthetic `l402-aperture` listens on 8081.
 A crash-looping workload refuses connections, so `pricer-down` and
 `invoice-failure` fail the probe naturally. The blackbox exporter and the probe scrape job run in the
-lab like in production. Success means scenario 1's detection time is
-measured and compared with the 16-minute baseline.
+lab like in production.
+
+**Measured (scenario 1, pricer down, 2026-09-30, UTC):**
+
+| Event | Time | After injection |
+|---|---|---|
+| Fault injected | 07:34:39 | 0 |
+| First failed pricer probe | 07:35:46 | 1 min 7 s |
+| `OpenCTIL402ProbeSlowBurn` pending | 07:36:40 | 2 min |
+| `OpenCTIL402ProbeFastBurn` firing | 07:39:53 | **5 min 14 s** |
+| `OpenCTIL402RequestsWithoutInvoice` firing | 07:51:01 | 16 min 22 s (baseline) |
+
+The probe alert paged about three times faster than the counter alert.
 
 ## Out of scope
 

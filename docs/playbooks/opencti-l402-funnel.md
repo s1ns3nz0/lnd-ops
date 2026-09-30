@@ -51,7 +51,7 @@ the rehearsal lab on 2026-09-30. Use them instead of inventing others.
 
 | Fact | Value | Why |
 |---|---|---|
-| Probe fast-burn alert after a total outage | about 5–6 minutes (expected, to be re-measured in rehearsal) | Probe every 60 s, 1 h + 5 m burn windows ([SLO design](../slo-l402.md)) |
+| Probe fast-burn alert after a total outage | about 5 minutes | Probe every 60 s, 1 h + 5 m burn windows ([SLO design](../slo-l402.md)) |
 | Counter alert delay after a total outage | up to about 16 minutes | The 15-minute counter window still holds earlier successes; then `for: 1m` |
 | Alert clearing after the fix | up to 15 minutes | The window keeps counting the failure until it ages out |
 | When to re-check after a fix | after at least one new request | Verification needs new activity (`challenges_issued` rising), not elapsed time |

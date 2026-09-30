@@ -69,7 +69,7 @@ class Consistency(unittest.TestCase):
                      'OpenCTIL402ProbeFastBurn', 'OpenCTIL402ProbeSlowBurn', 'OpenCTIL402ProbeAbsent'):
             self.assertIn(f'`{word}`', FUNNEL_DOC)
         self.assertIn('slo-l402.md', FUNNEL_DOC)
-        self.assertIn('to be re-measured in rehearsal', FUNNEL_DOC)
+        self.assertIn('| about 5 minutes |', FUNNEL_DOC)
         tpl = (REPO / 'charts/agent/templates/_helpers.tpl').read_text()
         self.assertIn('probe_fast_burn means the component health probe has failed long enough', tpl)
 
