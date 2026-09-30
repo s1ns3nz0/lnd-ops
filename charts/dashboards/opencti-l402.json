@@ -424,7 +424,9 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
@@ -458,7 +460,9 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
@@ -492,7 +496,9 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
@@ -526,7 +532,9 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
@@ -575,7 +583,8 @@
               }
             ]
           },
-          "noValue": "0"
+          "noValue": "0",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -624,7 +633,8 @@
               }
             ]
           },
-          "noValue": "0"
+          "noValue": "0",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -753,7 +763,9 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "decimals": 1
+        },
         "overrides": []
       },
       "options": {
