@@ -16,11 +16,21 @@ synthetic probing for this case, with burn-rate alerting on the probe SLI.
 
 | SLI | Source | Used for |
 |---|---|---|
-| **Probe availability** | Prometheus blackbox exporter sends one tokenless request to Aperture every 60 s. Success = HTTP **402** with a `WWW-Authenticate` header containing `L402`, which proves the path Aperture → pricer → `lnd-merchant` issued an invoice | **Alerting** (fast, traffic-independent) |
+| **Component health probe** | Prometheus blackbox exporter, job `l402-probe`, every 60 s, three targets labelled `component`: `pricer` = `GET http://payment-aperture-services:8091/health` expects 200; `lnd_merchant` = `GET https://lnd-merchant:8080/v1/state` (unauthenticated) expects body `SERVER_ACTIVE`; `aperture` = TCP connect to `l402-aperture:8081`. The SLI is **all three succeed** (`min`) | **Alerting** (fast, traffic-independent) |
 | Real-traffic invoice success | `aperture_l402_mint_total{result="ok"}` / `aperture_l402_verify_total{reason="missing_credentials"}` | **SLO reporting** only (too noisy to alert on at low traffic) |
 
-The probe uses the same path as a customer, so an `lnd-merchant` failure is
-detected too. Probing only the pricer would miss it.
+**Why not an end-to-end invoice probe:** the pricer only prices real orders.
+`GetPrice` requires a valid `/paid/l402/<tenant>/<order>/<hash>/<id>` path, gateway
+authentication, a workspace credential and an order-database lookup. A probe that
+reaches invoice creation therefore needs a permanent synthetic "canary order" in
+OpenCTI, which is product work (future). **Known gap:** every component can be
+healthy while invoices still aren't issued (for example config or authentication
+errors). The existing counter alerts cover that gap, more slowly.
+
+Recording rules (names shared by alerts and the agent tool):
+
+- `l402_probe:up` = `min(probe_success{job="l402-probe"})`
+- `l402_probe:error_ratio_5m|30m|1h|6h` = `1 - avg_over_time(l402_probe:up[<w>])`
 
 ## SLO
 
@@ -40,31 +50,23 @@ The burn rate is the error ratio over the window divided by 0.005. The four
 existing counter alerts stay as **cause** alerts for diagnosis. Each alert
 carries `runbook_url` to `docs/playbooks/opencti-l402-funnel.md`.
 
-## Probe side effect: invoices
+## Probe side effects
 
-Each probe creates a real unpaid invoice on `lnd-merchant`.
-
-- Interval **60 s**, which is 1,440 invoices per day.
-- LND cancels unpaid invoices when they expire; its `InvoiceExpiryWatcher`
-  handles automatic cancellation of expired invoices. With
-  `gc-canceled-invoices-on-the-fly=true` on `lnd-merchant`, canceled invoices
-  are deleted, so the invoice DB reaches a steady state instead of growing.
-- To verify at build time: the expiry Aperture sets on its invoices (LND's
-  default is about 1 day), and that probe invoices are identifiable (for
-  example a dedicated probe route in Aperture's config).
+None. Health endpoints create no invoices, orders or database rows.
 
 ## Agent
 
-`diagnose_l402_funnel` adds `probe_success_1h`, `slo_burn_rate_1h` and
-`slo_burn_rate_5m` from fixed PromQL. `unknown` applies when the probe isn't
+`diagnose_l402_funnel` adds `probe_components` (last result per component),
+`probe_success_1h`, `slo_burn_rate_1h` and `slo_burn_rate_5m` from fixed PromQL. `unknown` applies when the probe isn't
 scraped. The playbook's timing facts are updated from the next rehearsal
 measurement.
 
 ## Lab
 
-The synthetic Aperture exporter gains a probe endpoint. It returns 402 with
-`WWW-Authenticate: L402 …` normally, and 500 during `pricer-down` and
-`invoice-failure`. The blackbox exporter and the probe scrape job run in the
+The dummy `payment-aperture-services` serves `/health`, the dummy `lnd-merchant`
+serves `/v1/state` over TLS, and the synthetic `l402-aperture` listens on 8081.
+A crash-looping workload refuses connections, so `pricer-down` and
+`invoice-failure` fail the probe naturally. The blackbox exporter and the probe scrape job run in the
 lab like in production. Success means scenario 1's detection time is
 measured and compared with the 16-minute baseline.
 
