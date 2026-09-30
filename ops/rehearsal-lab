@@ -759,7 +759,8 @@ def cmd_ui(args):
     ui_port = kubectl_json("-n", "lndops-kagent", "get", "service", "kagent-ui")["spec"]["ports"][0]["port"]
     targets = [("lndops-kagent", "service/kagent-ui", ui_port, 18080, "kagent UI"),
                ("lndops-monitoring", f"service/{AM_SVC}", 9093, 9093, "Alertmanager"),
-               ("lndops-monitoring", f"service/{PROM_SVC}", 9090, 9090, "Prometheus")]
+               ("lndops-monitoring", f"service/{PROM_SVC}", 9090, 9090, "Prometheus"),
+               ("lndops-monitoring", "service/lnd-ops-monitoring-grafana", 80, 3000, "Grafana")]
     processes = []
     try:
         for namespace, target, remote, local, label in targets:
@@ -769,6 +770,8 @@ def cmd_ui(args):
             processes.append(process)
             wait_port(local, process, label)
             print(f"{label}: http://127.0.0.1:{local}")
+        print(f"Grafana login: user and password in {STATE}/grafana-admin-user and grafana-admin-password")
+        print("L402 dashboard: http://127.0.0.1:3000/d/opencti-l402")
         print("Ctrl-C to stop")
         while all(p.poll() is None for p in processes):
             time.sleep(1)
